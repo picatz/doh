@@ -36,7 +36,7 @@ func (s *Cloudflare) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.
 
 	req, err := http.NewRequest("GET", cloudflareBase, nil)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	req.Header.Set("Accept", "application/dns-json")
@@ -52,7 +52,7 @@ func (s *Cloudflare) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
