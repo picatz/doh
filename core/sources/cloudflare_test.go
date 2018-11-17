@@ -27,5 +27,5 @@ func TestCloudflareQuery(t *testing.T) {
 		t.Error("got no answer for known domain")
 	}
 
-	fmt.Println(resp, err, ctx.Err())
+	fmt.Println(src, resp, err, ctx.Err())
 }
