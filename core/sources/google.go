@@ -36,7 +36,7 @@ func (s *Google) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.Resp
 
 	req, err := http.NewRequest("GET", googleBase, nil)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	req.Cancel = ctx.Done()
@@ -50,7 +50,7 @@ func (s *Google) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.Resp
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
