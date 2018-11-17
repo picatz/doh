@@ -13,7 +13,7 @@ import (
 
 // Cloudflare is a DNS over HTTPs resolver.
 type Cloudflare struct {
-	lock *semaphore.Weighted
+	Lock *semaphore.Weighted
 }
 
 // String is a custom printer for debugging purposes.
@@ -25,14 +25,14 @@ var cloudflareBase = "https://cloudflare-dns.com/dns-query"
 
 // Query handles a resolving a given domain name to a list of IPs
 func (s *Cloudflare) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.Response, error) {
-	if s.lock == nil {
-		s.lock = semaphore.NewWeighted(int64(runtime.GOMAXPROCS(0)))
+	if s.Lock == nil {
+		s.Lock = semaphore.NewWeighted(int64(runtime.GOMAXPROCS(0)))
 	}
 
-	if err := s.lock.Acquire(ctx, 1); err != nil {
+	if err := s.Lock.Acquire(ctx, 1); err != nil {
 		return nil, err
 	}
-	defer s.lock.Release(1)
+	defer s.Lock.Release(1)
 
 	req, err := http.NewRequest("GET", cloudflareBase, nil)
 	if err != nil {

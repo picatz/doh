@@ -13,7 +13,7 @@ import (
 
 // Google is a DNS over HTTPs resolver.
 type Google struct {
-	lock *semaphore.Weighted
+	Lock *semaphore.Weighted
 }
 
 // String is a custom printer for debugging purposes.
@@ -25,14 +25,14 @@ var googleBase = "https://dns.google.com/resolve"
 
 // Query handles a resolving a given domain name to a list of IPs
 func (s *Google) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.Response, error) {
-	if s.lock == nil {
-		s.lock = semaphore.NewWeighted(int64(runtime.GOMAXPROCS(0)))
+	if s.Lock == nil {
+		s.Lock = semaphore.NewWeighted(int64(runtime.GOMAXPROCS(0)))
 	}
 
-	if err := s.lock.Acquire(ctx, 1); err != nil {
+	if err := s.Lock.Acquire(ctx, 1); err != nil {
 		return nil, err
 	}
-	defer s.lock.Release(1)
+	defer s.Lock.Release(1)
 
 	req, err := http.NewRequest("GET", googleBase, nil)
 	if err != nil {
