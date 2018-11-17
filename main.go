@@ -63,6 +63,7 @@ func main() {
 		cmdQueryJoinedOpt    bool
 		cmdQueryTimeoutOpt   int64
 		cmdQueryLockOpt      int64
+		cmdQueryLimitOpt     int64
 		cmdQueryNoTimeoutOpt bool
 		cmdQuerySourcesOpt   []string
 		cmdQueryQueryTypeOpt string
@@ -70,6 +71,7 @@ func main() {
 		defaultQuerySources = []string{"google", "cloudflare", "quad9"}
 		defaultLockValue    = int64(runtime.GOMAXPROCS(0))
 		defaultQueryType    = core.IPv4Type
+		defaultLimitOpt     = int64(1)
 
 		querySources = core.Sources{}
 	)
@@ -110,6 +112,7 @@ func main() {
 					defer cancel()
 					defer jobs.Done()
 					defer close(results)
+
 					for _, src := range querySources {
 						if ctx.Err() != nil {
 							return
@@ -123,6 +126,7 @@ func main() {
 						}
 
 						if resp != nil {
+
 							select {
 							case <-ctx.Done():
 								return
@@ -156,7 +160,14 @@ func main() {
 					}()
 				}
 
+				counter := int64(0)
+
 				for result := range results {
+					if counter == cmdQueryLimitOpt {
+						cancel()
+						return
+					}
+
 					var (
 						b   []byte
 						err error
@@ -182,6 +193,8 @@ func main() {
 						continue
 					}
 					fmt.Println(string(b))
+
+					counter++
 				}
 			}()
 
@@ -194,6 +207,7 @@ func main() {
 	cmdQuery.Flags().Int64Var(&cmdQueryTimeoutOpt, "timeout", 30, "number of seconds until timeout")
 	cmdQuery.Flags().BoolVar(&cmdQueryNoTimeoutOpt, "no-timeout", false, "do not timeout")
 	cmdQuery.Flags().Int64Var(&cmdQueryLockOpt, "lock", defaultLockValue, "number of concurrent workers")
+	cmdQuery.Flags().Int64Var(&cmdQueryLimitOpt, "limit", defaultLimitOpt, "limit the number of responses from backend sources")
 	cmdQuery.Flags().BoolVar(&cmdQueryVerboseOpt, "verbose", false, "show errors and other available diagnostic information")
 	cmdQuery.Flags().BoolVar(&cmdQueryLabelsOpt, "labels", false, "show source of the dns record")
 	cmdQuery.Flags().BoolVar(&cmdQueryJoinedOpt, "joined", false, "join results into a JSON object")
