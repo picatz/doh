@@ -36,7 +36,7 @@ func (s *Quad9) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.Respo
 
 	req, err := http.NewRequest("GET", quad9Base, nil)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	req.Cancel = ctx.Done()
@@ -50,7 +50,7 @@ func (s *Quad9) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.Respo
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
