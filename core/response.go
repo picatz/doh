@@ -1,5 +1,6 @@
 package core
 
+// Response is a record returned from a DoH server.
 type Response struct {
 	Status   int  `json:"Status"`
 	TC       bool `json:"TC"`
