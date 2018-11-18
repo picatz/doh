@@ -15,7 +15,7 @@ $ go get github.com/picatz/doh
 As new updates come out, you can update `doh` using the `-u` flag with `go get`.
 ```shell
 $ go get -u github.com/picatz/doh
-``
+```
 
 # Help Menus
 The `--help` command-line flag can show you the top-level help menu.
