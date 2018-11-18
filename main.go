@@ -64,6 +64,7 @@ func main() {
 		cmdQueryTimeoutOpt   int64
 		cmdQueryLockOpt      int64
 		cmdQueryLimitOpt     int64
+		cmdQueryNoLimitOpt   bool
 		cmdQueryNoTimeoutOpt bool
 		cmdQuerySourcesOpt   []string
 		cmdQueryQueryTypeOpt string
@@ -105,38 +106,53 @@ func main() {
 			}
 		},
 		Run: func(cmd *cobra.Command, args []string) {
-			jobs.Add(len(args))
-
-			for _, arg := range args {
-				go func(queryName core.Domain, queryType core.Type) {
-					defer cancel()
-					defer jobs.Done()
-					defer close(results)
-
-					for _, src := range querySources {
-						if ctx.Err() != nil {
-							return
-						}
-
-						resp, err := src.Query(ctx, queryName, queryType)
-
-						if err != nil && cmdQueryVerboseOpt {
-							fmt.Println("error:", err)
-							continue
-						}
-
-						if resp != nil {
-
-							select {
-							case <-ctx.Done():
-								return
-							case results <- result{Label: src.String(), Resp: resp}:
-								continue
-							}
-						}
-					}
-				}(arg, cmdQueryQueryTypeOpt)
+			if !cmdQueryNoLimitOpt && (cmdQueryLimitOpt < int64(len(args))) {
+				exit("more domain arguments given than the default limit value (1)", 1)
 			}
+
+			jobs.Add(1)
+
+			go func() {
+				defer close(results)
+				defer jobs.Done()
+				defer cancel()
+
+				wg := sync.WaitGroup{}
+				wg.Add(len(args))
+
+				for _, arg := range args {
+					go func(queryName core.Domain, queryType core.Type) {
+						defer wg.Done()
+						for _, src := range querySources {
+							wg.Add(1)
+							go func(src core.Source) {
+								defer wg.Done()
+								if ctx.Err() != nil {
+									return
+								}
+
+								resp, err := src.Query(ctx, queryName, queryType)
+
+								if err != nil && cmdQueryVerboseOpt {
+									fmt.Println("error:", err)
+									return
+								}
+
+								if resp != nil {
+									select {
+									case <-ctx.Done():
+										return
+									case results <- result{Label: src.String(), Resp: resp}:
+										return
+									}
+								}
+							}(src)
+						}
+					}(arg, cmdQueryQueryTypeOpt)
+				}
+
+				wg.Wait()
+			}()
 		},
 		PostRun: func(cmd *cobra.Command, args []string) {
 			defer cancel()
@@ -154,7 +170,6 @@ func main() {
 						if err != nil {
 							fmt.Println(err)
 							return
-							//exit("error: failed to marshal joined results as json", 1)
 						}
 						fmt.Println(string(b))
 					}()
@@ -163,7 +178,7 @@ func main() {
 				counter := int64(0)
 
 				for result := range results {
-					if counter == cmdQueryLimitOpt {
+					if !cmdQueryNoLimitOpt && (counter == cmdQueryLimitOpt) {
 						cancel()
 						return
 					}
@@ -206,6 +221,7 @@ func main() {
 	cmdQuery.Flags().StringSliceVar(&cmdQuerySourcesOpt, "sources", defaultQuerySources, "sources to use for query")
 	cmdQuery.Flags().Int64Var(&cmdQueryTimeoutOpt, "timeout", 30, "number of seconds until timeout")
 	cmdQuery.Flags().BoolVar(&cmdQueryNoTimeoutOpt, "no-timeout", false, "do not timeout")
+	cmdQuery.Flags().BoolVar(&cmdQueryNoLimitOpt, "no-limit", false, "do not limit results")
 	cmdQuery.Flags().Int64Var(&cmdQueryLockOpt, "lock", defaultLockValue, "number of concurrent workers")
 	cmdQuery.Flags().Int64Var(&cmdQueryLimitOpt, "limit", defaultLimitOpt, "limit the number of responses from backend sources")
 	cmdQuery.Flags().BoolVar(&cmdQueryVerboseOpt, "verbose", false, "show errors and other available diagnostic information")
