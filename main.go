@@ -87,11 +87,11 @@ func main() {
 			for _, sourceStr := range cmdQuerySourcesOpt {
 				switch sourceStr {
 				case "google":
-					querySources = append(querySources, &sources.Google{sharedLock})
+					querySources = append(querySources, &sources.Google{Lock: sharedLock})
 				case "cloudflare":
-					querySources = append(querySources, &sources.Cloudflare{sharedLock})
+					querySources = append(querySources, &sources.Cloudflare{Lock: sharedLock})
 				case "quad9":
-					querySources = append(querySources, &sources.Quad9{sharedLock})
+					querySources = append(querySources, &sources.Quad9{Lock: sharedLock})
 				}
 			}
 
