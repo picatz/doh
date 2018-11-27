@@ -19,10 +19,8 @@ $ go get -u github.com/picatz/doh
 
 # Help Menus
 The `--help` command-line flag can show you the top-level help menu.
-```shell
+```console
 $ doh --help
-```
-```
 Usage:
   doh [command]
 
@@ -37,10 +35,8 @@ Use "doh [command] --help" for more information about a command.
 ```
 
 To get more information for the `query` command:
-```shell
+```console
 $ doh query --help
-```
-```
 Query domains for DNS records in JSON
 
 Usage:
@@ -62,36 +58,28 @@ Flags:
 
 # Example Usage
 Let's say I'm curious about `google.com`'s IPv4 address and want to use `doh` to find out what it is.
-```
+```console
 $ doh query google.com 
-```
-```
 {"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":100,"data":"172.217.8.206"}]}
 ```
 
 You can see the source of the DNS record using the `--labels` flag:
-```
+```console
 $ doh query google.com --labels
-```
-```
 {"label":"quad9","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":56,"data":"172.217.8.206"}]}}
 ```
 
 You can wait for responses from all sources with the `--no-limit` flag:
-```
+```console
 $ doh query google.com --labels --no-limit
-```
-```
 {"label":"quad9","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":40,"data":"216.58.216.238"}]}}
 {"label":"google","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.113"},{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.101"},{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.100"},{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.138"},{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.139"},{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.102"}]}}
 {"label":"cloudflare","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":195,"data":"172.217.1.46"}]}}
 ```
 
 To get just all of the IPs from all of those sources, we could do the following:
-```
+```console
 $ doh query google.com --no-limit --joined | jq 'map(.Answer | map(.data)) | flatten | .[]' --raw-output
-```
-```
 172.217.8.206
 108.177.111.139
 108.177.111.113
@@ -103,18 +91,14 @@ $ doh query google.com --no-limit --joined | jq 'map(.Answer | map(.data)) | fla
 ```
 
 If we want to filter the output to just the first IP address in the first JSON record with `jq`:
-```
+```console
 $ doh query google.com | jq .Answer[0].data --raw-output
-```
-```
 172.217.8.206
 ```
 
 Now, perhaps `google.com` isn't the _only_ record we're also interested in, since we also want `bing.com`, which is where the _cool kids_ are at.
-```
+```console
 $ doh query bing.com apple.com --limit 2 | jq '(.Answer[0].name|rtrimstr(".")) + "\t" + .Answer[0].data' --raw-output
-```
-```
 apple.com	172.217.8.206
 bing.com	204.79.197.200
 ```
