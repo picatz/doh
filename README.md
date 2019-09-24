@@ -59,7 +59,7 @@ Flags:
 # Example Usage
 Let's say I'm curious about `google.com`'s IPv4 address and want to use `doh` to find out what it is.
 ```console
-$ doh query google.com 
+$ doh query google.com
 {"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":100,"data":"172.217.8.206"}]}
 ```
 
@@ -116,4 +116,10 @@ $ doh query google.com --type MX
 To get `ANY` records (which is only implemented by the `google` source):
 ```
 $ doh query google.com --type ANY --sources=google
+```
+
+To use a custom DNS over HTTPs source (in this case re-using the google source `https://dns.google.com/resolve` as a custom one):
+```console
+$ doh query google.com --custom-only --custom-source-url="https://dns.google.com/resolve" --labels
+{"label":"custom","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":123,"data":"216.58.192.142"}]}}
 ```
