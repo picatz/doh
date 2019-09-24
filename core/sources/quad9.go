@@ -21,7 +21,7 @@ func (s *Quad9) String() string {
 	return "quad9"
 }
 
-var quad9Base = "https://dns.quad9.net/dns-query"
+var quad9Base = "https://dns.quad9.net:5053/dns-query"
 
 // Query handles a resolving a given domain name to a list of IPs
 func (s *Quad9) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.Response, error) {
