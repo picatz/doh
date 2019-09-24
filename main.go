@@ -69,6 +69,10 @@ func main() {
 		cmdQuerySourcesOpt   []string
 		cmdQueryQueryTypeOpt string
 
+		cmdQueryCustomSourceOptionalNameOpt string
+		cmdQueryCustomSourceBaseURLOpt      string
+		cmdQueryCustomOnlyOpt               bool
+
 		defaultQuerySources = []string{"google", "cloudflare", "quad9"}
 		defaultLockValue    = int64(runtime.GOMAXPROCS(0))
 		defaultQueryType    = core.IPv4Type
@@ -84,14 +88,20 @@ func main() {
 		PreRun: func(cmd *cobra.Command, args []string) {
 			sharedLock := semaphore.NewWeighted(cmdQueryLockOpt)
 
-			for _, sourceStr := range cmdQuerySourcesOpt {
-				switch sourceStr {
-				case "google":
-					querySources = append(querySources, &sources.Google{Lock: sharedLock})
-				case "cloudflare":
-					querySources = append(querySources, &sources.Cloudflare{Lock: sharedLock})
-				case "quad9":
-					querySources = append(querySources, &sources.Quad9{Lock: sharedLock})
+			if cmdQueryCustomSourceBaseURLOpt != "" {
+				querySources = append(querySources, sources.NewCustomSource(cmdQueryCustomSourceOptionalNameOpt, cmdQueryCustomSourceBaseURLOpt))
+			}
+
+			if !cmdQueryCustomOnlyOpt {
+				for _, sourceStr := range cmdQuerySourcesOpt {
+					switch sourceStr {
+					case "google":
+						querySources = append(querySources, &sources.Google{Lock: sharedLock})
+					case "cloudflare":
+						querySources = append(querySources, &sources.Cloudflare{Lock: sharedLock})
+					case "quad9":
+						querySources = append(querySources, &sources.Quad9{Lock: sharedLock})
+					}
 				}
 			}
 
@@ -227,6 +237,10 @@ func main() {
 	cmdQuery.Flags().BoolVar(&cmdQueryVerboseOpt, "verbose", false, "show errors and other available diagnostic information")
 	cmdQuery.Flags().BoolVar(&cmdQueryLabelsOpt, "labels", false, "show source of the dns record")
 	cmdQuery.Flags().BoolVar(&cmdQueryJoinedOpt, "joined", false, "join results into a JSON object")
+	// flags for user-supplied source
+	cmdQuery.Flags().StringVar(&cmdQueryCustomSourceOptionalNameOpt, "custom-source-name", "custom", "optional custom source name")
+	cmdQuery.Flags().StringVar(&cmdQueryCustomSourceBaseURLOpt, "custom-source-url", "", "custom source base url")
+	cmdQuery.Flags().BoolVar(&cmdQueryCustomOnlyOpt, "custom-only", false, "query custom source only")
 
 	var rootCmd = &cobra.Command{Use: "doh"}
 	rootCmd.AddCommand(cmdQuery)
