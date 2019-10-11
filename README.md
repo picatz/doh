@@ -2,7 +2,7 @@
 
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/picatz/doh/blob/master/LICENSE)
 [![CircleCI Status](https://circleci.com/gh/picatz/doh.svg?style=shield&circle-token=:circle-token)](https://circleci.com/gh/picatz/doh)
-[![go report](https://goreportcard.com/badge/github.com/picatz/doh)](https://github.com/picatz/doh)
+[![go report](https://goreportcard.com/badge/github.com/picatz/doh)](https://goreportcard.com/report/github.com/picatz/doh)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/picatz/doh/pulls)
 
 
