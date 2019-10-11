@@ -16,3 +16,13 @@ workflows:
   test_code:
     jobs:
       - build-from-source
+  nightly:
+    triggers:
+      - schedule:
+          cron: "0 8 * * *"
+          filters:
+            branches:
+              only:
+                - master
+    jobs:
+      - build-from-source
