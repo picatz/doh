@@ -1,0 +1,18 @@
+version: 2
+jobs:
+  build-from-source:
+    docker:
+      - image: circleci/golang:1.13
+        environment:
+          GO111MODULE: "on"
+    steps:
+      - checkout
+      - run:
+          command: |
+            go build -o doh
+            ./doh query google.com --labels --no-limit
+workflows:
+  version: 2
+  test_code:
+    jobs:
+      - build-from-source
