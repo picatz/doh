@@ -1,4 +1,11 @@
 # doh
+
+[![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/picatz/doh/blob/master/LICENSE)
+[![CircleCI Status](https://circleci.com/gh/picatz/doh.svg?style=shield&circle-token=:circle-token)](https://circleci.com/gh/picatz/doh)
+[![go report](https://goreportcard.com/badge/github.com/picatz/doh)](https://github.com/picatz/doh)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/picatz/doh/pulls)
+
+
 > 🍩  DNS over HTTPs command-line client
 
 Using [`cloudflare`](https://developers.cloudflare.com/1.1.1.1/dns-over-https/), [`google`](https://developers.google.com/speed/public-dns/docs/dns-over-https), and [`quad9`](https://quad9.net/doh-quad9-dns-servers/) the `doh` command-line utility can concurrently lookup all three sources for one or more given domain(s). You can even specify your own custom source to use.
