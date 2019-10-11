@@ -50,17 +50,20 @@ Usage:
   doh query [domains] [flags]
 
 Flags:
-  -h, --help              help for query
-      --joined            join results into a JSON object
-      --labels            show source of the dns record
-      --limit int         limit the number of responses from backend sources (default 1)
-      --lock int          number of concurrent workers (default 8)
-      --no-limit          do not limit results
-      --no-timeout        do not timeout
-      --sources strings   sources to use for query (default [google,cloudflare,quad9])
-      --timeout int       number of seconds until timeout (default 30)
-      --type string       dns record type to query for ("A", "AAAA", "MX" ...) (default "A")
-      --verbose           show errors and other available diagnostic information
+      --custom-only                 query custom source only
+      --custom-source-name string   optional custom source name (default "custom")
+      --custom-source-url string    custom source base url
+  -h, --help                        help for query
+      --joined                      join results into a JSON object
+      --labels                      show source of the dns record
+      --limit int                   limit the number of responses from backend sources (default 1)
+      --lock int                    number of concurrent workers (default 4)
+      --no-limit                    do not limit results
+      --no-timeout                  do not timeout
+      --sources strings             sources to use for query (default [google,cloudflare,quad9])
+      --timeout int                 number of seconds until timeout (default 30)
+      --type string                 dns record type to query for ("A", "AAAA", "MX" ...) (default "A")
+      --verbose                     show errors and other available diagnostic information
 ```
 
 # Example Usage
