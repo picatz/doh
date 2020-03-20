@@ -5,7 +5,6 @@
 [![go report](https://goreportcard.com/badge/github.com/picatz/doh)](https://goreportcard.com/report/github.com/picatz/doh)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/picatz/doh/pulls)
 
-
 > 🍩  DNS over HTTPs command-line client
 
 Using [`cloudflare`](https://developers.cloudflare.com/1.1.1.1/dns-over-https/), [`google`](https://developers.google.com/speed/public-dns/docs/dns-over-https), and [`quad9`](https://quad9.net/doh-quad9-dns-servers/) the `doh` command-line utility can concurrently lookup all three sources for one or more given domain(s). You can even specify your own custom source to use.
@@ -60,6 +59,8 @@ Flags:
       --lock int                    number of concurrent workers (default 4)
       --no-limit                    do not limit results
       --no-timeout                  do not timeout
+      --resolver-addr string        custom resolver address:port to use (8.8.8.8:53)
+      --resolver-network string     custom resolver network transport to use (udp/tcp) (default "udp")
       --sources strings             sources to use for query (default [google,cloudflare,quad9])
       --timeout int                 number of seconds until timeout (default 30)
       --type string                 dns record type to query for ("A", "AAAA", "MX" ...) (default "A")
