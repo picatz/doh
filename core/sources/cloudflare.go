@@ -50,7 +50,7 @@ func (s *Cloudflare) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.
 
 	req.URL.RawQuery = q.Encode()
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := doh.Client.Do(req)
 	if err != nil {
 		return nil, err
 	}

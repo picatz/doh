@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"runtime"
 
+	"github.com/picatz/doh/core"
 	doh "github.com/picatz/doh/core"
 	"golang.org/x/sync/semaphore"
 )
@@ -59,7 +60,7 @@ func (s *Custom) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.Resp
 
 	req.URL.RawQuery = q.Encode()
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := core.Client.Do(req)
 	if err != nil {
 		return nil, err
 	}

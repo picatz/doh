@@ -58,6 +58,10 @@ func main() {
 		ctx    context.Context
 		cancel context.CancelFunc
 
+		cmdQueryResolverAddr    string
+		cmdQueryResolverNetwork string
+		defaultResolverNetwork  = "udp"
+
 		cmdQueryVerboseOpt   bool
 		cmdQueryLabelsOpt    bool
 		cmdQueryJoinedOpt    bool
@@ -113,6 +117,10 @@ func main() {
 				ctx, cancel = context.WithCancel(context.Background())
 			} else {
 				ctx, cancel = context.WithTimeout(context.Background(), time.Second*time.Duration(cmdQueryTimeoutOpt))
+			}
+
+			if cmdQueryResolverAddr != "" {
+				core.UseCustomResolver(cmdQueryResolverNetwork, cmdQueryResolverAddr)
 			}
 		},
 		Run: func(cmd *cobra.Command, args []string) {
@@ -226,6 +234,9 @@ func main() {
 			jobs.Wait()
 		},
 	}
+
+	cmdQuery.Flags().StringVar(&cmdQueryResolverAddr, "resolver-addr", "", "custom resolver address:port to use (8.8.8.8:53)")
+	cmdQuery.Flags().StringVar(&cmdQueryResolverNetwork, "resolver-network", defaultResolverNetwork, "custom resolver network transport to use (udp/tcp)")
 
 	cmdQuery.Flags().StringVar(&cmdQueryQueryTypeOpt, "type", defaultQueryType, "dns record type to query for (\"A\", \"AAAA\", \"MX\" ...)")
 	cmdQuery.Flags().StringSliceVar(&cmdQuerySourcesOpt, "sources", defaultQuerySources, "sources to use for query")

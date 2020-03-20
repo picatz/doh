@@ -48,7 +48,7 @@ func (s *Quad9) Query(ctx context.Context, d doh.Domain, t doh.Type) (*doh.Respo
 
 	req.URL.RawQuery = q.Encode()
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := doh.Client.Do(req)
 	if err != nil {
 		return nil, err
 	}
