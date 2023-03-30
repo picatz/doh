@@ -14,13 +14,13 @@ Using [`cloudflare`](https://developers.cloudflare.com/1.1.1.1/dns-over-https/),
 # Install
 To get started, you will need [`go`](https://golang.org/doc/install) installed and properly configured.
 ```shell
-$ go get github.com/picatz/doh
+$ go install github.com/picatz/doh@latest
 ```
 
 # Update
 As new updates come out, you can update `doh` using the `-u` flag with `go get`.
 ```shell
-$ go get -u github.com/picatz/doh
+$ go install github.com/picatz/doh@latest
 ```
 
 # Help Menus
