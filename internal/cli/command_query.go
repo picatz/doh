@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/go-cleanhttp"
 	"github.com/picatz/doh/pkg/dj"
+	"github.com/picatz/doh/pkg/doh"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -34,7 +35,7 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 			return fmt.Errorf("invalid servers: %w", err)
 		}
 
-		queryType := dj.Record(cmd.Flag("type").Value.String())
+		queryType := cmd.Flag("type").Value.String()
 
 		timeout, err := cmd.Flags().GetDuration("timeout")
 		if err != nil {
@@ -67,7 +68,7 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 			for _, server := range servers {
 				server := strings.TrimSpace(server)
 				eg.Go(func() error {
-					resp, err := dj.Query(gtx, httpClient, server, req)
+					resp, err := doh.SimpleQuery(gtx, httpClient, server, req)
 					if err != nil {
 						return err
 					}
@@ -91,14 +92,14 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 
 func init() {
 	defaultServers := []string{
-		dj.Google,
-		dj.Cloudflare,
-		dj.Quad9,
+		doh.Google,
+		doh.Cloudflare,
+		doh.Quad9,
 	}
 
-	CommandQuery.Flags().String("type", "A", "dns record type to query for (\"A\", \"AAAA\", \"MX\" ...)")
-	CommandQuery.Flags().StringSlice("servers", defaultServers, "sources to use for query")
-	CommandQuery.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0 for no timeout")
+	CommandQuery.Flags().String("type", "A", "dns record type to query for each domain, such as A, AAAA, MX, etc.")
+	CommandQuery.Flags().StringSlice("servers", defaultServers, "servers to query")
+	CommandQuery.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0s for no timeout")
 
 	CommandRoot.AddCommand(CommandQuery)
 }
