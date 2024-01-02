@@ -14,7 +14,7 @@ func TestQuery(t *testing.T) {
 	t.Run("google", func(t *testing.T) {
 		req := &dj.Request{
 			Name: "google.com",
-			Type: dj.RecordA,
+			Type: "A",
 		}
 
 		resp, err := dj.Query(context.Background(), client, dj.Google, req)
@@ -30,7 +30,7 @@ func TestQuery(t *testing.T) {
 	t.Run("cloudflare", func(t *testing.T) {
 		req := &dj.Request{
 			Name: "cloudflare.com",
-			Type: dj.RecordA,
+			Type: "A",
 		}
 
 		resp, err := dj.Query(context.Background(), client, dj.Cloudflare, req)
@@ -46,7 +46,7 @@ func TestQuery(t *testing.T) {
 	t.Run("quad9", func(t *testing.T) {
 		req := &dj.Request{
 			Name: "yahoo.com",
-			Type: dj.RecordA,
+			Type: "A",
 		}
 
 		resp, err := dj.Query(context.Background(), client, dj.Quad9, req)

@@ -13,37 +13,20 @@ import (
 	"net/http"
 )
 
-// Record is a DNS record type (e.g. A, AAAA, MX, ANY).
-type Record string
-
-var (
-	// RecordA is a DNS A record, which maps a domain name to IPv4 address.
-	RecordA = Record("A")
-
-	// RecordAAAA is a DNS AAAA record, which maps a domain name to IPv6 address.
-	RecordAAAA = Record("AAAA")
-
-	// RecordMX is a DNS MX record, which maps a domain name to a mail exchange server.
-	RecordMX = Record("MX")
-
-	// RecordTXT is a DNS TXT record, which maps a domain name to text data.
-	RecordANY = Record("ANY")
-)
-
-// Request is a DNS query to a DoH server.
+// Request is a DNS query to a DoH server using the JSON API.
 type Request struct {
 	Name string // domain name (e.g. google.com)
-	Type Record // record type (e.g. A, AAAA, MX, ANY)
+	Type string // record type (e.g. A, AAAA, MX, ANY)
 }
 
-// Response is a DNS response from a DoH server.
+// Response is a DNS response from a DoH JSON API server.
 type Response struct {
-	Status   int  `json:"Status"`
-	TC       bool `json:"TC"`
-	RD       bool `json:"RD"`
-	RA       bool `json:"RA"`
-	AD       bool `json:"AD"`
-	CD       bool `json:"CD"`
+	Status   int  `json:"Status"` // DNS response code
+	TC       bool `json:"TC"`     // Truncated
+	RD       bool `json:"RD"`     // Recursion Desired
+	RA       bool `json:"RA"`     // Recursion Available
+	AD       bool `json:"AD"`     // Authenticated Data
+	CD       bool `json:"CD"`     // Checking Disabled
 	Question []struct {
 		Name string `json:"name"`
 		Type int    `json:"type"`
