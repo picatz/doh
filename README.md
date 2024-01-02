@@ -49,10 +49,12 @@ Usage:
   doh query domains... [flags]
 
 Flags:
-  -h, --help               help for query
-      --servers strings    sources to use for query (default [https://dns.google.com/resolve,https://cloudflare-dns.com/dns-query,https://dns.quad9.net:5053/dns-query])
-      --timeout duration   timeout for query, 0 for no timeout (default 30s)
-      --type string        dns record type to query for ("A", "AAAA", "MX" ...) (default "A")
+  -h, --help                      help for query
+      --resolver-addr string      address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53)
+      --resolver-network string   protocol to use for resolving DoH server names (e.g. udp, tcp) (default "udp")
+      --servers strings           servers to query (default [https://dns.google/dns-query,https://cloudflare-dns.com/dns-query,https://dns.quad9.net:5053/dns-query])
+      --timeout duration          timeout for query, 0s for no timeout (default 30s)
+      --type string               dns record type to query for each domain, such as A, AAAA, MX, etc. (default "A")
 ```
 
 # Example Usage
