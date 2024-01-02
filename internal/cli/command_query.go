@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -43,6 +45,38 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 		}
 
 		httpClient := cleanhttp.DefaultClient()
+
+		resolverAddr, err := cmd.Flags().GetString("resolver-addr")
+		if err != nil {
+			return fmt.Errorf("invalid resolver address: %w", err)
+		}
+
+		resolverNetwork, err := cmd.Flags().GetString("resolver-network")
+		if err != nil {
+			return fmt.Errorf("invalid resolver network: %w", err)
+		}
+
+		if resolverAddr != "" {
+			dialer := &net.Dialer{
+				Resolver: &net.Resolver{
+					PreferGo: true,
+					Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+						d := net.Dialer{
+							Timeout: timeout,
+						}
+						conn, err := d.DialContext(ctx, resolverNetwork, resolverAddr)
+						if err != nil {
+							return nil, fmt.Errorf("error dialing with custom resolver: %w", err)
+						}
+						return conn, nil
+					},
+				},
+			}
+
+			httpClient.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, addr)
+			}
+		}
 
 		output := json.NewEncoder(cmd.OutOrStdout())
 
@@ -100,6 +134,8 @@ func init() {
 	CommandQuery.Flags().String("type", "A", "dns record type to query for each domain, such as A, AAAA, MX, etc.")
 	CommandQuery.Flags().StringSlice("servers", defaultServers, "servers to query")
 	CommandQuery.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0s for no timeout")
+	CommandQuery.Flags().String("resolver-addr", "", "address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53)")
+	CommandQuery.Flags().String("resolver-network", "udp", "protocol to use for resolving DoH server names (e.g. udp, tcp)")
 
 	CommandRoot.AddCommand(CommandQuery)
 }
