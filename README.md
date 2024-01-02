@@ -1,7 +1,6 @@
 # doh
 
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/picatz/doh/blob/master/LICENSE)
-[![CircleCI Status](https://circleci.com/gh/picatz/doh.svg?style=shield&circle-token=:circle-token)](https://circleci.com/gh/picatz/doh)
 [![go report](https://goreportcard.com/badge/github.com/picatz/doh)](https://goreportcard.com/report/github.com/picatz/doh)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/picatz/doh/pulls)
 
@@ -31,6 +30,7 @@ Usage:
   doh [command]
 
 Available Commands:
+  completion  Generate the autocompletion script for the specified shell
   help        Help about any command
   query       Query domains for DNS records in JSON
 
@@ -49,88 +49,61 @@ Usage:
   doh query [domains] [flags]
 
 Flags:
-      --custom-only                 query custom source only
-      --custom-source-name string   optional custom source name (default "custom")
-      --custom-source-url string    custom source base url
-  -h, --help                        help for query
-      --joined                      join results into a JSON object
-      --labels                      show source of the dns record
-      --limit int                   limit the number of responses from backend sources (default 1)
-      --lock int                    number of concurrent workers (default 4)
-      --no-limit                    do not limit results
-      --no-timeout                  do not timeout
-      --resolver-addr string        custom resolver address:port to use (8.8.8.8:53)
-      --resolver-network string     custom resolver network transport to use (udp/tcp) (default "udp")
-      --sources strings             sources to use for query (default [google,cloudflare,quad9])
-      --timeout int                 number of seconds until timeout (default 30)
-      --type string                 dns record type to query for ("A", "AAAA", "MX" ...) (default "A")
-      --verbose                     show errors and other available diagnostic information
+  -h, --help               help for query
+      --servers strings    sources to use for query (default [https://dns.google.com/resolve,https://cloudflare-dns.com/dns-query,https://dns.quad9.net:5053/dns-query])
+      --timeout duration   timeout for query, 0 for no timeout (default 30s)
+      --type string        dns record type to query for ("A", "AAAA", "MX" ...) (default "A")
 ```
 
 # Example Usage
-Let's say I'm curious about `google.com`'s IPv4 address and want to use `doh` to find out what it is.
+
+Let's say we're curious about `google.com`'s IPv4 address. We can use `doh` to query three different sources (Google, Cloudflare, and Quad9) for the DNS `A` record type:
+
 ```console
 $ doh query google.com
-{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":100,"data":"172.217.8.206"}]}
-```
-
-You can see the source of the DNS record using the `--labels` flag:
-```console
-$ doh query google.com --labels
-{"label":"quad9","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":56,"data":"172.217.8.206"}]}}
-```
-
-You can wait for responses from all sources with the `--no-limit` flag:
-```console
-$ doh query google.com --labels --no-limit
-{"label":"quad9","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":40,"data":"216.58.216.238"}]}}
-{"label":"google","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.113"},{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.101"},{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.100"},{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.138"},{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.139"},{"name":"google.com.","type":1,"TTL":213,"data":"108.177.111.102"}]}}
-{"label":"cloudflare","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":195,"data":"172.217.1.46"}]}}
+{"server":"https://dns.google.com/resolve","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":283,"data":"172.217.2.46"}]}}
+{"server":"https://cloudflare-dns.com/dns-query","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com","type":1}],"Answer":[{"name":"google.com","type":1,"TTL":129,"data":"142.251.178.101"},{"name":"google.com","type":1,"TTL":129,"data":"142.251.178.138"},{"name":"google.com","type":1,"TTL":129,"data":"142.251.178.113"},{"name":"google.com","type":1,"TTL":129,"data":"142.251.178.102"},{"name":"google.com","type":1,"TTL":129,"data":"142.251.178.100"},{"name":"google.com","type":1,"TTL":129,"data":"142.251.178.139"}]}}
+{"server":"https://dns.quad9.net:5053/dns-query","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":34,"data":"142.250.191.142"}]}}
 ```
 
 To get just all of the IPs from all of those sources, we could do the following:
+
 ```console
-$ doh query google.com --no-limit --joined | jq 'map(.Answer | map(.data)) | flatten | .[]' --raw-output
-172.217.8.206
-108.177.111.139
-108.177.111.113
-108.177.111.138
-108.177.111.101
-108.177.111.100
-108.177.111.102
-172.217.4.206
+$ doh query google.com | jq -r '.resp.Answer[0].data'
+172.217.2.46
+142.251.178.113
+142.250.191.142
 ```
 
-If we want to filter the output to just the first IP address in the first JSON record with `jq`:
-```console
-$ doh query google.com | jq .Answer[0].data --raw-output
-172.217.8.206
-```
+We can also query multiple domains at once:
 
-Now, perhaps `google.com` isn't the _only_ record we're also interested in, since we also want `bing.com`, which is where the _cool kids_ are at.
 ```console
-$ doh query bing.com apple.com --limit 2 | jq '(.Answer[0].name|rtrimstr(".")) + "\t" + .Answer[0].data' --raw-output
-apple.com	172.217.8.206
-bing.com	204.79.197.200
+$ doh query bing.com google.com | jq -r '(.resp.Answer[0].name|rtrimstr(".")) + "\t" + .resp.Answer[0].data' | sort -n
+bing.com        13.107.21.200
+bing.com        204.79.197.200
+bing.com        204.79.197.200
+google.com      142.250.191.142
+google.com      142.251.178.102
+google.com      172.217.0.174
 ```
 
 To get `IPv6` records, we'll need to specify the `--type` flag, like so:
 ```
 $ doh query google.com --type AAAA
+...
 ```
 
 To get `MX` records:
 ```
 $ doh query google.com --type MX
+...
 ```
 
-To get `ANY` records (which is only implemented by the `google` source):
+To get `ANY` records (which is only implemented by Google at the moment):
 ```
-$ doh query google.com --type ANY --sources=google
+$ doh query google.com --type ANY --servers=https://dns.google.com/resolve
+...
 ```
 
-To use a custom DNS over HTTPs source (in this case re-using the google source `https://dns.google.com/resolve` as a custom one):
-```console
-$ doh query google.com --custom-only --custom-source-url="https://dns.google.com/resolve" --labels
-{"label":"custom","resp":{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"google.com.","type":1}],"Answer":[{"name":"google.com.","type":1,"TTL":123,"data":"216.58.192.142"}]}}
-```
+> [!TIP]
+>  To use a custom DNS over HTTPs source specify a custom URL with the `--servers` flag.
