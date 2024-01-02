@@ -43,10 +43,15 @@ Use "doh [command] --help" for more information about a command.
 To get more information for the `query` command:
 ```console
 $ doh query --help
-Query domains for DNS records in JSON
+Query DNS records from DoH servers using the given domains and record type.
+
+Users can specify which servers to use for the query, or use the default servers from Google, Cloudflare, and Quad9.
+They can also specify a timeout for the query, which defaults to 30 seconds if not specified. Each server is queried
+in parallel, and each domain is queried in parallel. Results are streamed to STDOUT as JSON newline delimited objects,
+which can be piped to other commands (e.g. jq) or redirected to a file.
 
 Usage:
-  doh query [domains] [flags]
+  doh query domains... [flags]
 
 Flags:
   -h, --help               help for query
@@ -106,4 +111,4 @@ $ doh query google.com --type ANY --servers=https://dns.google.com/resolve
 ```
 
 > [!TIP]
->  To use a custom DNS over HTTPs source specify a custom URL with the `--servers` flag.
+>  To use a custom DNS over HTTPs source, specify the URL with the `--servers` flag.
