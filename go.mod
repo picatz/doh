@@ -5,7 +5,7 @@ go 1.21
 require (
 	github.com/hashicorp/go-cleanhttp v0.5.2
 	github.com/miekg/dns v1.1.58
-	github.com/spf13/cobra v1.8.0
+	github.com/spf13/cobra v1.8.1
 	golang.org/x/sync v0.6.0
 )
 
