@@ -1,12 +1,13 @@
 name: "Test"
 
 on:
+  # TODO: move to "main" branch
   push:
     branches:
-      - "main"
+      - "master"
   pull_request:
     branches:
-      - "main"
+      - "master"
 
 jobs:
   run:
