@@ -21,6 +21,7 @@ func TestQuery(t *testing.T) {
 		resp, err := doh.SimpleQuery(context.Background(), client, doh.Google, req)
 		if err != nil {
 			t.Error(err)
+			return
 		}
 
 		if len(resp.Answer) == 0 {
@@ -37,6 +38,7 @@ func TestQuery(t *testing.T) {
 		resp, err := doh.SimpleQuery(context.Background(), client, doh.Cloudflare, req)
 		if err != nil {
 			t.Error(err)
+			return
 		}
 
 		if len(resp.Answer) == 0 {
@@ -53,6 +55,7 @@ func TestQuery(t *testing.T) {
 		resp, err := doh.SimpleQuery(context.Background(), client, doh.Quad9, req)
 		if err != nil {
 			t.Error(err)
+			return
 		}
 
 		if len(resp.Answer) == 0 {
@@ -69,7 +72,7 @@ func TestQuery(t *testing.T) {
 			"https://dns.quad9.net/dns-query",
 			"https://doh.opendns.com/dns-query",
 			"https://doh.xfinity.com/dns-query",
-			"https://doh.powerdns.org",
+			// "https://doh.powerdns.org", (connect: network is unreachable)
 			// "https://doh.ffmuc.net/dns-query",
 		}
 
@@ -83,6 +86,7 @@ func TestQuery(t *testing.T) {
 				resp, err := doh.SimpleQuery(context.Background(), client, server, req)
 				if err != nil {
 					t.Error(err)
+					return
 				}
 
 				if len(resp.Answer) == 0 {
