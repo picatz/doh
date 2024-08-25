@@ -20,12 +20,12 @@ import (
 var queryTable = func() []struct {
 	name   string
 	server string
-	req    dns.Msg
+	req    *dns.Msg
 } {
 	var tests []struct {
 		name   string
 		server string
-		req    dns.Msg
+		req    *dns.Msg
 	}
 
 	var domains = []string{
@@ -88,7 +88,7 @@ var queryTable = func() []struct {
 	for _, server := range servers {
 		for _, domain := range domains {
 			for _, qtype := range types {
-				req := dns.Msg{
+				req := &dns.Msg{
 					MsgHdr: dns.MsgHdr{
 						RecursionDesired: true,
 					},
@@ -104,7 +104,7 @@ var queryTable = func() []struct {
 				tests = append(tests, struct {
 					name   string
 					server string
-					req    dns.Msg
+					req    *dns.Msg
 				}{
 					name:   server.name + "-" + domain + "-" + dns.TypeToString[qtype],
 					server: server.server,
@@ -227,7 +227,7 @@ func TestKnownServers_Query(t *testing.T) {
 
 	client := testClient(t)
 
-	req := dns.Msg{
+	req := &dns.Msg{
 		MsgHdr: dns.MsgHdr{
 			RecursionDesired: true,
 		},

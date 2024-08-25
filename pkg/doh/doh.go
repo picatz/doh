@@ -67,7 +67,7 @@ var (
 )
 
 // Query performs a DNS query using a DoH server URL and a DNS message.
-func Query(ctx context.Context, httpClient *http.Client, serverURL string, dnsReq dns.Msg) (*dns.Msg, error) {
+func Query(ctx context.Context, httpClient *http.Client, serverURL string, dnsReq *dns.Msg) (*dns.Msg, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrFailedHTTPRequest, err)
@@ -115,10 +115,10 @@ func Query(ctx context.Context, httpClient *http.Client, serverURL string, dnsRe
 //
 // This is provided for backwards compatibility with the (original)
 // DoH JSON API (and doh CLI tool), but it is generally recommended to use the
-// newer [RFC8484] implementation [Query] instead for new applications
+// newer [RFC 8484] implementation [Query] instead for new applications
 // or more advanced use cases.
 //
-// [RFC8484]: https://tools.ietf.org/html/rfc8484
+// [RFC 8484]: https://tools.ietf.org/html/rfc8484
 func SimpleQuery(ctx context.Context, httpClient *http.Client, server string, req *dj.Request) (*dj.Response, error) {
 	var qClass uint16
 	switch req.Type {
@@ -128,7 +128,7 @@ func SimpleQuery(ctx context.Context, httpClient *http.Client, server string, re
 		qClass = dns.ClassINET
 	}
 
-	dnsResp, err := Query(ctx, httpClient, server, dns.Msg{
+	dnsResp, err := Query(ctx, httpClient, server, &dns.Msg{
 		MsgHdr: dns.MsgHdr{
 			RecursionDesired: true,
 		},
