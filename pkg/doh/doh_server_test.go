@@ -149,9 +149,6 @@ func TestNewServer(t *testing.T) {
 			}(),
 			check: checkSuccess,
 		},
-		{
-			name: "valid request (with doh.Query)",
-		},
 	}
 
 	for _, test := range tests {
