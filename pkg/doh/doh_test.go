@@ -227,23 +227,23 @@ func TestKnownServers_Query(t *testing.T) {
 
 	client := testClient(t)
 
+	req := dns.Msg{
+		MsgHdr: dns.MsgHdr{
+			RecursionDesired: true,
+		},
+		Question: []dns.Question{
+			{
+				Name:   dns.Fqdn("google.com"),
+				Qtype:  dns.TypeA,
+				Qclass: dns.ClassINET,
+			},
+		},
+	}
+
 	for _, server := range doh.KnownServerURLs {
 		server := server
 		t.Run(server, func(t *testing.T) {
 			t.Parallel()
-
-			req := dns.Msg{
-				MsgHdr: dns.MsgHdr{
-					RecursionDesired: true,
-				},
-				Question: []dns.Question{
-					{
-						Name:   dns.Fqdn("google.com"),
-						Qtype:  dns.TypeA,
-						Qclass: dns.ClassINET,
-					},
-				},
-			}
 
 			resp, err := doh.Query(ctx, client, server, req)
 			if err != nil {
