@@ -7,6 +7,7 @@ package doh
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,20 +17,56 @@ import (
 	"github.com/picatz/doh/pkg/dj"
 )
 
-// KnownServer is a known DoH server URL.
-type KnownServer = string
+// KnownServerURL is a known DoH server URL.
+type KnownServerURL = string
 
-var (
-	Google     KnownServer = "https://dns.google/dns-query"
-	Cloudflare KnownServer = "https://cloudflare-dns.com/dns-query"
-	Quad9      KnownServer = "https://dns.quad9.net:5053/dns-query"
+const (
+	Google     KnownServerURL = "https://dns.google/dns-query"
+	Cloudflare KnownServerURL = "https://cloudflare-dns.com/dns-query"
+	Quad9      KnownServerURL = "https://dns.quad9.net:5053/dns-query"
+	OpenDNS    KnownServerURL = "https://doh.opendns.com/dns-query"
+	Xfinity    KnownServerURL = "https://doh.xfinity.com/dns-query"
+	AdGuard    KnownServerURL = "https://dns.adguard.com/dns-query"
+	LibreDNS   KnownServerURL = "https://doh.libredns.gr/dns-query"
+	NextDNS    KnownServerURL = "https://dns.nextdns.io/dns-query"
+	CIRA       KnownServerURL = "https://private.canadianshield.cira.ca/dns-query"
+	Mozilla    KnownServerURL = "https://mozilla.cloudflare-dns.com/dns-query"
 )
 
-// Query performs a DNS query using a DoH server.
-func Query(ctx context.Context, httpClient *http.Client, server string, dnsReq dns.Msg) (*dns.Msg, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, server, nil)
+// KnownServerURLs is a list of known DoH server URLs that can be used
+// with the [Query] function.
+var KnownServerURLs = []KnownServerURL{
+	Google,
+	Cloudflare,
+	Quad9,
+	OpenDNS,
+	Xfinity,
+	AdGuard,
+	LibreDNS,
+	NextDNS,
+	CIRA,
+	Mozilla,
+}
+
+var (
+	// ErrFailedHTTPRequest is returned when an HTTP request fails to be created or sent.
+	ErrFailedHTTPRequest = errors.New("doh: failed HTTP request")
+
+	// ErrFailedHTTPResponseRead is returned when an HTTP response (body) fails to be read.
+	ErrFailedHTTPResponseRead = errors.New("doh: failed HTTP response read")
+
+	// ErrFailedDNSRequestPack is returned when a DNS request fails to be packed.
+	ErrFailedDNSRequestPack = errors.New("doh: failed DNS request pack")
+
+	// ErrFailedDNSResponseUnpack is returned when a DNS response fails to be unpacked.
+	ErrFailedDNSResponseUnpack = errors.New("doh: failed DNS response unpack")
+)
+
+// Query performs a DNS query using a DoH server URL and a DNS message.
+func Query(ctx context.Context, httpClient *http.Client, serverURL string, dnsReq dns.Msg) (*dns.Msg, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("doh: error creating HTTP request: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrFailedHTTPRequest, err)
 	}
 
 	httpReq.Header.Set("Accept", "application/dns-message")
@@ -38,7 +75,7 @@ func Query(ctx context.Context, httpClient *http.Client, server string, dnsReq d
 
 	dnsReqBytes, err := dnsReq.Pack()
 	if err != nil {
-		return nil, fmt.Errorf("doh: error packing DNS request: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrFailedDNSRequestPack, err)
 	}
 
 	q.Set("dns", base64.RawURLEncoding.EncodeToString(dnsReqBytes))
@@ -47,23 +84,23 @@ func Query(ctx context.Context, httpClient *http.Client, server string, dnsReq d
 
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("doh: error performing HTTP request: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrFailedHTTPRequest, err)
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("doh: %q HTTP request returned status code: %d (%s)", server, httpResp.StatusCode, http.StatusText(httpResp.StatusCode))
+		return nil, fmt.Errorf("%w: %s", ErrFailedHTTPRequest, httpResp.Status)
 	}
 
 	body, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("doh: error reading HTTP response body: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrFailedHTTPResponseRead, err)
 	}
 
 	dnsResp := &dns.Msg{}
 	err = dnsResp.Unpack(body)
 	if err != nil {
-		return nil, fmt.Errorf("doh: error unpacking DNS response: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrFailedDNSResponseUnpack, err)
 	}
 
 	return dnsResp, nil
@@ -72,21 +109,13 @@ func Query(ctx context.Context, httpClient *http.Client, server string, dnsReq d
 // SimpleQuery performs a DNS query using a DoH server using the
 // dj (DNS JSON) format types to represent the request and response.
 //
-// This is provided for backwards compatibility with the (original)
+// Deprecated: this is provided for backwards compatibility with the (original)
 // DoH JSON API (and doh CLI tool), but it is generally recommended to use the
 // newer [RFC8484] implementation [Query] instead for new applications
 // or more advanced use cases.
 //
 // [RFC8484]: https://tools.ietf.org/html/rfc8484
 func SimpleQuery(ctx context.Context, httpClient *http.Client, server string, req *dj.Request) (*dj.Response, error) {
-	var qClass uint16
-	switch req.Type {
-	case "ANY":
-		qClass = dns.ClassANY
-	default:
-		qClass = dns.ClassINET
-	}
-
 	dnsResp, err := Query(ctx, httpClient, server, dns.Msg{
 		MsgHdr: dns.MsgHdr{
 			RecursionDesired: true,
@@ -95,7 +124,7 @@ func SimpleQuery(ctx context.Context, httpClient *http.Client, server string, re
 			{
 				Name:   dns.Fqdn(req.Name),
 				Qtype:  dns.StringToType[req.Type],
-				Qclass: qClass,
+				Qclass: dns.StringToClass[req.Type],
 			},
 		},
 	})
