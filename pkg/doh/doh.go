@@ -17,6 +17,10 @@ import (
 	"github.com/picatz/doh/pkg/dj"
 )
 
+// KnownServer is a known DoH server URL.
+// Deprecated: Use KnownServerURL instead.
+type KnownServer = KnownServerURL
+
 // KnownServerURL is a known DoH server URL.
 type KnownServerURL = string
 
