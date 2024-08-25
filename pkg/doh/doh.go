@@ -116,6 +116,14 @@ func Query(ctx context.Context, httpClient *http.Client, serverURL string, dnsRe
 //
 // [RFC8484]: https://tools.ietf.org/html/rfc8484
 func SimpleQuery(ctx context.Context, httpClient *http.Client, server string, req *dj.Request) (*dj.Response, error) {
+	var qClass uint16
+	switch req.Type {
+	case "ANY":
+		qClass = dns.ClassANY
+	default:
+		qClass = dns.ClassINET
+	}
+
 	dnsResp, err := Query(ctx, httpClient, server, dns.Msg{
 		MsgHdr: dns.MsgHdr{
 			RecursionDesired: true,
@@ -124,7 +132,7 @@ func SimpleQuery(ctx context.Context, httpClient *http.Client, server string, re
 			{
 				Name:   dns.Fqdn(req.Name),
 				Qtype:  dns.StringToType[req.Type],
-				Qclass: dns.StringToClass[req.Type],
+				Qclass: qClass,
 			},
 		},
 	})

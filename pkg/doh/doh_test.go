@@ -160,7 +160,6 @@ func testClient(t *testing.T) *http.Client {
 	}
 
 	retryClient.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		t.Fatal(err)
 		return nil, err
 	}
 
