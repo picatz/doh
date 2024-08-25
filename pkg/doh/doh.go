@@ -109,7 +109,7 @@ func Query(ctx context.Context, httpClient *http.Client, serverURL string, dnsRe
 // SimpleQuery performs a DNS query using a DoH server using the
 // dj (DNS JSON) format types to represent the request and response.
 //
-// Deprecated: this is provided for backwards compatibility with the (original)
+// This is provided for backwards compatibility with the (original)
 // DoH JSON API (and doh CLI tool), but it is generally recommended to use the
 // newer [RFC8484] implementation [Query] instead for new applications
 // or more advanced use cases.
