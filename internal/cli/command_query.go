@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-cleanhttp"
+	"github.com/hashicorp/go-retryablehttp"
 	"github.com/picatz/doh/pkg/dj"
 	"github.com/picatz/doh/pkg/doh"
 	"github.com/spf13/cobra"
@@ -19,6 +20,32 @@ import (
 type result struct {
 	Server string       `json:"server"`
 	Resp   *dj.Response `json:"resp"`
+}
+
+func newClient(retryMax int) (*http.Client, error) {
+	retryClient := retryablehttp.NewClient()
+
+	retryClient.RetryMax = retryMax
+
+	retryClient.HTTPClient = cleanhttp.DefaultClient()
+
+	retryClient.Logger = nil // TODO: consider logger
+
+	retryClient.CheckRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
+		return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
+	}
+
+	retryClient.Backoff = func(min, max time.Duration, attemptNum int, resp *http.Response) time.Duration {
+		return retryablehttp.DefaultBackoff(min, max, attemptNum, resp)
+	}
+
+	retryClient.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
+		return nil, err
+	}
+
+	httpClient := retryClient.StandardClient()
+
+	return httpClient, nil
 }
 
 var CommandQuery = &cobra.Command{
@@ -44,7 +71,15 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 			return fmt.Errorf("invalid timeout: %w", err)
 		}
 
-		httpClient := cleanhttp.DefaultClient()
+		retryMax, err := cmd.Flags().GetInt("retry-max")
+		if err != nil {
+			return fmt.Errorf("invalid retry max: %w", err)
+		}
+
+		httpClient, err := newClient(retryMax)
+		if err != nil {
+			return fmt.Errorf("error creating http client: %w", err)
+		}
 
 		resolverAddr, err := cmd.Flags().GetString("resolver-addr")
 		if err != nil {
@@ -136,6 +171,7 @@ func init() {
 	CommandQuery.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0s for no timeout")
 	CommandQuery.Flags().String("resolver-addr", "", "address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53)")
 	CommandQuery.Flags().String("resolver-network", "udp", "protocol to use for resolving DoH server names (e.g. udp, tcp)")
+	CommandQuery.Flags().Int("retry-max", 10, "maximum number of retries for each query")
 
 	CommandRoot.AddCommand(CommandQuery)
 }
