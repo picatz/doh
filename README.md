@@ -12,22 +12,28 @@ Using [`cloudflare`](https://developers.cloudflare.com/1.1.1.1/dns-over-https/),
 > Since `doh` outputs everything as JSON, it pairs really well with tools like [`jq`](https://stedolan.github.io/jq/) to parse relevant parts of the output for your purposes.
 
 # Install
+
 To get started, you will need [`go`](https://golang.org/doc/install) installed and properly configured.
+
 ```shell
 $ go install -v github.com/picatz/doh@latest
 ```
 
 # Help Menus
+
 The `--help` command-line flag can show you the top-level help menu.
+
 ```console
 $ doh --help
+doh is a CLI for querying DNS records from DoH servers
+
 Usage:
   doh [command]
 
 Available Commands:
   completion  Generate the autocompletion script for the specified shell
   help        Help about any command
-  query       Query domains for DNS records in JSON
+  query       Query DNS records from DoH servers
 
 Flags:
   -h, --help   help for doh
@@ -52,6 +58,7 @@ Flags:
   -h, --help                      help for query
       --resolver-addr string      address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53)
       --resolver-network string   protocol to use for resolving DoH server names (e.g. udp, tcp) (default "udp")
+      --retry-max int             maximum number of retries for each query (default 10)
       --servers strings           servers to query (default [https://dns.google/dns-query,https://cloudflare-dns.com/dns-query,https://dns.quad9.net:5053/dns-query])
       --timeout duration          timeout for query, 0s for no timeout (default 30s)
       --type string               dns record type to query for each domain, such as A, AAAA, MX, etc. (default "A")
@@ -90,19 +97,22 @@ google.com      172.217.0.174
 ```
 
 To get `IPv6` records, we'll need to specify the `--type` flag, like so:
-```
+
+```console
 $ doh query google.com --type AAAA
 ...
 ```
 
 To get `MX` records:
-```
+
+```console
 $ doh query google.com --type MX
 ...
 ```
 
 To get `ANY` records (which is only implemented by Google at the moment):
-```
+
+```console
 $ doh query google.com --type ANY --servers=https://dns.google.com/resolve
 ...
 ```
