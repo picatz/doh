@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/hashicorp/go-cleanhttp"
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/pkg/doh"
 )
@@ -193,4 +194,39 @@ func TestNewServer(t *testing.T) {
 			t.Logf("answer: %s", answer.String())
 		}
 	})
+}
+
+func TestForwarder(t *testing.T) {
+	mux := doh.NewServerMux(doh.Forwarder(cleanhttp.DefaultClient(), doh.Google))
+
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	ctx := testContext(t)
+
+	testServerURL := testServer.URL + "/dns-query"
+
+	resp, err := doh.Query(ctx, testClient(t), testServerURL, &dns.Msg{
+		MsgHdr: dns.MsgHdr{
+			RecursionDesired: true,
+		},
+		Question: []dns.Question{
+			{
+				Name:   dns.Fqdn("google.com"),
+				Qtype:  dns.TypeA,
+				Qclass: dns.ClassINET,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resp.Answer) == 0 {
+		t.Error("got no answer for known domain")
+	}
+
+	for _, answer := range resp.Answer {
+		t.Logf("answer: %s", answer.String())
+	}
 }
