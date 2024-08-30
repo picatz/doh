@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -22,7 +23,8 @@ type result struct {
 	Resp   *dj.Response `json:"resp"`
 }
 
-func newClient(retryMax int) (*http.Client, error) {
+// newHTTPClient returns a new HTTP client, or an error if one occurs.
+func newHTTPClient(retryMax int, insecureSkipVerify bool) (*http.Client, error) {
 	retryClient := retryablehttp.NewClient()
 
 	retryClient.RetryMax = retryMax
@@ -30,6 +32,16 @@ func newClient(retryMax int) (*http.Client, error) {
 	retryClient.HTTPClient = cleanhttp.DefaultClient()
 
 	retryClient.Logger = nil // TODO: consider logger
+
+	if insecureSkipVerify {
+		transport := cleanhttp.DefaultTransport()
+
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+		}
+
+		retryClient.HTTPClient.Transport = transport
+	}
 
 	retryClient.CheckRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
 		return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
@@ -76,7 +88,12 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 			return fmt.Errorf("invalid retry max: %w", err)
 		}
 
-		httpClient, err := newClient(retryMax)
+		insecureSkipVerify, err := cmd.Flags().GetBool("insecure-skip-verify")
+		if err != nil {
+			return fmt.Errorf("invalid insecure skip verify: %w", err)
+		}
+
+		httpClient, err := newHTTPClient(retryMax, insecureSkipVerify)
 		if err != nil {
 			return fmt.Errorf("error creating http client: %w", err)
 		}
@@ -172,6 +189,7 @@ func init() {
 	CommandQuery.Flags().String("resolver-addr", "", "address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53)")
 	CommandQuery.Flags().String("resolver-network", "udp", "protocol to use for resolving DoH server names (e.g. udp, tcp)")
 	CommandQuery.Flags().Int("retry-max", 10, "maximum number of retries for each query")
+	CommandQuery.Flags().BoolP("insecure-skip-verify", "k", false, "allow insecure server connections (e.g. self-signed TLS certificates)")
 
 	CommandRoot.AddCommand(CommandQuery)
 }

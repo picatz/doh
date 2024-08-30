@@ -46,7 +46,7 @@ func TestCommand(t *testing.T) {
 			},
 		},
 		{
-			name: "google.com",
+			name: "query google.com",
 			args: []string{"query", "google.com"},
 			check: func(t *testing.T, output io.Reader) {
 				b, err := io.ReadAll(output)
@@ -62,8 +62,24 @@ func TestCommand(t *testing.T) {
 			},
 		},
 		{
-			name: "cloudflare.com",
+			name: "query cloudflare.com",
 			args: []string{"query", "cloudflare.com"},
+			check: func(t *testing.T, output io.Reader) {
+				b, err := io.ReadAll(output)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if len(b) == 0 {
+					t.Fatal("got no output for known domain")
+				}
+
+				t.Log(string(b))
+			},
+		},
+		{
+			name: "insecurely query google.com",
+			args: []string{"query", "google.com", "--insecure-skip-verify"},
 			check: func(t *testing.T, output io.Reader) {
 				b, err := io.ReadAll(output)
 				if err != nil {
