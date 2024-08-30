@@ -56,6 +56,7 @@ Usage:
 
 Flags:
   -h, --help                      help for query
+  -k, --insecure-skip-verify      allow insecure server connections (e.g. self-signed TLS certificates)
       --resolver-addr string      address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53)
       --resolver-network string   protocol to use for resolving DoH server names (e.g. udp, tcp) (default "udp")
       --retry-max int             maximum number of retries for each query (default 10)
