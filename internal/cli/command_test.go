@@ -3,9 +3,14 @@ package cli_test
 import (
 	"bytes"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/miekg/dns"
 	"github.com/picatz/doh/internal/cli"
+	"github.com/picatz/doh/pkg/doh"
 )
 
 func testCommand(t *testing.T, args ...string) io.Reader {
@@ -77,22 +82,6 @@ func TestCommand(t *testing.T) {
 				t.Log(string(b))
 			},
 		},
-		{
-			name: "insecurely query google.com",
-			args: []string{"query", "google.com", "--insecure-skip-verify"},
-			check: func(t *testing.T, output io.Reader) {
-				b, err := io.ReadAll(output)
-				if err != nil {
-					t.Fatal(err)
-				}
-
-				if len(b) == 0 {
-					t.Fatal("got no output for known domain")
-				}
-
-				t.Log(string(b))
-			},
-		},
 	}
 
 	for _, test := range tests {
@@ -102,4 +91,40 @@ func TestCommand(t *testing.T) {
 			test.check(t, output)
 		})
 	}
+}
+
+func TestCommand_Query_InsecureSkipVerify(t *testing.T) {
+	mux := doh.NewServerMux(func(w http.ResponseWriter, httpReq *http.Request, dnsReq *dns.Msg) (*dns.Msg, error) {
+		dnsResp := new(dns.Msg)
+		dnsResp.SetReply(dnsReq)
+		dnsResp.Answer = append(dnsResp.Answer, &dns.A{
+			Hdr: dns.RR_Header{
+				Name:   dnsReq.Question[0].Name,
+				Rrtype: dns.TypeA,
+				Class:  dns.ClassINET,
+				Ttl:    300,
+			},
+			A: net.ParseIP("8.8.8.8"),
+		})
+
+		return dnsResp, nil
+	})
+
+	server := httptest.NewTLSServer(mux)
+	t.Cleanup(server.Close)
+
+	dohServerURL := server.URL + "/dns-query"
+
+	output := testCommand(t, "query", "google.com", "--insecure-skip-verify", "--servers", dohServerURL)
+
+	b, err := io.ReadAll(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(b) == 0 {
+		t.Fatal("got no output for known domain")
+	}
+
+	t.Log(string(b))
 }
