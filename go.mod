@@ -7,7 +7,7 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.7
 	github.com/miekg/dns v1.1.62
 	github.com/spf13/cobra v1.8.1
-	golang.org/x/sync v0.9.0
+	golang.org/x/sync v0.10.0
 )
 
 require (
