@@ -6,10 +6,10 @@ toolchain go1.24.0
 
 require (
 	github.com/hashicorp/go-cleanhttp v0.5.2
-	github.com/hashicorp/go-retryablehttp v0.7.7
-	github.com/miekg/dns v1.1.65
+	github.com/hashicorp/go-retryablehttp v0.7.8
+	github.com/miekg/dns v1.1.66
 	github.com/spf13/cobra v1.9.1
-	golang.org/x/sync v0.13.0
+	golang.org/x/sync v0.15.0
 )
 
 require (
