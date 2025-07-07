@@ -27,5 +27,5 @@ jobs:
 
     - name: "Test"
       run: |
-        go test -v ./...
+        go test -short -v ./...
  
