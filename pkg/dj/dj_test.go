@@ -23,8 +23,7 @@ func TestQuery(t *testing.T) {
 
 		resp, err := dj.Query(context.Background(), client, dj.Google, req)
 		if err != nil {
-			t.Error(err)
-			return
+			t.Fatal(err)
 		}
 
 		if len(resp.Answer) == 0 {
