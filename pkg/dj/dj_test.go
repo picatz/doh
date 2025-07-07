@@ -43,8 +43,7 @@ func TestQuery(t *testing.T) {
 
 		resp, err := dj.Query(context.Background(), client, dj.Cloudflare, req)
 		if err != nil {
-			t.Error(err)
-			return
+			t.Fatal(err)
 		}
 
 		if len(resp.Answer) == 0 {
@@ -64,8 +63,7 @@ func TestQuery(t *testing.T) {
 
 		resp, err := dj.Query(context.Background(), client, dj.Quad9, req)
 		if err != nil {
-			t.Error(err)
-			return
+			t.Fatal(err)
 		}
 
 		if len(resp.Answer) == 0 {
