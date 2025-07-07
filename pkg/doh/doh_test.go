@@ -131,6 +131,15 @@ func testContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// skipNetworkTest skips the test if running in short mode.
+// This consolidates the repeated testing.Short() checks across network-dependent tests.
+func skipNetworkTest(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+}
+
 // testClient returns a new HTTP client with retryablehttp settings
 // for testing purposes with a cleanhttp.DefaultClient as the base.
 // It also sets the retry max to 10 for testing purposes, allowing
@@ -163,9 +172,7 @@ func testClient(t *testing.T) *http.Client {
 }
 
 func TestQuery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping network-dependent test in short mode")
-	}
+	skipNetworkTest(t)
 
 	ctx := testContext(t)
 
@@ -191,9 +198,7 @@ func TestQuery(t *testing.T) {
 }
 
 func TestSimpleQuery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping network-dependent test in short mode")
-	}
+	skipNetworkTest(t)
 
 	ctx := testContext(t)
 
@@ -227,9 +232,7 @@ func TestSimpleQuery(t *testing.T) {
 }
 
 func TestKnownServers_Query(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping network-dependent test in short mode")
-	}
+	skipNetworkTest(t)
 
 	ctx := testContext(t)
 
