@@ -72,10 +72,6 @@ var queryTable = func() []struct {
 			server: "https://doh.libredns.gr/ads",
 		},
 		{
-			name:   "quad9",
-			server: "https://dns.quad9.net/dns-query",
-		},
-		{
 			name:   "opendns",
 			server: "https://doh.opendns.com/dns-query",
 		},
