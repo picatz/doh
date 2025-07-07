@@ -32,13 +32,15 @@ func testCommand(t *testing.T, args ...string) io.Reader {
 
 func TestCommand(t *testing.T) {
 	tests := []struct {
-		name  string
-		args  []string
-		check func(t *testing.T, output io.Reader)
+		name        string
+		args        []string
+		skipNetwork bool
+		check       func(t *testing.T, output io.Reader)
 	}{
 		{
-			name: "help",
-			args: []string{"--help"},
+			name:        "help",
+			args:        []string{"--help"},
+			skipNetwork: false,
 			check: func(t *testing.T, output io.Reader) {
 				b, err := io.ReadAll(output)
 				if err != nil {
@@ -51,8 +53,9 @@ func TestCommand(t *testing.T) {
 			},
 		},
 		{
-			name: "query google.com",
-			args: []string{"query", "google.com"},
+			name:        "query google.com",
+			args:        []string{"query", "google.com"},
+			skipNetwork: true,
 			check: func(t *testing.T, output io.Reader) {
 				b, err := io.ReadAll(output)
 				if err != nil {
@@ -67,8 +70,9 @@ func TestCommand(t *testing.T) {
 			},
 		},
 		{
-			name: "query cloudflare.com",
-			args: []string{"query", "cloudflare.com"},
+			name:        "query cloudflare.com",
+			args:        []string{"query", "cloudflare.com"},
+			skipNetwork: true,
 			check: func(t *testing.T, output io.Reader) {
 				b, err := io.ReadAll(output)
 				if err != nil {
@@ -87,7 +91,7 @@ func TestCommand(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			// Skip network-dependent tests in short mode
-			if testing.Short() && (test.name == "query google.com" || test.name == "query cloudflare.com") {
+			if testing.Short() && test.skipNetwork {
 				t.Skip("skipping network-dependent test in short mode")
 			}
 
