@@ -197,6 +197,10 @@ func TestNewServer(t *testing.T) {
 }
 
 func TestForwarder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+
 	mux := doh.NewServerMux(doh.Forwarder(cleanhttp.DefaultClient(), doh.Google))
 
 	testServer := httptest.NewServer(mux)

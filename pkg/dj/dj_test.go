@@ -12,6 +12,10 @@ func TestQuery(t *testing.T) {
 	client := cleanhttp.DefaultClient()
 
 	t.Run("google", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("skipping network-dependent test in short mode")
+		}
+
 		req := &dj.Request{
 			Name: "google.com",
 			Type: "A",
@@ -20,6 +24,7 @@ func TestQuery(t *testing.T) {
 		resp, err := dj.Query(context.Background(), client, dj.Google, req)
 		if err != nil {
 			t.Error(err)
+			return
 		}
 
 		if len(resp.Answer) == 0 {
@@ -28,6 +33,10 @@ func TestQuery(t *testing.T) {
 	})
 
 	t.Run("cloudflare", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("skipping network-dependent test in short mode")
+		}
+
 		req := &dj.Request{
 			Name: "cloudflare.com",
 			Type: "A",
@@ -36,6 +45,7 @@ func TestQuery(t *testing.T) {
 		resp, err := dj.Query(context.Background(), client, dj.Cloudflare, req)
 		if err != nil {
 			t.Error(err)
+			return
 		}
 
 		if len(resp.Answer) == 0 {
@@ -44,6 +54,10 @@ func TestQuery(t *testing.T) {
 	})
 
 	t.Run("quad9", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("skipping network-dependent test in short mode")
+		}
+
 		req := &dj.Request{
 			Name: "yahoo.com",
 			Type: "A",
@@ -52,6 +66,7 @@ func TestQuery(t *testing.T) {
 		resp, err := dj.Query(context.Background(), client, dj.Quad9, req)
 		if err != nil {
 			t.Error(err)
+			return
 		}
 
 		if len(resp.Answer) == 0 {

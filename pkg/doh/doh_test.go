@@ -167,6 +167,10 @@ func testClient(t *testing.T) *http.Client {
 }
 
 func TestQuery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+
 	ctx := testContext(t)
 
 	client := testClient(t)
@@ -191,6 +195,10 @@ func TestQuery(t *testing.T) {
 }
 
 func TestSimpleQuery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+
 	ctx := testContext(t)
 
 	client := testClient(t)
@@ -223,6 +231,10 @@ func TestSimpleQuery(t *testing.T) {
 }
 
 func TestKnownServers_Query(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+
 	ctx := testContext(t)
 
 	client := testClient(t)

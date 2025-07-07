@@ -86,6 +86,11 @@ func TestCommand(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			// Skip network-dependent tests in short mode
+			if testing.Short() && (test.name == "query google.com" || test.name == "query cloudflare.com") {
+				t.Skip("skipping network-dependent test in short mode")
+			}
+
 			output := testCommand(t, test.args...)
 
 			test.check(t, output)
