@@ -40,8 +40,9 @@ type Exchanger interface {
 
 // Options configures upstreams created by [Parse].
 type Options struct {
-	// HTTPClient is used for DNS-over-HTTPS upstreams.
-	// If nil, [http.DefaultClient] is used.
+	// HTTPClient is used for DNS-over-HTTPS upstreams. Its CheckRedirect
+	// should refuse redirects to plain HTTP, as [CheckRedirect] does.
+	// If nil, a client using [CheckRedirect] is used.
 	HTTPClient *http.Client
 
 	// TLSConfig is used for DNS-over-TLS upstreams. Its ServerName defaults
@@ -77,9 +78,9 @@ func Parse(rawURL string, opts Options) (Exchanger, error) {
 	case "https":
 		client := opts.HTTPClient
 		if client == nil {
-			client = http.DefaultClient
+			client = &http.Client{CheckRedirect: CheckRedirect}
 		}
-		return &dohUpstream{url: u.String(), client: client}, nil
+		return &dohUpstream{url: u.String(), name: u.Redacted(), client: client}, nil
 	case "udp", "tcp":
 		addr := withDefaultPort(u.Host, "53")
 		return &dnsUpstream{
@@ -130,6 +131,7 @@ func withDefaultPort(host, port string) string {
 // dohUpstream is a DNS-over-HTTPS upstream.
 type dohUpstream struct {
 	url    string
+	name   string // url with any password redacted
 	client *http.Client
 }
 
@@ -144,11 +146,59 @@ func (u *dohUpstream) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, e
 		return nil, err
 	}
 
+	if err := validate(query, resp); err != nil {
+		return nil, fmt.Errorf("upstream %s: %w", u, err)
+	}
+
 	resp.Id = query.Id
 	return resp, nil
 }
 
-func (u *dohUpstream) String() string { return u.url }
+func (u *dohUpstream) String() string { return u.name }
+
+// CheckRedirect is an [http.Client] redirect policy for DNS-over-HTTPS
+// upstreams: it follows up to 10 redirects, like the default policy, but
+// refuses any to a URL that isn't HTTPS, which would expose queries.
+func CheckRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing redirect from HTTPS to %s", req.URL.Redacted())
+	}
+
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+
+	return nil
+}
+
+// validate reports whether resp answers query: it must be a response, and
+// echo the query's question. Only error responses may omit the question
+// section, as some servers do when they can't parse a query.
+func validate(query, resp *dns.Msg) error {
+	if !resp.Response {
+		return errors.New("got a query, not a response")
+	}
+
+	if len(resp.Question) == 0 {
+		if resp.Rcode == dns.RcodeSuccess {
+			return errors.New("successful response has no question")
+		}
+		return nil
+	}
+
+	if len(resp.Question) != len(query.Question) {
+		return errors.New("response question doesn't match the query")
+	}
+
+	for i, q := range query.Question {
+		r := resp.Question[i]
+		if !strings.EqualFold(q.Name, r.Name) || q.Qtype != r.Qtype || q.Qclass != r.Qclass {
+			return fmt.Errorf("response question %s doesn't match the query's %s", r.String(), q.String())
+		}
+	}
+
+	return nil
+}
 
 // dnsUpstream is a plain DNS or DNS-over-TLS upstream.
 type dnsUpstream struct {
@@ -185,6 +235,10 @@ func (u *dnsUpstream) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, e
 		return nil, fmt.Errorf("upstream %s: response ID mismatch", u)
 	}
 
+	if err := validate(query, resp); err != nil {
+		return nil, fmt.Errorf("upstream %s: %w", u, err)
+	}
+
 	resp.Id = query.Id
 	return resp, nil
 }
@@ -207,6 +261,10 @@ var ErrAllFailed = errors.New("upstream: all upstreams failed")
 // Failover is an [Exchanger] that tries each upstream in order, returning
 // the first successful response.
 //
+// When the context has a deadline, each upstream gets an equal share of the
+// time remaining when it's tried, so a slow or unresponsive upstream still
+// leaves time for the next.
+//
 // A response with any DNS response code counts as success; only transport
 // failures move on to the next upstream. If every upstream fails, the
 // returned error matches [ErrAllFailed] and includes each upstream's error.
@@ -215,8 +273,8 @@ type Failover []Exchanger
 func (f Failover) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, error) {
 	errs := []error{ErrAllFailed}
 
-	for _, upstream := range f {
-		resp, err := upstream.Exchange(ctx, query)
+	for i, upstream := range f {
+		resp, err := f.exchange(ctx, upstream, len(f)-i, query)
 		if err == nil {
 			return resp, nil
 		}
@@ -229,6 +287,19 @@ func (f Failover) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, error
 	}
 
 	return nil, errors.Join(errs...)
+}
+
+// exchange queries upstream with an equal share of the time left before
+// ctx's deadline among the remaining upstreams, so one unresponsive
+// upstream can't use up the time the others need.
+func (Failover) exchange(ctx context.Context, upstream Exchanger, remaining int, query *dns.Msg) (*dns.Msg, error) {
+	if deadline, ok := ctx.Deadline(); ok && remaining > 1 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Until(deadline)/time.Duration(remaining))
+		defer cancel()
+	}
+
+	return upstream.Exchange(ctx, query)
 }
 
 // Handler adapts an [Exchanger] to a [doh.Handler].

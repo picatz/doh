@@ -349,3 +349,104 @@ func TestKnownServers_Query_Live(t *testing.T) {
 		})
 	}
 }
+
+func TestQuery_ResponseSizeLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", doh.MediaType)
+		_, _ = w.Write(make([]byte, dns.MaxMsgSize+1))
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := doh.Query(testContext(t), server.Client(), server.URL, new(dns.Msg).SetQuestion("example.com.", dns.TypeA))
+	if !errors.Is(err, doh.ErrFailedHTTPResponseRead) {
+		t.Errorf("got error %v, want %v for an oversized response", err, doh.ErrFailedHTTPResponseRead)
+	}
+}
+
+func TestQuery_Method(t *testing.T) {
+	methods := make(chan string, 1)
+	mux := doh.NewServerMux(func(w http.ResponseWriter, r *http.Request, req *dns.Msg) (*dns.Msg, error) {
+		methods <- r.Method
+		return new(dns.Msg).SetReply(req), nil
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	padded := func(n int) *dns.Msg {
+		msg := new(dns.Msg).SetQuestion("example.com.", dns.TypeA)
+		opt := &dns.OPT{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT}}
+		opt.SetUDPSize(dns.DefaultMsgSize)
+		opt.Option = append(opt.Option, &dns.EDNS0_PADDING{Padding: make([]byte, n)})
+		msg.Extra = append(msg.Extra, opt)
+		return msg
+	}
+
+	tests := []struct {
+		name string
+		msg  *dns.Msg
+		want string
+	}{
+		{name: "small query uses GET", msg: padded(0), want: http.MethodGet},
+		{name: "large query uses POST", msg: padded(2048), want: http.MethodPost},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := doh.Query(testContext(t), server.Client(), server.URL+doh.DefaultPath, test.msg); err != nil {
+				t.Fatal(err)
+			}
+
+			if got := <-methods; got != test.want {
+				t.Errorf("got method %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestQuery_AgeDecaysTTLs(t *testing.T) {
+	tests := []struct {
+		age  string
+		want uint32
+	}{
+		{age: "", want: 60},
+		{age: "50", want: 10},
+		{age: "90", want: 0},
+		{age: "invalid", want: 60},
+	}
+
+	for _, test := range tests {
+		t.Run(test.age, func(t *testing.T) {
+			mux := doh.NewServerMux(func(w http.ResponseWriter, r *http.Request, req *dns.Msg) (*dns.Msg, error) {
+				if test.age != "" {
+					w.Header().Set("Age", test.age)
+				}
+
+				resp := new(dns.Msg).SetReply(req)
+				resp.Answer = append(resp.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+					A:   net.ParseIP("192.0.2.1"),
+				})
+				resp.SetEdns0(dns.DefaultMsgSize, true)
+				return resp, nil
+			})
+
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+
+			resp, err := doh.Query(testContext(t), server.Client(), server.URL+doh.DefaultPath, new(dns.Msg).SetQuestion("example.com.", dns.TypeA))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if got := resp.Answer[0].Header().Ttl; got != test.want {
+				t.Errorf("got TTL %d, want %d", got, test.want)
+			}
+
+			// The OPT record's TTL field holds flags, such as DO, not a TTL.
+			if opt := resp.IsEdns0(); opt == nil || !opt.Do() {
+				t.Error("OPT record flags were modified")
+			}
+		})
+	}
+}

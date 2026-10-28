@@ -404,8 +404,9 @@ func TestServer_MissingCertificate(t *testing.T) {
 
 func TestServer_ACME(t *testing.T) {
 	s, err := New(Config{TLS: TLSConfig{ACME: ACMEConfig{
-		Domains:  []string{"doh.example"},
-		CacheDir: t.TempDir(),
+		Domains:      []string{"doh.example"},
+		CacheDir:     t.TempDir(),
+		DirectoryURL: unreachableURL(t),
 	}}}, testLogger(t))
 	if err != nil {
 		t.Fatal(err)
@@ -452,5 +453,175 @@ func TestServer_ShutdownWaitsForInFlightRequests(t *testing.T) {
 
 	if _, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second); err == nil {
 		t.Error("listener still accepting connections after shutdown")
+	}
+}
+
+func TestConfig_LoadFileRejectsTrailingData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"plaintext": true} {"listne": ":80"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var c Config
+	if err := c.LoadFile(path); err == nil || !strings.Contains(err.Error(), "unexpected data") {
+		t.Errorf("got error %v, want trailing data rejected", err)
+	}
+}
+
+func TestConfig_ValidatePath(t *testing.T) {
+	for path, ok := range map[string]bool{
+		"/dns-query":    true,
+		"/resolve":      true,
+		"dns-query":     false,
+		HealthPath:      false,
+		"/dns/{x}":      false,
+		"/dns/{":        false,
+		"/dns query":    false,
+		"/dns/../query": false,
+		"/dns//query":   false,
+		"/dns-query/":   false,
+		"/%68ealthz":    false,
+		"/":             true,
+	} {
+		t.Run(path, func(t *testing.T) {
+			config := Config{Plaintext: true, Path: path, Upstreams: []string{"192.0.2.1"}}
+
+			if err := config.Validate(); (err == nil) != ok {
+				t.Fatalf("got error %v, want valid=%t", err, ok)
+			}
+
+			// New must return an error rather than panic registering the
+			// endpoint on the mux.
+			if _, err := New(config, testLogger(t)); (err == nil) != ok {
+				t.Errorf("New: got error %v, want valid=%t", err, ok)
+			}
+		})
+	}
+}
+
+// unreachableURL returns a URL that refuses connections, so ACME tests
+// never contact a real certificate authority.
+func unreachableURL(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close()
+
+	return "https://" + ln.Addr().String() + "/directory"
+}
+
+// writeACMECache stores a self-signed certificate for name in an autocert
+// cache directory, as autocert would after issuing it.
+func writeACMECache(t *testing.T, dir, name string) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: name},
+		DNSNames:     []string{name},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := append(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestServer_ACMEEnforcesDomainsOnCachedCertificates guards that autocert
+// applies the host policy before its cache, so a certificate cached for a
+// domain since removed from the configuration isn't served.
+func TestServer_ACMEEnforcesDomainsOnCachedCertificates(t *testing.T) {
+	cacheDir := t.TempDir()
+	writeACMECache(t, cacheDir, "doh.example")
+	writeACMECache(t, cacheDir, "removed.example")
+
+	s, err := New(Config{TLS: TLSConfig{ACME: ACMEConfig{
+		Domains:      []string{"doh.example"},
+		CacheDir:     cacheDir,
+		DirectoryURL: unreachableURL(t),
+	}}}, testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Advertise ECDSA support, so autocert looks up the ECDSA certificate.
+	hello := func(name string) *tls.ClientHelloInfo {
+		return &tls.ClientHelloInfo{
+			ServerName:       name,
+			SignatureSchemes: []tls.SignatureScheme{tls.ECDSAWithP256AndSHA256},
+			SupportedCurves:  []tls.CurveID{tls.CurveP256},
+			CipherSuites:     []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+		}
+	}
+
+	if _, err := s.tlsConfig.GetCertificate(hello("DOH.example")); err != nil {
+		t.Errorf("configured domain: %v", err)
+	}
+
+	if _, err := s.tlsConfig.GetCertificate(hello("removed.example")); err == nil {
+		t.Error("served a cached certificate for a domain no longer configured")
+	}
+}
+
+func TestCertReloader_DetectsEitherFileChanging(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := writeCert(t, dir, "first")
+
+	// Give the key a newer timestamp than the certificate.
+	base := time.Now().Add(time.Hour)
+	setTimes := func(cert, key time.Time) {
+		t.Helper()
+		for name, mtime := range map[string]time.Time{certFile: cert, keyFile: key} {
+			if err := os.Chtimes(name, mtime, mtime); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	setTimes(base, base.Add(time.Minute))
+
+	r, err := newCertReloader(certFile, keyFile, testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rotate both files, with timestamps that are no newer than the key's
+	// previous one, and one moving backwards.
+	writeCert(t, dir, "second")
+	setTimes(base.Add(30*time.Second), base.Add(time.Minute-time.Second))
+
+	r.checked = time.Time{}
+	cert, err := r.GetCertificate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if leaf.Subject.CommonName != "second" {
+		t.Errorf("got certificate %q, want the rotated certificate", leaf.Subject.CommonName)
 	}
 }

@@ -5,12 +5,14 @@
 package doh
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/miekg/dns"
@@ -66,25 +68,48 @@ var (
 	ErrFailedDNSResponseUnpack = errors.New("doh: failed DNS response unpack")
 )
 
+// maxGETMessageSize is the largest DNS query [Query] sends with GET.
+// Larger queries are sent with POST, since a base64url-encoded query grows
+// the URL by a third and many servers limit URLs to a few kilobytes.
+const maxGETMessageSize = 1024
+
 // Query performs a DNS query using a DoH server URL and a DNS message.
+//
+// Queries are sent with GET, which is cacheable, unless they are larger
+// than a kilobyte, in which case POST is used ([RFC 8484, Section 4.1]).
+// Responses larger than the 65,535-byte DNS message limit are rejected.
+//
+// If the response was served from an HTTP cache, its record TTLs are
+// reduced by the response's Age, as described in [RFC 8484, Section 5.1],
+// so they reflect how long the records remain valid.
+//
+// [RFC 8484, Section 4.1]: https://www.rfc-editor.org/rfc/rfc8484.html#section-4.1
+// [RFC 8484, Section 5.1]: https://www.rfc-editor.org/rfc/rfc8484.html#section-5.1
 func Query(ctx context.Context, httpClient *http.Client, serverURL string, dnsReq *dns.Msg) (*dns.Msg, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrFailedHTTPRequest, err)
-	}
-
-	httpReq.Header.Set("Accept", "application/dns-message")
-
-	q := httpReq.URL.Query()
-
 	dnsReqBytes, err := dnsReq.Pack()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrFailedDNSRequestPack, err)
 	}
 
-	q.Set("dns", base64.RawURLEncoding.EncodeToString(dnsReqBytes))
+	var httpReq *http.Request
+	if len(dnsReqBytes) > maxGETMessageSize {
+		httpReq, err = http.NewRequestWithContext(ctx, http.MethodPost, serverURL, bytes.NewReader(dnsReqBytes))
+		if err == nil {
+			httpReq.Header.Set("Content-Type", MediaType)
+		}
+	} else {
+		httpReq, err = http.NewRequestWithContext(ctx, http.MethodGet, serverURL, nil)
+		if err == nil {
+			q := httpReq.URL.Query()
+			q.Set("dns", base64.RawURLEncoding.EncodeToString(dnsReqBytes))
+			httpReq.URL.RawQuery = q.Encode()
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrFailedHTTPRequest, err)
+	}
 
-	httpReq.URL.RawQuery = q.Encode()
+	httpReq.Header.Set("Accept", MediaType)
 
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -96,9 +121,13 @@ func Query(ctx context.Context, httpClient *http.Client, serverURL string, dnsRe
 		return nil, fmt.Errorf("%w: %s", ErrFailedHTTPRequest, httpResp.Status)
 	}
 
-	body, err := io.ReadAll(httpResp.Body)
+	body, err := io.ReadAll(io.LimitReader(httpResp.Body, maxMessageSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrFailedHTTPResponseRead, err)
+	}
+
+	if len(body) > maxMessageSize {
+		return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrFailedHTTPResponseRead, maxMessageSize)
 	}
 
 	dnsResp := &dns.Msg{}
@@ -107,7 +136,23 @@ func Query(ctx context.Context, httpClient *http.Client, serverURL string, dnsRe
 		return nil, fmt.Errorf("%w: %w", ErrFailedDNSResponseUnpack, err)
 	}
 
+	if age, err := strconv.ParseUint(httpResp.Header.Get("Age"), 10, 32); err == nil && age > 0 {
+		decayTTLs(dnsResp, uint32(age))
+	}
+
 	return dnsResp, nil
+}
+
+// decayTTLs reduces the TTL of every record in msg by age seconds, to no
+// less than zero, skipping the OPT pseudo-record whose TTL holds flags.
+func decayTTLs(msg *dns.Msg, age uint32) {
+	for _, section := range [][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
+		for _, rr := range section {
+			if hdr := rr.Header(); hdr.Rrtype != dns.TypeOPT {
+				hdr.Ttl -= min(hdr.Ttl, age)
+			}
+		}
+	}
 }
 
 // SimpleQuery performs a DNS query using a DoH server using the

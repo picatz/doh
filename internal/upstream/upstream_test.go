@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/miekg/dns"
@@ -365,4 +367,127 @@ func TestFailover(t *testing.T) {
 			t.Errorf("got %d calls, want 1", calls.Load())
 		}
 	})
+}
+
+func TestFailover_SharesDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var firstBudget time.Duration
+
+		// The first upstream never answers, like a blackholed resolver.
+		blackholed := exchangerFunc(func(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+			deadline, _ := ctx.Deadline()
+			firstBudget = time.Until(deadline)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+
+		ok := exchangerFunc(func(_ context.Context, q *dns.Msg) (*dns.Msg, error) {
+			return new(dns.Msg).SetReply(q), nil
+		})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+		defer cancel()
+
+		start := time.Now()
+		if _, err := (Failover{blackholed, ok, ok}).Exchange(ctx, new(dns.Msg).SetQuestion("example.com.", dns.TypeA)); err != nil {
+			t.Fatalf("failover didn't reach a working upstream: %v", err)
+		}
+
+		if firstBudget != 2*time.Second {
+			t.Errorf("first of 3 upstreams got %s, want a third of 6s", firstBudget)
+		}
+
+		if elapsed := time.Since(start); elapsed != 2*time.Second {
+			t.Errorf("answered after %s, want 2s", elapsed)
+		}
+	})
+}
+
+func TestValidate(t *testing.T) {
+	query := new(dns.Msg).SetQuestion("Example.com.", dns.TypeA)
+
+	reply := func(modify func(*dns.Msg)) *dns.Msg {
+		resp := new(dns.Msg).SetReply(query)
+		modify(resp)
+		return resp
+	}
+
+	tests := []struct {
+		name    string
+		resp    *dns.Msg
+		wantErr bool
+	}{
+		{name: "reply", resp: reply(func(*dns.Msg) {})},
+		{name: "case-insensitive name", resp: reply(func(m *dns.Msg) { m.Question[0].Name = "EXAMPLE.COM." })},
+		{name: "no question section", resp: reply(func(m *dns.Msg) { m.Question = nil; m.Rcode = dns.RcodeFormatError })},
+		{name: "successful response without question", resp: reply(func(m *dns.Msg) { m.Question = nil }), wantErr: true},
+		{name: "not a response", resp: reply(func(m *dns.Msg) { m.Response = false }), wantErr: true},
+		{name: "different name", resp: reply(func(m *dns.Msg) { m.Question[0].Name = "example.net." }), wantErr: true},
+		{name: "different type", resp: reply(func(m *dns.Msg) { m.Question[0].Qtype = dns.TypeAAAA }), wantErr: true},
+		{name: "extra question", resp: reply(func(m *dns.Msg) { m.Question = append(m.Question, m.Question[0]) }), wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validate(query, test.resp); (err != nil) != test.wantErr {
+				t.Errorf("got error %v, want error %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestExchange_DoHRejectsMismatchedResponse(t *testing.T) {
+	mux := doh.NewServerMux(func(w http.ResponseWriter, r *http.Request, req *dns.Msg) (*dns.Msg, error) {
+		return new(dns.Msg).SetQuestion("other.example.", dns.TypeA).SetReply(new(dns.Msg).SetQuestion("other.example.", dns.TypeA)), nil
+	})
+
+	server := httptest.NewTLSServer(mux)
+	t.Cleanup(server.Close)
+
+	e, err := Parse(server.URL+doh.DefaultPath, Options{HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := query(t, e); err == nil || !strings.Contains(err.Error(), "doesn't match") {
+		t.Errorf("got error %v, want a question mismatch", err)
+	}
+}
+
+func TestCheckRedirect(t *testing.T) {
+	plain := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(plain.Close)
+
+	redirecting := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/dns-query", http.StatusFound)
+	}))
+	t.Cleanup(redirecting.Close)
+
+	client := redirecting.Client()
+	client.CheckRedirect = CheckRedirect
+
+	_, err := client.Get(redirecting.URL)
+	if err == nil || !strings.Contains(err.Error(), "refusing redirect") {
+		t.Errorf("got error %v, want an HTTPS to HTTP redirect refused", err)
+	}
+
+	e, err := Parse("https://dns.example/dns-query", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if e.(*dohUpstream).client.CheckRedirect == nil {
+		t.Error("default DoH client follows redirects to plain HTTP")
+	}
+}
+
+func TestParse_RedactsCredentials(t *testing.T) {
+	e, err := Parse("https://user:hunter2@dns.example/dns-query", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s := e.(fmt.Stringer).String(); strings.Contains(s, "hunter2") {
+		t.Errorf("String() = %q exposes the password", s)
+	}
 }
