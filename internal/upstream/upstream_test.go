@@ -420,6 +420,7 @@ func TestValidate(t *testing.T) {
 		{name: "reply", resp: reply(func(*dns.Msg) {})},
 		{name: "case-insensitive name", resp: reply(func(m *dns.Msg) { m.Question[0].Name = "EXAMPLE.COM." })},
 		{name: "no question section", resp: reply(func(m *dns.Msg) { m.Question = nil; m.Rcode = dns.RcodeFormatError })},
+		{name: "successful response without question", resp: reply(func(m *dns.Msg) { m.Question = nil }), wantErr: true},
 		{name: "not a response", resp: reply(func(m *dns.Msg) { m.Response = false }), wantErr: true},
 		{name: "different name", resp: reply(func(m *dns.Msg) { m.Question[0].Name = "example.net." }), wantErr: true},
 		{name: "different type", resp: reply(func(m *dns.Msg) { m.Question[0].Qtype = dns.TypeAAAA }), wantErr: true},

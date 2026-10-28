@@ -172,14 +172,17 @@ func CheckRedirect(req *http.Request, via []*http.Request) error {
 }
 
 // validate reports whether resp answers query: it must be a response, and
-// echo the query's question unless it omits the question section, as some
-// error responses do.
+// echo the query's question. Only error responses may omit the question
+// section, as some servers do when they can't parse a query.
 func validate(query, resp *dns.Msg) error {
 	if !resp.Response {
 		return errors.New("got a query, not a response")
 	}
 
 	if len(resp.Question) == 0 {
+		if resp.Rcode == dns.RcodeSuccess {
+			return errors.New("successful response has no question")
+		}
 		return nil
 	}
 

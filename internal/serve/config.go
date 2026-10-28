@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -202,17 +203,19 @@ func (c Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// validatePath reports whether path can serve the DoH endpoint: an
-// absolute path that isn't the health check, without the wildcard braces
-// or whitespace that [http.ServeMux] patterns would interpret.
-func validatePath(path string) error {
+// validatePath reports whether p can serve the DoH endpoint: a clean,
+// absolute path that isn't the health check, without the wildcard braces,
+// percent escapes, or whitespace that [http.ServeMux] patterns interpret.
+func validatePath(p string) error {
 	switch {
-	case path == "" || path[0] != '/':
-		return fmt.Errorf("path %q must start with /", path)
-	case path == HealthPath:
-		return fmt.Errorf("path %q is reserved for the health check", path)
-	case strings.ContainsAny(path, "{} \t\r\n"):
-		return fmt.Errorf("path %q must not contain braces or whitespace", path)
+	case p == "" || p[0] != '/':
+		return fmt.Errorf("path %q must start with /", p)
+	case path.Clean(p) != p:
+		return fmt.Errorf("path %q must be clean, without empty, . or .. segments or a trailing slash (try %q)", p, path.Clean(p))
+	case strings.ContainsAny(p, "{}% \t\r\n"):
+		return fmt.Errorf("path %q must not contain braces, percent escapes, or whitespace", p)
+	case p == HealthPath:
+		return fmt.Errorf("path %q is reserved for the health check", p)
 	default:
 		return nil
 	}

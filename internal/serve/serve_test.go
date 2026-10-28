@@ -470,13 +470,18 @@ func TestConfig_LoadFileRejectsTrailingData(t *testing.T) {
 
 func TestConfig_ValidatePath(t *testing.T) {
 	for path, ok := range map[string]bool{
-		"/dns-query": true,
-		"/resolve":   true,
-		"dns-query":  false,
-		HealthPath:   false,
-		"/dns/{x}":   false,
-		"/dns/{":     false,
-		"/dns query": false,
+		"/dns-query":    true,
+		"/resolve":      true,
+		"dns-query":     false,
+		HealthPath:      false,
+		"/dns/{x}":      false,
+		"/dns/{":        false,
+		"/dns query":    false,
+		"/dns/../query": false,
+		"/dns//query":   false,
+		"/dns-query/":   false,
+		"/%68ealthz":    false,
+		"/":             true,
 	} {
 		t.Run(path, func(t *testing.T) {
 			config := Config{Plaintext: true, Path: path, Upstreams: []string{"192.0.2.1"}}
