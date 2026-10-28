@@ -2,6 +2,7 @@
 package serve
 
 import (
+	"crypto/tls"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -141,6 +142,23 @@ type TLSConfig struct {
 
 	// ACME obtains and renews certificates automatically.
 	ACME ACMEConfig `json:"acme,omitzero"`
+
+	// MinVersion is the oldest TLS version accepted: "1.2" (the default)
+	// or "1.3". Either way, TLS 1.3 is negotiated with clients that
+	// support it.
+	MinVersion string `json:"min_version,omitempty"`
+}
+
+// minVersion returns the configured minimum TLS version.
+func (t TLSConfig) minVersion() (uint16, error) {
+	switch t.MinVersion {
+	case "", "1.2":
+		return tls.VersionTLS12, nil
+	case "1.3":
+		return tls.VersionTLS13, nil
+	default:
+		return 0, fmt.Errorf("tls: min_version %q must be 1.2 or 1.3", t.MinVersion)
+	}
 }
 
 // ACMEConfig configures automatic certificates using the ACME protocol
@@ -297,6 +315,10 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("no TLS certificate configured: set a certificate and key, an ACME domain, or plaintext to serve behind a TLS-terminating proxy (or dns_listen to serve only plain DNS)"))
 	case !c.servesDoH() && listen != "":
 		errs = append(errs, errors.New("listen needs a TLS certificate, an ACME domain, or plaintext; without them only plain DNS is served on dns_listen"))
+	}
+
+	if _, err := c.TLS.minVersion(); err != nil {
+		errs = append(errs, err)
 	}
 
 	if c.TLS.ACME.HTTPListen != "" && !acme {

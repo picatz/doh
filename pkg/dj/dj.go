@@ -11,12 +11,33 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
+
+	"github.com/miekg/dns"
 )
 
 // Request is a DNS query to a DoH server using the JSON API.
 type Request struct {
 	Name string // domain name (e.g. google.com)
 	Type string // record type (e.g. A, AAAA, MX, ANY)
+}
+
+// Msg returns the DNS query message for r, with recursion desired.
+// Type is a record type name, such as "A"; "ANY" queries use class ANY.
+func (r *Request) Msg() *dns.Msg {
+	class := uint16(dns.ClassINET)
+	if r.Type == "ANY" {
+		class = dns.ClassANY
+	}
+
+	return &dns.Msg{
+		RecursionDesired: true,
+		Question: []dns.Question{{
+			Name:   dns.Fqdn(r.Name),
+			Qtype:  dns.StringToType[r.Type],
+			Qclass: class,
+		}},
+	}
 }
 
 // Response is a DNS response from a DoH JSON API server.
@@ -37,6 +58,59 @@ type Response struct {
 		TTL  int    `json:"TTL"`
 		Data string `json:"data"`
 	} `json:"Answer"`
+}
+
+// NewResponse converts a DNS response message to the JSON API's response
+// format, summarizing each answer's data, such as an address or target name.
+func NewResponse(msg *dns.Msg) *Response {
+	resp := &Response{
+		Status: msg.Rcode,
+		TC:     msg.Truncated,
+		RD:     msg.RecursionDesired,
+		RA:     msg.RecursionAvailable,
+		AD:     msg.AuthenticatedData,
+		CD:     msg.CheckingDisabled,
+	}
+
+	for _, q := range msg.Question {
+		resp.Question = append(resp.Question, struct {
+			Name string `json:"name"`
+			Type int    `json:"type"`
+		}{Name: q.Name, Type: int(q.Qtype)})
+	}
+
+	for _, rr := range msg.Answer {
+		var data string
+		switch rr := rr.(type) {
+		case *dns.A:
+			data = rr.A.String()
+		case *dns.AAAA:
+			data = rr.AAAA.String()
+		case *dns.CNAME:
+			data = rr.Target
+		case *dns.MX:
+			data = rr.Mx
+		case *dns.NS:
+			data = rr.Ns
+		case *dns.PTR:
+			data = rr.Ptr
+		case *dns.SOA:
+			data = rr.Ns
+		case *dns.TXT:
+			data = strings.Join(rr.Txt, " ")
+		default:
+			data = rr.String()
+		}
+
+		resp.Answer = append(resp.Answer, struct {
+			Name string `json:"name"`
+			Type int    `json:"type"`
+			TTL  int    `json:"TTL"`
+			Data string `json:"data"`
+		}{Name: rr.Header().Name, Type: int(rr.Header().Rrtype), TTL: int(rr.Header().Ttl), Data: data})
+	}
+
+	return resp
 }
 
 // KnownServer is a known DoH server URL.

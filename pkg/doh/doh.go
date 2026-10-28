@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/pkg/dj"
@@ -165,85 +164,10 @@ func decayTTLs(msg *dns.Msg, age uint32) {
 //
 // [RFC 8484]: https://tools.ietf.org/html/rfc8484
 func SimpleQuery(ctx context.Context, httpClient *http.Client, server string, req *dj.Request) (*dj.Response, error) {
-	var qClass uint16
-	switch req.Type {
-	case "ANY":
-		qClass = dns.ClassANY
-	default:
-		qClass = dns.ClassINET
-	}
-
-	dnsResp, err := Query(ctx, httpClient, server, &dns.Msg{
-		RecursionDesired: true,
-		Question: []dns.Question{
-			{
-				Name:   dns.Fqdn(req.Name),
-				Qtype:  dns.StringToType[req.Type],
-				Qclass: qClass,
-			},
-		},
-	})
+	dnsResp, err := Query(ctx, httpClient, server, req.Msg())
 	if err != nil {
 		return nil, err
 	}
 
-	resp := &dj.Response{
-		Status: int(dnsResp.Rcode),
-		TC:     dnsResp.Truncated,
-		RD:     dnsResp.RecursionDesired,
-		RA:     dnsResp.RecursionAvailable,
-		AD:     dnsResp.AuthenticatedData,
-		CD:     dnsResp.CheckingDisabled,
-	}
-
-	for _, question := range dnsResp.Question {
-		resp.Question = append(resp.Question, struct {
-			Name string `json:"name"`
-			Type int    `json:"type"`
-		}{
-			Name: question.Name,
-			Type: int(question.Qtype),
-		})
-	}
-
-	for _, answer := range dnsResp.Answer {
-		var data string
-
-		// Extract main information from the answer (IP address, etc.)
-		// and add it to the response.
-		switch answer := answer.(type) {
-		case *dns.A:
-			data = answer.A.String()
-		case *dns.AAAA:
-			data = answer.AAAA.String()
-		case *dns.CNAME:
-			data = answer.Target
-		case *dns.MX:
-			data = answer.Mx
-		case *dns.NS:
-			data = answer.Ns
-		case *dns.PTR:
-			data = answer.Ptr
-		case *dns.SOA:
-			data = answer.Ns
-		case *dns.TXT:
-			data = strings.Join(answer.Txt, " ")
-		default:
-			data = answer.String()
-		}
-
-		resp.Answer = append(resp.Answer, struct {
-			Name string `json:"name"`
-			Type int    `json:"type"`
-			TTL  int    `json:"TTL"`
-			Data string `json:"data"`
-		}{
-			Name: answer.Header().Name,
-			Type: int(answer.Header().Rrtype),
-			TTL:  int(answer.Header().Ttl),
-			Data: data,
-		})
-	}
-
-	return resp, nil
+	return dj.NewResponse(dnsResp), nil
 }

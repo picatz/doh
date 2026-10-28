@@ -150,7 +150,8 @@ func TestParse(t *testing.T) {
 		{url: "9.9.9.9", want: "udp://9.9.9.9:53"},
 		{url: "[2620:fe::fe]", want: "udp://[2620:fe::fe]:53"},
 		{url: "udp://[2620:fe::fe]:53", want: "udp://[2620:fe::fe]:53"},
-		{url: "http://example.com/dns-query", wantErr: "unsupported scheme"},
+		{url: "http://127.0.0.1:8080/dns-query", want: "http://127.0.0.1:8080/dns-query"},
+		{url: "ftp://example.com/dns-query", wantErr: "unsupported scheme"},
 		{url: "tls://", wantErr: "missing host"},
 	}
 
@@ -479,6 +480,113 @@ func TestCheckRedirect(t *testing.T) {
 	if e.(*dohUpstream).client.CheckRedirect == nil {
 		t.Error("default DoH client follows redirects to plain HTTP")
 	}
+}
+
+func TestCheckRedirect_PlainHTTP(t *testing.T) {
+	target := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(target.Close)
+
+	// An http:// upstream was never encrypted, so redirects stay allowed.
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	t.Cleanup(redirecting.Close)
+
+	client := &http.Client{CheckRedirect: CheckRedirect}
+	resp, err := client.Get(redirecting.URL)
+	if err != nil {
+		t.Fatalf("plain HTTP redirect refused: %v", err)
+	}
+	resp.Body.Close()
+}
+
+func TestCheckRedirect_MixedChain(t *testing.T) {
+	request := func(rawURL string) *http.Request {
+		r, err := http.NewRequest(http.MethodGet, rawURL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// http:// → https:// → http:// downgrades from HTTPS at the last hop.
+	via := []*http.Request{request("http://a.example/dns-query"), request("https://b.example/dns-query")}
+	if err := CheckRedirect(request("http://c.example/dns-query"), via); err == nil {
+		t.Error("allowed a redirect to HTTP after an HTTPS hop")
+	}
+
+	if err := CheckRedirect(request("https://c.example/dns-query"), via); err != nil {
+		t.Errorf("refused an HTTPS redirect: %v", err)
+	}
+}
+
+func TestWithTLSObserver(t *testing.T) {
+	observed := func(t *testing.T, e Exchanger) tls.ConnectionState {
+		t.Helper()
+
+		var (
+			state tls.ConnectionState
+			calls atomic.Int32
+		)
+		ctx := WithTLSObserver(t.Context(), func(s tls.ConnectionState) {
+			calls.Add(1)
+			state = s
+		})
+
+		if _, err := e.Exchange(ctx, new(dns.Msg).SetQuestion("example.com.", dns.TypeA)); err != nil {
+			t.Fatal(err)
+		}
+		if calls.Load() == 0 {
+			t.Fatal("observer not called")
+		}
+		return state
+	}
+
+	t.Run("doh", func(t *testing.T) {
+		mux := doh.NewServerMux(func(w http.ResponseWriter, r *http.Request, req *dns.Msg) (*dns.Msg, error) {
+			return new(dns.Msg).SetReply(req), nil
+		})
+		server := httptest.NewUnstartedServer(mux)
+		server.EnableHTTP2 = true
+		server.StartTLS()
+		t.Cleanup(server.Close)
+
+		e, err := Parse(server.URL+doh.DefaultPath, Options{HTTPClient: server.Client()})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		state := observed(t, e)
+		if state.Version < tls.VersionTLS12 || state.NegotiatedProtocol != "h2" {
+			t.Errorf("got %s with ALPN %q, want TLS 1.2+ with h2", tls.VersionName(state.Version), state.NegotiatedProtocol)
+		}
+	})
+
+	t.Run("dns-over-tls", func(t *testing.T) {
+		serverConfig, pool := selfSigned(t)
+		addr := startDNS(t, "tcp-tls", answer("192.0.2.4"), serverConfig)
+
+		e, err := Parse("tls://"+addr, Options{TLSConfig: &tls.Config{RootCAs: pool}})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if state := observed(t, e); state.Version != tls.VersionTLS13 {
+			t.Errorf("got %s, want TLS 1.3", tls.VersionName(state.Version))
+		}
+	})
+
+	t.Run("plain dns isn't observed", func(t *testing.T) {
+		e, err := Parse("udp://"+startDNS(t, "udp", answer("192.0.2.1"), nil), Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		ctx := WithTLSObserver(t.Context(), func(tls.ConnectionState) { t.Error("observer called for plain DNS") })
+		if _, err := e.Exchange(ctx, new(dns.Msg).SetQuestion("example.com.", dns.TypeA)); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestParse_RedactsCredentials(t *testing.T) {

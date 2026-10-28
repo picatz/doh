@@ -8,9 +8,12 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/picatz/doh/internal/httpretry"
+	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/pkg/dj"
 	"github.com/picatz/doh/pkg/doh"
 	"github.com/spf13/cobra"
@@ -19,7 +22,23 @@ import (
 
 type result struct {
 	Server string       `json:"server"`
+	TLS    *tlsInfo     `json:"tls,omitempty"`
 	Resp   *dj.Response `json:"resp"`
+}
+
+// tlsInfo describes the TLS connection a query used.
+type tlsInfo struct {
+	Version     string `json:"version"`
+	CipherSuite string `json:"cipher_suite"`
+	ALPN        string `json:"alpn,omitempty"`
+}
+
+func newTLSInfo(state tls.ConnectionState) *tlsInfo {
+	return &tlsInfo{
+		Version:     tls.VersionName(state.Version),
+		CipherSuite: tls.CipherSuiteName(state.CipherSuite),
+		ALPN:        state.NegotiatedProtocol,
+	}
 }
 
 // newTransport returns a clone of [http.DefaultTransport], optionally
@@ -42,9 +61,12 @@ var CommandQuery = &cobra.Command{
 	Long: `Query DNS records from DoH servers using the given domains and record type.
 
 Users can specify which servers to use for the query, or use the default servers from Google, Cloudflare, and Quad9.
-They can also specify a timeout for the query, which defaults to 30 seconds if not specified. Each server is queried
-in parallel, and each domain is queried in parallel. Results are streamed to STDOUT as JSON newline delimited objects,
-which can be piped to other commands (e.g. jq) or redirected to a file.`,
+Servers can use DNS-over-HTTPS (https://, or http:// for a local server), DNS-over-TLS (tls://host[:853]), or plain
+DNS (udp://host[:53], tcp://host[:53], or just host), the same forms doh serve accepts as upstreams. They can also
+specify a timeout for the query, which defaults to 30 seconds if not specified. Each server is queried in parallel,
+and each domain is queried in parallel. Results are streamed to STDOUT as JSON newline delimited objects, including
+the TLS version, cipher suite, and ALPN protocol for encrypted servers, which can be piped to other commands (e.g. jq)
+or redirected to a file.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		servers, err := cmd.Flags().GetStringSlice("servers")
@@ -81,8 +103,14 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 			return fmt.Errorf("invalid resolver network: %w", err)
 		}
 
+		opts := upstream.Options{Timeout: timeout}
+
+		if insecureSkipVerify {
+			opts.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+		}
+
 		if resolverAddr != "" {
-			dialer := &net.Dialer{
+			opts.Dialer = &net.Dialer{
 				Resolver: &net.Resolver{
 					PreferGo: true,
 					Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -98,22 +126,33 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 				},
 			}
 
-			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.DialContext(ctx, network, addr)
-			}
+			transport.DialContext = opts.Dialer.DialContext
 
 			// A proxy would resolve DoH server names itself, silently
 			// bypassing the custom resolver, so connect directly instead.
 			transport.Proxy = nil
 		}
 
-		httpClient := &http.Client{
+		opts.HTTPClient = &http.Client{
 			Transport: &httpretry.Transport{
 				Base:       transport,
 				MaxRetries: retryMax,
 			},
+			CheckRedirect: upstream.CheckRedirect,
 		}
 
+		exchangers := make(map[string]upstream.Exchanger, len(servers))
+		for _, server := range servers {
+			server = strings.TrimSpace(server)
+			e, err := upstream.Parse(server, opts)
+			if err != nil {
+				return fmt.Errorf("invalid server: %w", err)
+			}
+			exchangers[server] = e
+		}
+
+		// Results are written concurrently, so serialize them.
+		var outputMu sync.Mutex
 		output := json.NewEncoder(cmd.OutOrStdout())
 
 		var (
@@ -135,20 +174,25 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 				Type: queryType,
 			}
 
-			for _, server := range servers {
-				server := strings.TrimSpace(server)
+			for server, e := range exchangers {
 				eg.Go(func() error {
-					resp, err := doh.SimpleQuery(gtx, httpClient, server, req)
+					var state atomic.Pointer[tls.ConnectionState]
+					qctx := upstream.WithTLSObserver(gtx, func(s tls.ConnectionState) { state.Store(&s) })
+
+					msg, err := e.Exchange(qctx, req.Msg())
 					if err != nil {
 						return err
 					}
 
-					return output.Encode(&result{
-						Server: server,
-						Resp:   resp,
-					})
-				})
+					r := &result{Server: server, Resp: dj.NewResponse(msg)}
+					if s := state.Load(); s != nil {
+						r.TLS = newTLSInfo(*s)
+					}
 
+					outputMu.Lock()
+					defer outputMu.Unlock()
+					return output.Encode(r)
+				})
 			}
 		}
 
@@ -168,11 +212,11 @@ func init() {
 	}
 
 	CommandQuery.Flags().String("type", "A", "dns record type to query for each domain, such as A, AAAA, MX, etc.")
-	CommandQuery.Flags().StringSlice("servers", defaultServers, "servers to query")
-	CommandQuery.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0s for no timeout")
+	CommandQuery.Flags().StringSlice("servers", defaultServers, "servers to query: https://, http://, tls://, udp://, tcp://, or host")
+	CommandQuery.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0s for none (plain DNS and DNS-over-TLS exchanges still give up after 5s)")
 	CommandQuery.Flags().String("resolver-addr", "", "address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53); connects directly, ignoring HTTP(S)_PROXY")
 	CommandQuery.Flags().String("resolver-network", "udp", "protocol to use for resolving DoH server names (e.g. udp, tcp)")
-	CommandQuery.Flags().Int("retry-max", 10, "maximum number of retries for each query")
+	CommandQuery.Flags().Int("retry-max", 10, "maximum number of retries for each DoH query")
 	CommandQuery.Flags().BoolP("insecure-skip-verify", "k", false, "allow insecure server connections (e.g. self-signed TLS certificates)")
 
 	CommandRoot.AddCommand(CommandQuery)
