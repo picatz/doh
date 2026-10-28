@@ -218,6 +218,30 @@ func TestTransport_NetworkErrorIsRetriedAndWrapped(t *testing.T) {
 	}
 }
 
+func TestTransport_UntrustedCertificateIsNotRetried(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+	}))
+	t.Cleanup(server.Close)
+
+	var attempts atomic.Int32
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		attempts.Add(1)
+		// A fresh transport doesn't trust the test server's certificate.
+		return (&http.Transport{}).RoundTrip(req)
+	})
+
+	_, err := (&http.Client{Transport: fastTransport(base, 3)}).Get(server.URL)
+	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); !ok {
+		t.Fatalf("got error %v, want certificate verification error", err)
+	}
+
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("got %d attempts, want 1", got)
+	}
+}
+
 func TestTransport_ContextCanceledDuringBackoff(t *testing.T) {
 	server, requests := statusServer(t, http.StatusServiceUnavailable)
 
@@ -305,6 +329,8 @@ func TestRetryable(t *testing.T) {
 		{name: "canceled", err: context.Canceled, want: false},
 		{name: "deadline exceeded", err: fmt.Errorf("wrapped: %w", context.DeadlineExceeded), want: false},
 		{name: "certificate", err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, want: false},
+		{name: "certificate wrapped in net.OpError", err: &net.OpError{Op: "proxyconnect", Net: "tcp", Err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}}, want: false},
+		{name: "hostname mismatch wrapped in net.OpError", err: &net.OpError{Op: "remote error", Err: x509.HostnameError{Host: "example.com"}}, want: false},
 		{name: "unsupported scheme", err: errors.New("unsupported protocol scheme"), want: false},
 	}
 

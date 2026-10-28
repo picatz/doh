@@ -13,6 +13,8 @@ package httpretry
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -44,6 +46,11 @@ const maxDrain = 4 << 10
 // request's context is still live, and its body (if any) can be replayed
 // using [http.Request.GetBody], which [http.NewRequest] sets for common
 // in-memory body types.
+//
+// Retries cover failures up to and including the response headers. The
+// response body is streamed to the caller as usual, so a connection that
+// fails while the caller reads the body is not retried; callers that need
+// that should retry at a higher level.
 //
 // When retries are exhausted, RoundTrip returns the last response as-is so
 // callers can inspect its status, or the last error wrapped with the number
@@ -118,15 +125,21 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 // Retryable reports whether a request that produced resp and err is worth
 // retrying, following the conventions of most HTTP retry clients:
 //
-//   - Network errors ([net.Error]) and connections closed mid-response are
-//     retryable, except DNS lookups that found no such host.
-//   - Other errors, including context cancellation and TLS certificate
-//     verification failures, are not.
+//   - Network errors ([net.Error]) and connections closed before the
+//     response headers are received are retryable, except DNS lookups that
+//     found no such host.
+//   - Other errors are not, including context cancellation and TLS
+//     certificate verification failures, even when wrapped in a
+//     [net.Error] such as [*net.OpError].
 //   - 429 Too Many Requests and 5xx status codes are retryable, except
 //     501 Not Implemented.
 func Retryable(resp *http.Response, err error) bool {
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return false
+		}
+
+		if isCertificateError(err) {
 			return false
 		}
 
@@ -149,6 +162,25 @@ func Retryable(resp *http.Response, err error) bool {
 	default:
 		return code >= 500
 	}
+}
+
+// isCertificateError reports whether err stems from TLS certificate
+// verification, which fails the same way on every attempt.
+func isCertificateError(err error) bool {
+	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); ok {
+		return true
+	}
+
+	if _, ok := errors.AsType[x509.UnknownAuthorityError](err); ok {
+		return true
+	}
+
+	if _, ok := errors.AsType[x509.HostnameError](err); ok {
+		return true
+	}
+
+	_, ok := errors.AsType[x509.CertificateInvalidError](err)
+	return ok
 }
 
 // backoff returns how long to wait before retry number attempt+1, honoring
