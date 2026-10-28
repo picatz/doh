@@ -113,6 +113,31 @@ WantedBy=multi-user.target
 $ sudo systemctl enable --now doh
 ```
 
+### Blocking ads and trackers
+
+Add `--blocklist default` to block ads, trackers, and malware for every device using the server:
+
+```console
+$ sudo doh serve --dns-listen :53 --blocklist default
+level=INFO msg="blocklist loaded" rules=171454 sources=1
+```
+
+`default` is [HaGeZi's Multi NORMAL](https://github.com/hagezi/dns-blocklists), which rarely breaks sites. Other presets (`doh blocklist presets`) include stricter HaGeZi and [OISD](https://oisd.nl) lists, [StevenBlack's hosts](https://github.com/StevenBlack/hosts), and EasyList and EasyPrivacy. Any list in Adblock Plus (`||ads.example.com^`), hosts file, or plain domain format works too, by URL or file path, optionally named as `name=location`:
+
+```console
+$ doh serve --dns-listen :53 --blocklist hagezi-pro --blocklist mine=/etc/doh/block.txt --allow-domain example.com
+```
+
+Blocked names get `NXDOMAIN` (or `0.0.0.0` and `::` with `--block-response null`), with an [Extended DNS Error](https://www.rfc-editor.org/rfc/rfc8914.html) saying which list blocked them. Lists are cached on disk, revalidated daily, and kept if a download fails. To see why a name is (or isn't) blocked:
+
+```console
+$ doh blocklist check www.google-analytics.com
+{"name":"www.google-analytics.com","blocked":true,"rule":{"domain":"google-analytics.com","subdomains":true,"allow":false},"source":"hagezi-normal"}
+```
+
+> [!TIP]
+> `doh` pairs with [CUBE](https://github.com/picatz/cube), which blocks in Chrome using the same list formats. CUBE sees full URLs and pages, so it can block paths and hide page elements; `doh` sees only names, but covers every app and device on the network.
+
 ### Observability
 
 Add `--admin-listen` to serve metrics and profiling on a separate, operator-only address:
@@ -256,27 +281,32 @@ Usage:
   doh serve [flags]
 
 Flags:
-      --acme-cache-dir string     directory for ACME accounts and certificates (default user cache dir)
-      --acme-directory string     ACME directory URL (default Let's Encrypt)
-      --acme-domain strings       domains to obtain ACME certificates for, enabling ACME
-      --acme-email string         contact email for the ACME account
-      --acme-http-listen string   address to answer ACME HTTP-01 challenges on, such as :80
-      --admin-listen string       serve metrics, pprof, and flight recorder snapshots on this address, such as localhost:9090
-      --config string             path to a JSON config file
-      --dns-listen string         also serve plain DNS over UDP and TCP on this address, such as :53
-      --flight-recorder           keep recent execution traces in memory, to snapshot from the admin listener
-  -h, --help                      help for serve
-      --listen string             address to listen on (default ":443", or ":8080" with --plaintext)
-      --log-format string         log format: text or json (default "text")
-      --log-level string          log level: debug, info, warn, or error (default "info")
-      --path string               URI path of the DoH endpoint (default "/dns-query")
-      --plaintext                 serve unencrypted HTTP, behind a TLS-terminating proxy
-      --slow-query duration       save a flight recorder snapshot to --trace-dir when a query takes this long
-      --timeout duration          maximum time to answer each query (default 5s)
-      --tls-cert string           TLS certificate chain file (PEM)
-      --tls-key string            TLS private key file (PEM)
-      --trace-dir string          directory for slow query flight recorder snapshots
-      --upstream strings          upstream resolvers, tried in order (default [https://cloudflare-dns.com/dns-query,https://dns.google/dns-query])
+      --acme-cache-dir string        directory for ACME accounts and certificates (default user cache dir)
+      --acme-directory string        ACME directory URL (default Let's Encrypt)
+      --acme-domain strings          domains to obtain ACME certificates for, enabling ACME
+      --acme-email string            contact email for the ACME account
+      --acme-http-listen string      address to answer ACME HTTP-01 challenges on, such as :80
+      --admin-listen string          serve metrics, pprof, and flight recorder snapshots on this address, such as localhost:9090
+      --allow-domain strings         never block these domains and their subdomains
+      --block-domain strings         also block these domains and their subdomains
+      --block-response string        answer blocked names with nxdomain, or null (0.0.0.0 and ::) (default "nxdomain")
+      --blocklist strings            block names on these lists: presets (default, easylist, easyprivacy, hagezi-light, hagezi-normal, hagezi-pro, oisd-big, oisd-small, stevenblack), URLs, or files, as [name=]location
+      --blocklist-refresh duration   how often to reload blocklists (default 24h0m0s)
+      --config string                path to a JSON config file
+      --dns-listen string            also serve plain DNS over UDP and TCP on this address, such as :53
+      --flight-recorder              keep recent execution traces in memory, to snapshot from the admin listener
+  -h, --help                         help for serve
+      --listen string                address to listen on (default ":443", or ":8080" with --plaintext)
+      --log-format string            log format: text or json (default "text")
+      --log-level string             log level: debug, info, warn, or error (default "info")
+      --path string                  URI path of the DoH endpoint (default "/dns-query")
+      --plaintext                    serve unencrypted HTTP, behind a TLS-terminating proxy
+      --slow-query duration          save a flight recorder snapshot to --trace-dir when a query takes this long
+      --timeout duration             maximum time to answer each query (default 5s)
+      --tls-cert string              TLS certificate chain file (PEM)
+      --tls-key string               TLS private key file (PEM)
+      --trace-dir string             directory for slow query flight recorder snapshots
+      --upstream strings             upstream resolvers, tried in order (default [https://cloudflare-dns.com/dns-query,https://dns.google/dns-query])
 ```
 
 </details>

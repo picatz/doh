@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/pkg/doh"
 )
@@ -54,7 +55,56 @@ type Config struct {
 
 	// Admin configures the admin listener, for metrics and profiling.
 	Admin AdminConfig `json:"admin,omitzero"`
+
+	// Blocklist blocks ads, trackers, and malware by name.
+	Blocklist BlocklistConfig `json:"blocklist,omitzero"`
 }
+
+// Blocklist responses.
+const (
+	// BlockNXDomain answers blocked names with NXDOMAIN, as if they didn't
+	// exist. It's the default.
+	BlockNXDomain = "nxdomain"
+
+	// BlockNull answers A and AAAA queries for blocked names with the
+	// unspecified address (0.0.0.0 or ::), and others with no records.
+	BlockNull = "null"
+)
+
+// BlocklistConfig configures blocking names using filter lists. See package
+// [blocklist] for the supported list formats.
+type BlocklistConfig struct {
+	// Sources are the lists to load: preset names (see
+	// [blocklist.Presets], or "default"), URLs, or file paths, optionally
+	// named as name=location.
+	Sources []string `json:"sources,omitempty"`
+
+	// Block lists extra domains to block, along with their subdomains.
+	Block []string `json:"block,omitempty"`
+
+	// Allow lists domains never to block, along with their subdomains,
+	// whatever the lists say.
+	Allow []string `json:"allow,omitempty"`
+
+	// Response is how blocked names are answered: "nxdomain" (the default)
+	// or "null".
+	Response string `json:"response,omitempty"`
+
+	// Refresh is how often lists are reloaded. It defaults to a day.
+	Refresh Duration `json:"refresh,omitempty"`
+
+	// CacheDir stores downloaded lists, so restarts work offline. It
+	// defaults to "doh/blocklists" in the user's cache directory.
+	CacheDir string `json:"cache_dir,omitempty"`
+}
+
+// enabled reports whether any blocking is configured.
+func (b BlocklistConfig) enabled() bool {
+	return len(b.Sources) > 0 || len(b.Block) > 0
+}
+
+// DefaultBlocklistRefresh is how often blocklists are reloaded by default.
+const DefaultBlocklistRefresh = 24 * time.Hour
 
 // AdminConfig configures the admin listener, which serves Prometheus
 // metrics, expvar-style variables, pprof profiles, and flight recorder
@@ -182,6 +232,20 @@ func (c Config) withDefaults() Config {
 		c.Timeout = Duration(DefaultTimeout)
 	}
 
+	if c.Blocklist.enabled() {
+		if c.Blocklist.Response == "" {
+			c.Blocklist.Response = BlockNXDomain
+		}
+		if c.Blocklist.Refresh == 0 {
+			c.Blocklist.Refresh = Duration(DefaultBlocklistRefresh)
+		}
+		if c.Blocklist.CacheDir == "" {
+			if dir, err := os.UserCacheDir(); err == nil {
+				c.Blocklist.CacheDir = filepath.Join(dir, "doh", "blocklists")
+			}
+		}
+	}
+
 	if len(c.TLS.ACME.Domains) > 0 && c.TLS.ACME.CacheDir == "" {
 		if dir, err := os.UserCacheDir(); err == nil {
 			c.TLS.ACME.CacheDir = filepath.Join(dir, "doh", "acme")
@@ -246,6 +310,26 @@ func (c Config) Validate() error {
 
 	if acme && c.TLS.ACME.CacheDir == "" {
 		errs = append(errs, errors.New("tls: acme cache_dir is required (no user cache directory found)"))
+	}
+
+	if c.Blocklist.enabled() {
+		for _, src := range c.Blocklist.Sources {
+			if _, err := blocklist.ParseSource(src); err != nil {
+				errs = append(errs, err)
+			}
+		}
+
+		switch c.Blocklist.Response {
+		case BlockNXDomain, BlockNull:
+		default:
+			errs = append(errs, fmt.Errorf("blocklist response %q must be %q or %q", c.Blocklist.Response, BlockNXDomain, BlockNull))
+		}
+
+		if c.Blocklist.Refresh < Duration(time.Minute) {
+			errs = append(errs, errors.New("blocklist refresh must be at least a minute"))
+		}
+	} else if len(c.Blocklist.Allow) > 0 {
+		errs = append(errs, errors.New("blocklist allow needs blocklist sources or block domains"))
 	}
 
 	if c.Admin.Listen != "" {

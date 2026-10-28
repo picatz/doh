@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/serve"
 	"github.com/picatz/doh/pkg/doh"
 	"github.com/spf13/cobra"
@@ -70,6 +71,16 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v string) { c.TLS.ACME.HTTPListen = v }),
 	option((*pflag.FlagSet).Bool, "plaintext", false, "serve unencrypted HTTP, behind a TLS-terminating proxy",
 		func(c *serve.Config, v bool) { c.Plaintext = v }),
+	option((*pflag.FlagSet).StringSlice, "blocklist", nil, "block names on these lists: presets (default, "+strings.Join(blocklist.PresetNames(), ", ")+"), URLs, or files, as [name=]location",
+		func(c *serve.Config, v []string) { c.Blocklist.Sources = v }),
+	option((*pflag.FlagSet).StringSlice, "block-domain", nil, "also block these domains and their subdomains",
+		func(c *serve.Config, v []string) { c.Blocklist.Block = v }),
+	option((*pflag.FlagSet).StringSlice, "allow-domain", nil, "never block these domains and their subdomains",
+		func(c *serve.Config, v []string) { c.Blocklist.Allow = v }),
+	option((*pflag.FlagSet).String, "block-response", serve.BlockNXDomain, "answer blocked names with nxdomain, or null (0.0.0.0 and ::)",
+		func(c *serve.Config, v string) { c.Blocklist.Response = v }),
+	option((*pflag.FlagSet).Duration, "blocklist-refresh", serve.DefaultBlocklistRefresh, "how often to reload blocklists",
+		func(c *serve.Config, v time.Duration) { c.Blocklist.Refresh = serve.Duration(v) }),
 	option((*pflag.FlagSet).String, "admin-listen", "", "serve metrics, pprof, and flight recorder snapshots on this address, such as localhost:9090",
 		func(c *serve.Config, v string) { c.Admin.Listen = v }),
 	option((*pflag.FlagSet).Bool, "flight-recorder", false, "keep recent execution traces in memory, to snapshot from the admin listener",
