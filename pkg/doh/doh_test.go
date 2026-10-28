@@ -8,11 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 
-	"github.com/hashicorp/go-cleanhttp"
-	"github.com/hashicorp/go-retryablehttp"
 	"github.com/miekg/dns"
+	"github.com/picatz/doh/internal/httpretry"
 	"github.com/picatz/doh/pkg/dj"
 	"github.com/picatz/doh/pkg/doh"
 )
@@ -174,35 +172,14 @@ func testContext(t *testing.T) context.Context {
 	return ctx
 }
 
-// testClient returns a new HTTP client with retryablehttp settings
-// for testing purposes with a cleanhttp.DefaultClient as the base.
-// It also sets the retry max to 10 for testing purposes, allowing
-// for more retries in case of network issues or other problems,
-// preventing flaky tests.
+// testClient returns a new HTTP client that retries failed requests,
+// allowing live tests to ride out transient network issues.
 func testClient(t *testing.T) *http.Client {
 	t.Helper()
 
-	retryClient := retryablehttp.NewClient()
-
-	retryClient.RetryMax = 10
-
-	retryClient.HTTPClient = cleanhttp.DefaultClient()
-
-	retryClient.Logger = nil
-
-	retryClient.CheckRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
-		return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
+	return &http.Client{
+		Transport: &httpretry.Transport{MaxRetries: 10},
 	}
-
-	retryClient.Backoff = func(min, max time.Duration, attemptNum int, resp *http.Response) time.Duration {
-		return retryablehttp.DefaultBackoff(min, max, attemptNum, resp)
-	}
-
-	retryClient.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		return nil, err
-	}
-
-	return retryClient.StandardClient()
 }
 
 func TestQuery(t *testing.T) {
