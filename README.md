@@ -193,6 +193,8 @@ Every flag can also be set with a `DOH_`-prefixed environment variable (`--tls-c
 }
 ```
 
+Answers are cached for as long as their records live (up to a day), so repeated lookups, common on a local network, skip the upstream round trip. `--cache-size` sets how many are kept (10,000 by default; `0` disables the cache).
+
 The server also exposes a `GET /healthz` liveness endpoint, logs every request at `--log-level debug`, and shuts down gracefully on interrupt.
 
 ## Go library
@@ -220,9 +222,12 @@ $ doh query --help
 Query DNS records from DoH servers using the given domains and record type.
 
 Users can specify which servers to use for the query, or use the default servers from Google, Cloudflare, and Quad9.
-They can also specify a timeout for the query, which defaults to 30 seconds if not specified. Each server is queried
-in parallel, and each domain is queried in parallel. Results are streamed to STDOUT as JSON newline delimited objects,
-which can be piped to other commands (e.g. jq) or redirected to a file.
+Servers can use DNS-over-HTTPS (https://, or http:// for a local server), DNS-over-TLS (tls://host[:853]), or plain
+DNS (udp://host[:53], tcp://host[:53], or just host), the same forms doh serve accepts as upstreams. They can also
+specify a timeout for the query, which defaults to 30 seconds if not specified. Each server is queried in parallel,
+and each domain is queried in parallel. Results are streamed to STDOUT as JSON newline delimited objects, including
+the TLS version, cipher suite, and ALPN protocol for encrypted servers, which can be piped to other commands (e.g. jq)
+or redirected to a file.
 
 Usage:
   doh query domains... [flags]
@@ -292,6 +297,7 @@ Flags:
       --block-response string        answer blocked names with nxdomain, or null (0.0.0.0 and ::) (default "nxdomain")
       --blocklist strings            block names on these lists: presets (default, easylist, easyprivacy, hagezi-light, hagezi-normal, hagezi-pro, oisd-big, oisd-small, stevenblack), URLs, or files, as [name=]location
       --blocklist-refresh duration   how often to reload blocklists (default 24h0m0s)
+      --cache-size int               most upstream answers to cache, for as long as their records live; 0 disables the cache (default 10000)
       --config string                path to a JSON config file
       --dns-listen string            also serve plain DNS over UDP and TCP on this address, such as :53
       --flight-recorder              keep recent execution traces in memory, to snapshot from the admin listener

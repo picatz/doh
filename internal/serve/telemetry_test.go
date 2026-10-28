@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"expvar"
 	"io"
 	"net"
 	"net/http"
@@ -82,6 +83,8 @@ func TestTelemetry(t *testing.T) {
 			`doh_responses_total{rcode="NOERROR"} 3`,
 			`doh_upstream_queries_total{upstream="udp://`,
 			`doh_upstream_errors_total{upstream="udp://`,
+			"doh_cache_hits_total 2",
+			"doh_cache_misses_total 1",
 			"# TYPE doh_queries_total counter",
 			"go_goroutines ",
 		} {
@@ -101,6 +104,10 @@ func TestTelemetry(t *testing.T) {
 			DoH struct {
 				Queries   map[string]int `json:"queries"`
 				Responses map[string]int `json:"responses"`
+				Cache     struct {
+					Hits   int `json:"hits"`
+					Misses int `json:"misses"`
+				} `json:"cache"`
 				Upstreams map[string]struct {
 					Queries int     `json:"queries"`
 					Errors  int     `json:"errors"`
@@ -121,10 +128,14 @@ func TestTelemetry(t *testing.T) {
 		if len(vars.DoH.Upstreams) != 1 {
 			t.Errorf("got upstreams %+v, want 1", vars.DoH.Upstreams)
 		}
+		// The same question three times: one upstream query, two cache hits.
 		for _, u := range vars.DoH.Upstreams {
-			if u.Queries != 3 || u.Errors != 0 {
-				t.Errorf("got upstream %+v, want 3 queries and no errors", u)
+			if u.Queries != 1 || u.Errors != 0 {
+				t.Errorf("got upstream %+v, want 1 query and no errors", u)
 			}
+		}
+		if vars.DoH.Cache.Hits != 2 || vars.DoH.Cache.Misses != 1 {
+			t.Errorf("got cache %+v, want 2 hits and 1 miss", vars.DoH.Cache)
 		}
 
 		if len(vars.Runtime) == 0 || vars.Build["go"] == "" {
@@ -195,6 +206,23 @@ func TestTelemetry_SharesCountersForEquivalentUpstreams(t *testing.T) {
 	}
 	if got := m.queries.Value(); got != 1 {
 		t.Errorf("got %d queries for the upstream, want 1", got)
+	}
+}
+
+func TestServer_CacheDisabled(t *testing.T) {
+	s, err := New(Config{Plaintext: true, Upstreams: []string{startResolver(t)}, Cache: CacheConfig{Disabled: true}}, testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		s.answerDNS(t.Context(), "udp", new(dns.Msg).SetQuestion("example.com.", dns.TypeA))
+	}
+
+	var queries int64
+	s.telemetry.upstreams.Do(func(kv expvar.KeyValue) { queries += kv.Value.(*upstreamMetrics).queries.Value() })
+	if queries != 2 {
+		t.Errorf("got %d upstream queries, want every query forwarded with the cache disabled", queries)
 	}
 }
 

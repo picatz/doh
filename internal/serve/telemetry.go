@@ -47,6 +47,8 @@ type telemetry struct {
 	upstreams   expvar.Map // by upstream: *upstreamMetrics
 	slowQueries expvar.Int
 	blocked     expvar.Map // by blocklist source
+	cacheHits   expvar.Int
+	cacheMisses expvar.Int
 
 	recorder *flightRecorder
 }
@@ -174,8 +176,8 @@ func (s *Server) serveVars(w http.ResponseWriter, r *http.Request) {
 
 	t := s.telemetry
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `{"doh": {"queries": %s, "responses": %s, "blocked": %s, "upstreams": %s, "slow_queries": %s}, "runtime": %s, "build": %s}`+"\n",
-		t.queries.String(), t.responses.String(), t.blocked.String(), t.upstreams.String(), t.slowQueries.String(), runtimeJSON, buildJSON)
+	fmt.Fprintf(w, `{"doh": {"queries": %s, "responses": %s, "blocked": %s, "cache": {"hits": %s, "misses": %s}, "upstreams": %s, "slow_queries": %s}, "runtime": %s, "build": %s}`+"\n",
+		t.queries.String(), t.responses.String(), t.blocked.String(), t.cacheHits.String(), t.cacheMisses.String(), t.upstreams.String(), t.slowQueries.String(), runtimeJSON, buildJSON)
 }
 
 // serveMetrics writes the server's counters in the Prometheus text
@@ -206,6 +208,8 @@ func (s *Server) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	upstreamCounter("doh_upstream_errors_total", "Queries to each upstream that failed.", func(m *upstreamMetrics) string { return m.errors.String() })
 	upstreamCounter("doh_upstream_seconds_total", "Time spent waiting for each upstream.", func(m *upstreamMetrics) string { return m.seconds.String() })
 
+	fmt.Fprintf(&b, "# HELP doh_cache_hits_total Queries answered from the cache.\n# TYPE doh_cache_hits_total counter\ndoh_cache_hits_total %s\n", t.cacheHits.String())
+	fmt.Fprintf(&b, "# HELP doh_cache_misses_total Queries the cache couldn't answer.\n# TYPE doh_cache_misses_total counter\ndoh_cache_misses_total %s\n", t.cacheMisses.String())
 	fmt.Fprintf(&b, "# HELP doh_slow_queries_total Queries slower than the slow query threshold.\n# TYPE doh_slow_queries_total counter\ndoh_slow_queries_total %s\n", t.slowQueries.String())
 
 	for _, sample := range runtimeMetrics() {

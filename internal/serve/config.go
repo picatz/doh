@@ -57,7 +57,22 @@ type Config struct {
 
 	// Blocklist blocks ads, trackers, and malware by name.
 	Blocklist BlocklistConfig `json:"blocklist,omitzero"`
+
+	// Cache caches upstream answers for as long as their records live.
+	Cache CacheConfig `json:"cache,omitzero"`
 }
+
+// CacheConfig configures the response cache, which is on by default.
+type CacheConfig struct {
+	// Size is the most responses cached. It defaults to DefaultCacheSize.
+	Size int `json:"size,omitempty"`
+
+	// Disabled turns the cache off.
+	Disabled bool `json:"disabled,omitempty"`
+}
+
+// DefaultCacheSize is the default number of cached responses.
+const DefaultCacheSize = 10_000
 
 // Blocklist responses.
 const (
@@ -245,6 +260,10 @@ func (c Config) withDefaults() Config {
 		c.Timeout = Duration(DefaultTimeout)
 	}
 
+	if c.Cache.Size == 0 {
+		c.Cache.Size = DefaultCacheSize
+	}
+
 	if c.Blocklist.enabled() {
 		if c.Blocklist.Response == "" {
 			c.Blocklist.Response = BlockNXDomain
@@ -347,6 +366,10 @@ func (c Config) Validate() error {
 		}
 	} else if len(c.Blocklist.Allow) > 0 {
 		errs = append(errs, errors.New("blocklist allow needs blocklist sources or block domains"))
+	}
+
+	if c.Cache.Size < 0 {
+		errs = append(errs, errors.New("cache size must not be negative"))
 	}
 
 	if c.Admin.Listen != "" {
