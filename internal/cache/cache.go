@@ -4,6 +4,7 @@ package cache
 import (
 	"container/list"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -16,8 +17,11 @@ import (
 const MaxTTL = 24 * time.Hour
 
 // Cache is a bounded, least-recently-used cache of DNS responses, keyed by
-// question and the DNSSEC bits (DO and CD) that change what a resolver
-// returns. It's safe for concurrent use.
+// question and the header and EDNS bits (RD, AD, CD, EDNS, and DO) that
+// change what a resolver returns. It's safe for concurrent use.
+//
+// Only standard queries are cached, and never ones carrying an EDNS Client
+// Subnet option (RFC 7871), whose answers are tailored to the client.
 type Cache struct {
 	size int
 	now  func() time.Time
@@ -31,7 +35,9 @@ type key struct {
 	name   string
 	qtype  uint16
 	qclass uint16
-	do, cd bool
+
+	rd, ad, cd bool // header flags
+	edns, do   bool // EDNS (RFC 6891) and its DNSSEC OK bit
 }
 
 type entry struct {
@@ -51,9 +57,10 @@ func New(size int) *Cache {
 	}
 }
 
-// keyOf returns the cache key for a single-question query.
+// keyOf returns the cache key for query, reporting whether it's cacheable:
+// a standard query with one question and no EDNS Client Subnet option.
 func keyOf(query *dns.Msg) (key, bool) {
-	if len(query.Question) != 1 {
+	if query.Opcode != dns.OpcodeQuery || len(query.Question) != 1 {
 		return key{}, false
 	}
 
@@ -62,17 +69,25 @@ func keyOf(query *dns.Msg) (key, bool) {
 		name:   strings.ToLower(q.Name),
 		qtype:  q.Qtype,
 		qclass: q.Qclass,
+		rd:     query.RecursionDesired,
+		ad:     query.AuthenticatedData,
 		cd:     query.CheckingDisabled,
 	}
+
 	if opt := query.IsEdns0(); opt != nil {
-		k.do = opt.Do()
+		if slices.ContainsFunc(opt.Option, func(o dns.EDNS0) bool { return o.Option() == dns.EDNS0SUBNET }) {
+			return key{}, false
+		}
+		k.edns, k.do = true, opt.Do()
 	}
 
 	return k, true
 }
 
-// Get returns a cached response to query, with its ID set to the query's
-// and its TTLs reduced by the time it has been cached, or nil.
+// Get returns a cached response to query, with its ID and question set to
+// the query's, preserving the query's capitalization for clients that
+// check it (DNS 0x20), and its TTLs reduced by the time it has been
+// cached, or nil.
 func (c *Cache) Get(query *dns.Msg) *dns.Msg {
 	k, ok := keyOf(query)
 	if !ok {
@@ -99,6 +114,7 @@ func (c *Cache) Get(query *dns.Msg) *dns.Msg {
 
 	resp := e.msg.Copy()
 	resp.Id = query.Id
+	resp.Question = slices.Clone(query.Question)
 	decay(resp, uint32(now.Sub(e.stored)/time.Second))
 
 	return resp
@@ -107,6 +123,10 @@ func (c *Cache) Get(query *dns.Msg) *dns.Msg {
 // Put caches resp as the answer to query, for the lifetime of its records.
 // Failures, truncated responses, and responses without records aren't
 // cached.
+//
+// The stored copy has its authority SOA TTL lowered to the SOA's MINIMUM,
+// so hits advertise the negative answer's true remaining lifetime, and
+// any DNS cookie (RFC 7873) removed, since it belongs to one client.
 func (c *Cache) Put(query, resp *dns.Msg) {
 	if c.size <= 0 || resp.Truncated {
 		return
@@ -122,10 +142,20 @@ func (c *Cache) Put(query, resp *dns.Msg) {
 		return
 	}
 
+	msg := resp.Copy()
+	for _, rr := range msg.Ns {
+		if soa, ok := rr.(*dns.SOA); ok {
+			soa.Hdr.Ttl = min(soa.Hdr.Ttl, soa.Minttl)
+		}
+	}
+	if opt := msg.IsEdns0(); opt != nil {
+		opt.Option = slices.DeleteFunc(opt.Option, func(o dns.EDNS0) bool { return o.Option() == dns.EDNS0COOKIE })
+	}
+
 	now := c.now()
 	e := &entry{
 		key:     k,
-		msg:     resp.Copy(),
+		msg:     msg,
 		stored:  now,
 		expires: now.Add(min(time.Duration(ttl)*time.Second, MaxTTL)),
 	}

@@ -92,18 +92,94 @@ func TestCache_Keys(t *testing.T) {
 	do := query("example.com.", dns.TypeA)
 	do.SetEdns0(dns.DefaultMsgSize, true)
 
+	edns := query("example.com.", dns.TypeA)
+	edns.SetEdns0(dns.DefaultMsgSize, false)
+
 	cd := query("example.com.", dns.TypeA)
 	cd.CheckingDisabled = true
 
+	ad := query("example.com.", dns.TypeA)
+	ad.AuthenticatedData = true
+
+	norec := query("example.com.", dns.TypeA)
+	norec.RecursionDesired = false
+
 	for name, other := range map[string]*dns.Msg{
-		"other type":        query("example.com.", dns.TypeAAAA),
-		"other name":        query("example.net.", dns.TypeA),
-		"DNSSEC OK":         do,
-		"checking disabled": cd,
+		"other type":         query("example.com.", dns.TypeAAAA),
+		"other name":         query("example.net.", dns.TypeA),
+		"EDNS":               edns,
+		"DNSSEC OK":          do,
+		"checking disabled":  cd,
+		"authenticated data": ad,
+		"no recursion":       norec,
 	} {
 		if c.Get(other) != nil {
 			t.Errorf("%s: hit for a different key", name)
 		}
+	}
+}
+
+func TestCache_Uncacheable(t *testing.T) {
+	update := query("example.com.", dns.TypeSOA)
+	update.Opcode = dns.OpcodeUpdate
+
+	ecs := query("example.com.", dns.TypeA)
+	ecs.SetEdns0(dns.DefaultMsgSize, false)
+	ecs.IsEdns0().Option = append(ecs.IsEdns0().Option, &dns.EDNS0_SUBNET{
+		Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 24, Address: net.ParseIP("198.51.100.0").To4(),
+	})
+
+	for name, q := range map[string]*dns.Msg{"update": update, "client subnet": ecs} {
+		c, _ := newTestCache(10)
+		c.Put(q, answer(q, 60))
+		if c.Len() != 0 || c.Get(q) != nil {
+			t.Errorf("%s: cached", name)
+		}
+	}
+
+	// A cached query must not answer an update for the same name.
+	c, _ := newTestCache(10)
+	q := query("example.com.", dns.TypeSOA)
+	c.Put(q, answer(q, 60))
+	if c.Get(update) != nil {
+		t.Error("update answered from the cache")
+	}
+}
+
+func TestCache_Rewrites(t *testing.T) {
+	c, clk := newTestCache(10)
+
+	q := query("example.com.", dns.TypeA)
+	q.SetEdns0(dns.DefaultMsgSize, false)
+
+	resp := new(dns.Msg).SetRcode(q, dns.RcodeNameError)
+	resp.Ns = append(resp.Ns, &dns.SOA{
+		Hdr:    dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 3600},
+		Ns:     "ns.example.com.",
+		Mbox:   "admin.example.com.",
+		Minttl: 120,
+	})
+	resp.SetEdns0(dns.DefaultMsgSize, false)
+	resp.IsEdns0().Option = append(resp.IsEdns0().Option, &dns.EDNS0_COOKIE{Code: dns.EDNS0COOKIE, Cookie: "0102030405060708a1a2a3a4a5a6a7a8"})
+	c.Put(q, resp)
+
+	clk.advance(119 * time.Second)
+
+	other := query("ExAmPlE.CoM.", dns.TypeA)
+	other.SetEdns0(dns.DefaultMsgSize, false)
+
+	got := c.Get(other)
+	if got == nil {
+		t.Fatal("miss")
+	}
+	if got.Question[0].Name != "ExAmPlE.CoM." {
+		t.Errorf("got question %q, want the query's capitalization", got.Question[0].Name)
+	}
+	if ttl := got.Ns[0].Header().Ttl; ttl != 1 {
+		t.Errorf("got SOA TTL %d, want the 1s left of its MINIMUM", ttl)
+	}
+	if opts := got.IsEdns0().Option; len(opts) != 0 {
+		t.Errorf("got EDNS options %v, want the cookie removed", opts)
 	}
 }
 
