@@ -123,9 +123,15 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 				},
 			}
 
-			retryClient.HTTPClient.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			transport := retryClient.HTTPClient.Transport.(*http.Transport)
+
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return dialer.DialContext(ctx, network, addr)
 			}
+
+			// A proxy would resolve DoH server names itself, silently
+			// bypassing the custom resolver, so connect directly instead.
+			transport.Proxy = nil
 		}
 
 		httpClient := retryClient.StandardClient()
@@ -186,7 +192,7 @@ func init() {
 	CommandQuery.Flags().String("type", "A", "dns record type to query for each domain, such as A, AAAA, MX, etc.")
 	CommandQuery.Flags().StringSlice("servers", defaultServers, "servers to query")
 	CommandQuery.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0s for no timeout")
-	CommandQuery.Flags().String("resolver-addr", "", "address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53)")
+	CommandQuery.Flags().String("resolver-addr", "", "address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53); connects directly, ignoring HTTP(S)_PROXY")
 	CommandQuery.Flags().String("resolver-network", "udp", "protocol to use for resolving DoH server names (e.g. udp, tcp)")
 	CommandQuery.Flags().Int("retry-max", 10, "maximum number of retries for each query")
 	CommandQuery.Flags().BoolP("insecure-skip-verify", "k", false, "allow insecure server connections (e.g. self-signed TLS certificates)")

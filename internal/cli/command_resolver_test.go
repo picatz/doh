@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -193,5 +195,34 @@ func TestCommand_Query_CustomResolverError(t *testing.T) {
 	t.Cleanup(func() { cli.CommandRoot.SetErr(nil) })
 	if err := cli.CommandRoot.Execute(); err == nil || !strings.Contains(err.Error(), "error dialing with custom resolver") {
 		t.Errorf("expected custom resolver error, got %v", err)
+	}
+}
+
+// TestCommand_Query_CustomResolverBypassesProxy runs the custom resolver
+// tests in a subprocess with an unreachable proxy configured, since
+// net/http reads proxy environment variables only once per process.
+func TestCommand_Query_CustomResolverBypassesProxy(t *testing.T) {
+	if os.Getenv("DOH_TEST_PROXY_SUBPROCESS") != "" {
+		t.Skip("already running in the proxy subprocess")
+	}
+
+	// Reserve a port, then close it so the proxy refuses connections.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL := "http://" + listener.Addr().String()
+	listener.Close()
+
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestCommand_Query_CustomResolver$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"DOH_TEST_PROXY_SUBPROCESS=1",
+		"HTTP_PROXY="+proxyURL, "HTTPS_PROXY="+proxyURL,
+		"http_proxy="+proxyURL, "https_proxy="+proxyURL,
+		"NO_PROXY=", "no_proxy=",
+	)
+
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("custom resolver tests failed with a proxy configured: %v\n%s", err, output)
 	}
 }
