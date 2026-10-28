@@ -171,7 +171,7 @@ func normalize(name string) (string, bool) {
 		return "", false
 	}
 
-	for _, label := range strings.Split(name, ".") {
+	for label := range strings.SplitSeq(name, ".") {
 		if label == "" || len(label) > 63 {
 			return "", false
 		}

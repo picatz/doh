@@ -137,8 +137,11 @@ func TestTelemetry(t *testing.T) {
 	})
 
 	t.Run("pprof", func(t *testing.T) {
-		if status, _ := get(t, admin+PprofPath); status != http.StatusOK {
-			t.Errorf("got status %d for the pprof index", status)
+		// The goroutine leak profile is generally available since Go 1.27.
+		for _, path := range []string{"", "goroutine", "goroutineleak"} {
+			if status, _ := get(t, admin+PprofPath+path); status != http.StatusOK {
+				t.Errorf("got status %d for %s%s", status, PprofPath, path)
+			}
 		}
 	})
 

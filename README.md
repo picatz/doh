@@ -14,7 +14,7 @@ It's also a Go library: [`pkg/doh`](https://pkg.go.dev/github.com/picatz/doh/pkg
 
 ## Install
 
-With [Go](https://go.dev/doc/install) 1.26 or later:
+With [Go](https://go.dev/doc/install) 1.27 or later:
 
 ```console
 $ go install github.com/picatz/doh@latest

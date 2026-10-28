@@ -95,9 +95,7 @@ func TestNewServer(t *testing.T) {
 			name: "valid request (GET)",
 			req: func() *http.Request {
 				dnsReq := dns.Msg{
-					MsgHdr: dns.MsgHdr{
-						RecursionDesired: true,
-					},
+					RecursionDesired: true,
 					Question: []dns.Question{
 						{
 							Name:   dns.Fqdn("google.com"),
@@ -129,9 +127,7 @@ func TestNewServer(t *testing.T) {
 			name: "valid request (POST)",
 			req: func() *http.Request {
 				dnsReq := dns.Msg{
-					MsgHdr: dns.MsgHdr{
-						RecursionDesired: true,
-					},
+					RecursionDesired: true,
 					Question: []dns.Question{
 						{
 							Name:   dns.Fqdn("google.com"),
@@ -173,9 +169,7 @@ func TestNewServer(t *testing.T) {
 		testServerURL := testServer.URL + "/dns-query"
 
 		resp, err := doh.Query(ctx, testClient(t), testServerURL, &dns.Msg{
-			MsgHdr: dns.MsgHdr{
-				RecursionDesired: true,
-			},
+			RecursionDesired: true,
 			Question: []dns.Question{
 				{
 					Name:   dns.Fqdn("google.com"),
@@ -209,9 +203,7 @@ func TestForwarder(t *testing.T) {
 	testServerURL := testServer.URL + "/dns-query"
 
 	resp, err := doh.Query(ctx, testClient(t), testServerURL, &dns.Msg{
-		MsgHdr: dns.MsgHdr{
-			RecursionDesired: true,
-		},
+		RecursionDesired: true,
 		Question: []dns.Question{
 			{
 				Name:   dns.Fqdn("google.com"),
