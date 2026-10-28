@@ -9,6 +9,10 @@
 test: ## Run tests
 	@go test -v ./...
 
+.PHONY: test-live
+test-live: ## Run tests, including those that query public DoH resolvers
+	@DOH_LIVE_TESTS=1 go test -v ./...
+
 .PHONY: build
 build: ## Build binary
 	@go build -o doh

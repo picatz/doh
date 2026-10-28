@@ -197,7 +197,7 @@ func TestNewServer(t *testing.T) {
 }
 
 func TestForwarder(t *testing.T) {
-	mux := doh.NewServerMux(doh.Forwarder(cleanhttp.DefaultClient(), doh.Google))
+	mux := doh.NewServerMux(doh.Forwarder(cleanhttp.DefaultClient(), testServerURL(t)))
 
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
@@ -222,11 +222,11 @@ func TestForwarder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(resp.Answer) == 0 {
-		t.Error("got no answer for known domain")
+	if len(resp.Answer) != 1 {
+		t.Fatalf("got %d answers, want 1", len(resp.Answer))
 	}
 
-	for _, answer := range resp.Answer {
-		t.Logf("answer: %s", answer.String())
+	if got, want := resp.Answer[0].(*dns.A).A.String(), "192.0.2.1"; got != want {
+		t.Errorf("got forwarded answer %s, want %s", got, want)
 	}
 }

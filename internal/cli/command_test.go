@@ -6,12 +6,23 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/internal/cli"
 	"github.com/picatz/doh/pkg/doh"
 )
+
+// requireLiveNetwork skips the test unless DOH_LIVE_TESTS is set, since
+// public DoH resolvers are not reliably reachable from CI runners.
+func requireLiveNetwork(t *testing.T) {
+	t.Helper()
+
+	if os.Getenv("DOH_LIVE_TESTS") == "" {
+		t.Skip("skipping live network test; set DOH_LIVE_TESTS=1 to enable")
+	}
+}
 
 func testCommand(t *testing.T, args ...string) io.Reader {
 	t.Helper()
@@ -34,6 +45,7 @@ func TestCommand(t *testing.T) {
 	tests := []struct {
 		name  string
 		args  []string
+		live  bool
 		check func(t *testing.T, output io.Reader)
 	}{
 		{
@@ -53,6 +65,7 @@ func TestCommand(t *testing.T) {
 		{
 			name: "query google.com",
 			args: []string{"query", "google.com"},
+			live: true,
 			check: func(t *testing.T, output io.Reader) {
 				b, err := io.ReadAll(output)
 				if err != nil {
@@ -69,6 +82,7 @@ func TestCommand(t *testing.T) {
 		{
 			name: "query cloudflare.com",
 			args: []string{"query", "cloudflare.com"},
+			live: true,
 			check: func(t *testing.T, output io.Reader) {
 				b, err := io.ReadAll(output)
 				if err != nil {
@@ -86,6 +100,10 @@ func TestCommand(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			if test.live {
+				requireLiveNetwork(t)
+			}
+
 			output := testCommand(t, test.args...)
 
 			test.check(t, output)
