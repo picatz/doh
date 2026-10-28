@@ -174,9 +174,7 @@ func SimpleQuery(ctx context.Context, httpClient *http.Client, server string, re
 	}
 
 	dnsResp, err := Query(ctx, httpClient, server, &dns.Msg{
-		MsgHdr: dns.MsgHdr{
-			RecursionDesired: true,
-		},
+		RecursionDesired: true,
 		Question: []dns.Question{
 			{
 				Name:   dns.Fqdn(req.Name),

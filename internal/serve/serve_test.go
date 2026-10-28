@@ -456,15 +456,26 @@ func TestServer_ShutdownWaitsForInFlightRequests(t *testing.T) {
 	}
 }
 
-func TestConfig_LoadFileRejectsTrailingData(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"plaintext": true} {"listne": ":80"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+func TestConfig_LoadFileRejects(t *testing.T) {
+	for name, content := range map[string]string{
+		"trailing data":  `{"plaintext": true} {"listne": ":80"}`,
+		"duplicate keys": `{"listen": ":443", "listen": ":80"}`,
+		"wrong case":     `{"Listen": ":443"}`,
+		"unknown field":  `{"listne": ":443"}`,
+		"bad duration":   `{"timeout": "soon"}`,
+		"number timeout": `{"timeout": 5}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	var c Config
-	if err := c.LoadFile(path); err == nil || !strings.Contains(err.Error(), "unexpected data") {
-		t.Errorf("got error %v, want trailing data rejected", err)
+			var c Config
+			if err := c.LoadFile(path); err == nil {
+				t.Errorf("loaded %s as %+v, want an error", content, c)
+			}
+		})
 	}
 }
 

@@ -87,9 +87,7 @@ var queryTable = func() []struct {
 		for _, domain := range domains {
 			for _, qtype := range types {
 				req := &dns.Msg{
-					MsgHdr: dns.MsgHdr{
-						RecursionDesired: true,
-					},
+					RecursionDesired: true,
 					Question: []dns.Question{
 						{
 							Name:   dns.Fqdn(domain),
@@ -317,9 +315,7 @@ func TestKnownServers_Query_Live(t *testing.T) {
 	client := testClient(t)
 
 	req := &dns.Msg{
-		MsgHdr: dns.MsgHdr{
-			RecursionDesired: true,
-		},
+		RecursionDesired: true,
 		Question: []dns.Question{
 			{
 				Name:   dns.Fqdn("google.com"),

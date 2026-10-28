@@ -2,11 +2,9 @@
 package serve
 
 import (
-	"bytes"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -190,22 +188,19 @@ const (
 var DefaultUpstreams = []string{doh.Cloudflare, doh.Google}
 
 // LoadFile reads a JSON config file into c, overriding the fields it sets.
-// Unknown fields are rejected, so typos don't silently go unnoticed.
+//
+// The file is decoded with encoding/json/v2, which, unlike encoding/json,
+// rejects duplicate keys and matches names exactly. Unknown fields and
+// trailing data are rejected too, so typos and mistakes don't go unnoticed.
 func (c *Config) LoadFile(name string) error {
-	b, err := os.ReadFile(name)
+	f, err := os.Open(name)
 	if err != nil {
 		return fmt.Errorf("serve: reading config: %w", err)
 	}
+	defer f.Close()
 
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(c); err != nil {
+	if err := json.UnmarshalRead(f, c, json.RejectUnknownMembers(true)); err != nil {
 		return fmt.Errorf("serve: parsing config %s: %w", name, err)
-	}
-
-	if _, err := dec.Token(); err != io.EOF {
-		return fmt.Errorf("serve: parsing config %s: unexpected data after the config object", name)
 	}
 
 	return nil
@@ -405,25 +400,20 @@ func (l LogConfig) Logger() (*slog.Logger, error) {
 	return slog.New(h), nil
 }
 
-// Duration is a [time.Duration] that encodes to and from JSON as a string
-// such as "5s" or "1m30s".
+// Duration is a [time.Duration] that encodes as text such as "5s" or
+// "1m30s", in JSON and other text-based formats.
 type Duration time.Duration
 
-// MarshalJSON implements [json.Marshaler].
-func (d Duration) MarshalJSON() ([]byte, error) {
-	return json.Marshal(time.Duration(d).String())
+// MarshalText implements [encoding.TextMarshaler].
+func (d Duration) MarshalText() ([]byte, error) {
+	return []byte(time.Duration(d).String()), nil
 }
 
-// UnmarshalJSON implements [json.Unmarshaler].
-func (d *Duration) UnmarshalJSON(b []byte) error {
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return fmt.Errorf("duration must be a string such as \"5s\": %w", err)
-	}
-
-	v, err := time.ParseDuration(s)
+// UnmarshalText implements [encoding.TextUnmarshaler].
+func (d *Duration) UnmarshalText(b []byte) error {
+	v, err := time.ParseDuration(string(b))
 	if err != nil {
-		return err
+		return fmt.Errorf("duration must be a string such as \"5s\": %w", err)
 	}
 
 	*d = Duration(v)
