@@ -40,7 +40,7 @@ var CommandQuery = &cobra.Command{
 	Use:   "query domains... [flags]",
 	Short: "Query DNS records from DoH servers",
 	Long: `Query DNS records from DoH servers using the given domains and record type.
-		
+
 Users can specify which servers to use for the query, or use the default servers from Google, Cloudflare, and Quad9.
 They can also specify a timeout for the query, which defaults to 30 seconds if not specified. Each server is queried
 in parallel, and each domain is queried in parallel. Results are streamed to STDOUT as JSON newline delimited objects,
