@@ -470,6 +470,19 @@ func TestNewServerMux_CacheControl(t *testing.T) {
 			want:  "max-age=30",
 		},
 		{
+			name:  "negative answer after CNAME uses SOA minimum",
+			rcode: dns.RcodeNameError,
+			ans:   []dns.RR{rr("www.example.com. 300 IN CNAME gone.example.com.")},
+			ns:    []dns.RR{rr("example.com. 3600 IN SOA ns.example.com. admin.example.com. 1 7200 900 1209600 120")},
+			want:  "max-age=120",
+		},
+		{
+			name: "no data after CNAME uses SOA minimum",
+			ans:  []dns.RR{rr("www.example.com. 300 IN CNAME example.net.")},
+			ns:   []dns.RR{rr("example.net. 3600 IN SOA ns.example.net. admin.example.net. 1 7200 900 1209600 90")},
+			want: "max-age=90",
+		},
+		{
 			name: "no records",
 			want: "max-age=0",
 		},
@@ -540,5 +553,27 @@ func TestForwarder_AllFail(t *testing.T) {
 		if !strings.Contains(err.Error(), failing.URL+path) {
 			t.Errorf("got error %q, want mention of %s", err, failing.URL+path)
 		}
+	}
+}
+
+func TestForwarder_RedactsCredentials(t *testing.T) {
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(failing.Close)
+
+	serverURL := strings.Replace(failing.URL, "http://", "http://user:hunter2@", 1) + "/dns-query"
+
+	_, err := doh.Forwarder(failing.Client(), serverURL)(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/dns-query", nil), new(dns.Msg).SetQuestion("example.com.", dns.TypeA))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	if strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error %q exposes the upstream password", err)
+	}
+
+	if !strings.Contains(err.Error(), "user:xxxxx@") {
+		t.Errorf("got error %q, want redacted upstream URL", err)
 	}
 }

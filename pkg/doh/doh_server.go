@@ -9,6 +9,7 @@ import (
 	"math"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -226,8 +227,9 @@ func serveDNS(w http.ResponseWriter, r *http.Request, handler Handler, dnsReq *d
 // maxAge returns the HTTP freshness lifetime, in seconds, for a DNS response:
 // the smallest TTL of any record in it, as required by RFC 8484, Section 5.1.
 //
-// For negative answers, the TTL of an SOA record in the authority section is
-// further limited by its MINIMUM field, following RFC 2308, Section 5.
+// The TTL of an SOA record in the authority section, which marks a negative
+// answer, is further limited by its MINIMUM field, following RFC 2308,
+// Section 5, even when the answer section holds a CNAME chain.
 // Responses without records, and failures other than NXDOMAIN, are not
 // cached.
 func maxAge(msg *dns.Msg) uint32 {
@@ -237,14 +239,18 @@ func maxAge(msg *dns.Msg) uint32 {
 
 	age, found := uint32(math.MaxUint32), false
 
-	for _, section := range [][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
+	for i, section := range [][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
+		authority := i == 1
+
 		for _, rr := range section {
 			if rr.Header().Rrtype == dns.TypeOPT {
 				continue
 			}
 
 			ttl := rr.Header().Ttl
-			if soa, ok := rr.(*dns.SOA); ok && len(msg.Answer) == 0 {
+			// An authority SOA marks a negative answer, possibly after a
+			// CNAME chain, so its MINIMUM caps the lifetime too.
+			if soa, ok := rr.(*dns.SOA); ok && authority {
 				ttl = min(ttl, soa.Minttl)
 			}
 
@@ -257,6 +263,16 @@ func maxAge(msg *dns.Msg) uint32 {
 	}
 
 	return age
+}
+
+// redact returns serverURL with any password replaced, so it is safe to
+// include in errors and logs.
+func redact(serverURL string) string {
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		return "invalid URL"
+	}
+	return u.Redacted()
 }
 
 // Forwarder returns a DoH handler that forwards DNS queries to multiple DoH servers,
@@ -275,7 +291,7 @@ func Forwarder(httpClient *http.Client, serverURLs ...string) Handler {
 				return respMsg, nil
 			}
 
-			errs = append(errs, fmt.Errorf("%s: %w", serverURL, err))
+			errs = append(errs, fmt.Errorf("%s: %w", redact(serverURL), err))
 		}
 
 		return nil, errors.Join(errs...)
