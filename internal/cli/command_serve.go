@@ -59,6 +59,8 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v string) { c.TLS.CertFile = v }),
 	option((*pflag.FlagSet).String, "tls-key", "", "TLS private key file (PEM)",
 		func(c *serve.Config, v string) { c.TLS.KeyFile = v }),
+	option((*pflag.FlagSet).String, "tls-min-version", "1.2", "oldest TLS version to accept: 1.2 or 1.3 (TLS 1.3 is preferred either way)",
+		func(c *serve.Config, v string) { c.TLS.MinVersion = v }),
 	option((*pflag.FlagSet).StringSlice, "acme-domain", nil, "domains to obtain ACME certificates for, enabling ACME",
 		func(c *serve.Config, v []string) { c.TLS.ACME.Domains = v }),
 	option((*pflag.FlagSet).String, "acme-email", "", "contact email for the ACME account",

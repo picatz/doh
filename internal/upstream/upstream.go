@@ -4,6 +4,7 @@
 // Upstreams are identified by URL:
 //
 //	https://dns.google/dns-query   DNS-over-HTTPS (RFC 8484)
+//	http://127.0.0.1:8080/dns-query  DoH without TLS, such as to a local server
 //	tls://1.1.1.1:853              DNS-over-TLS (RFC 7858)
 //	tcp://9.9.9.9:53               DNS over TCP
 //	udp://9.9.9.9:53               DNS over UDP, retried over TCP if truncated
@@ -17,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"time"
@@ -52,6 +54,11 @@ type Options struct {
 	// Timeout bounds each plain DNS and DNS-over-TLS exchange.
 	// If zero, [DefaultTimeout] is used.
 	Timeout time.Duration
+
+	// Dialer, if set, dials plain DNS and DNS-over-TLS connections, such as
+	// to resolve upstream names with a particular resolver. DNS-over-HTTPS
+	// upstreams dial with HTTPClient's transport instead.
+	Dialer *net.Dialer
 }
 
 // Parse returns an [Exchanger] for the upstream identified by rawURL.
@@ -75,7 +82,7 @@ func Parse(rawURL string, opts Options) (Exchanger, error) {
 	}
 
 	switch u.Scheme {
-	case "https":
+	case "https", "http":
 		client := opts.HTTPClient
 		if client == nil {
 			client = &http.Client{CheckRedirect: CheckRedirect}
@@ -89,10 +96,12 @@ func Parse(rawURL string, opts Options) (Exchanger, error) {
 			client: &dns.Client{
 				Net:     "udp",
 				Timeout: timeout,
+				Dialer:  opts.Dialer,
 			},
 			tcpClient: &dns.Client{
 				Net:     "tcp",
 				Timeout: timeout,
+				Dialer:  opts.Dialer,
 			},
 		}, nil
 	case "tls":
@@ -112,10 +121,11 @@ func Parse(rawURL string, opts Options) (Exchanger, error) {
 				Net:       "tcp-tls",
 				Timeout:   timeout,
 				TLSConfig: tlsConfig,
+				Dialer:    opts.Dialer,
 			},
 		}, nil
 	default:
-		return nil, fmt.Errorf("upstream: unsupported scheme %q in %q (want https, tls, tcp, or udp)", u.Scheme, rawURL)
+		return nil, fmt.Errorf("upstream: unsupported scheme %q in %q (want https, http, tls, tcp, or udp)", u.Scheme, rawURL)
 	}
 }
 
@@ -141,6 +151,16 @@ func (u *dohUpstream) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, e
 	q := query.Copy()
 	q.Id = 0
 
+	if observe := tlsObserver(ctx); observe != nil {
+		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) {
+				if c, ok := info.Conn.(interface{ ConnectionState() tls.ConnectionState }); ok {
+					observe(c.ConnectionState())
+				}
+			},
+		})
+	}
+
 	resp, err := doh.Query(ctx, u.client, u.url, q)
 	if err != nil {
 		return nil, err
@@ -158,9 +178,9 @@ func (u *dohUpstream) String() string { return u.name }
 
 // CheckRedirect is an [http.Client] redirect policy for DNS-over-HTTPS
 // upstreams: it follows up to 10 redirects, like the default policy, but
-// refuses any to a URL that isn't HTTPS, which would expose queries.
+// refuses any from HTTPS to a URL that isn't, which would expose queries.
 func CheckRedirect(req *http.Request, via []*http.Request) error {
-	if req.URL.Scheme != "https" {
+	if len(via) > 0 && via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
 		return fmt.Errorf("refusing redirect from HTTPS to %s", req.URL.Redacted())
 	}
 
@@ -223,7 +243,7 @@ func (u *dnsUpstream) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, e
 		client = u.client
 	}
 
-	resp, _, err := client.ExchangeContext(ctx, q, u.addr)
+	resp, err := u.exchange(ctx, client, q)
 	if err == nil && resp.Truncated && u.udp {
 		resp, _, err = u.tcpClient.ExchangeContext(ctx, q, u.addr)
 	}
@@ -243,6 +263,29 @@ func (u *dnsUpstream) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, e
 	return resp, nil
 }
 
+// exchange sends q with client, reporting the TLS connection state of
+// DNS-over-TLS exchanges to the context's TLS observer, if any.
+func (u *dnsUpstream) exchange(ctx context.Context, client *dns.Client, q *dns.Msg) (*dns.Msg, error) {
+	observe := tlsObserver(ctx)
+	if observe == nil || client.Net != "tcp-tls" {
+		resp, _, err := client.ExchangeContext(ctx, q, u.addr)
+		return resp, err
+	}
+
+	conn, err := client.DialContext(ctx, u.addr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	if c, ok := conn.Conn.(*tls.Conn); ok {
+		observe(c.ConnectionState())
+	}
+
+	resp, _, err := client.ExchangeWithConnContext(ctx, q, conn)
+	return resp, err
+}
+
 func (u *dnsUpstream) String() string {
 	switch u.tcpClient.Net {
 	case "tcp-tls":
@@ -253,6 +296,21 @@ func (u *dnsUpstream) String() string {
 		}
 		return "tcp://" + u.addr
 	}
+}
+
+type tlsObserverKey struct{}
+
+// WithTLSObserver returns a context that reports the TLS connection state
+// of each DNS-over-HTTPS and DNS-over-TLS exchange made with it to observe,
+// like [net/http/httptrace] does for HTTP requests.
+func WithTLSObserver(ctx context.Context, observe func(tls.ConnectionState)) context.Context {
+	return context.WithValue(ctx, tlsObserverKey{}, observe)
+}
+
+// tlsObserver returns the context's TLS observer, or nil.
+func tlsObserver(ctx context.Context) func(tls.ConnectionState) {
+	observe, _ := ctx.Value(tlsObserverKey{}).(func(tls.ConnectionState))
+	return observe
 }
 
 // ErrAllFailed is returned by [Failover] when every upstream fails.

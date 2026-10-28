@@ -636,3 +636,36 @@ func TestCertReloader_DetectsEitherFileChanging(t *testing.T) {
 		t.Errorf("got certificate %q, want the rotated certificate", leaf.Subject.CommonName)
 	}
 }
+
+func TestServer_TLSMinVersion(t *testing.T) {
+	certFile, keyFile := writeCert(t, t.TempDir(), "doh")
+
+	s, err := New(Config{
+		Upstreams: []string{startResolver(t)},
+		TLS:       TLSConfig{CertFile: certFile, KeyFile: keyFile, MinVersion: "1.3"},
+	}, testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	addr := start(t, s)
+
+	dial := func(maxVersion uint16) error {
+		conn, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true, MaxVersion: maxVersion})
+		if err == nil {
+			conn.Close()
+		}
+		return err
+	}
+
+	if err := dial(tls.VersionTLS12); err == nil {
+		t.Error("accepted a TLS 1.2 client with min_version 1.3")
+	}
+	if err := dial(tls.VersionTLS13); err != nil {
+		t.Errorf("rejected a TLS 1.3 client: %v", err)
+	}
+
+	if err := (Config{Plaintext: true, TLS: TLSConfig{MinVersion: "1.1"}}).Validate(); err == nil || !strings.Contains(err.Error(), "min_version") {
+		t.Errorf("got error %v, want min_version rejected", err)
+	}
+}

@@ -154,8 +154,13 @@ func (s *Server) configureTLS() error {
 		return nil
 	}
 
+	minVersion, err := s.config.TLS.minVersion()
+	if err != nil {
+		return err
+	}
+
 	config := &tls.Config{
-		MinVersion: tls.VersionTLS12,
+		MinVersion: minVersion,
 		NextProtos: []string{"h2", "http/1.1"},
 	}
 
@@ -370,14 +375,22 @@ func logRequests(logger *slog.Logger, next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 
-		logger.DebugContext(r.Context(), "request",
+		attrs := []slog.Attr{
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.String("proto", r.Proto),
 			slog.String("remote", r.RemoteAddr),
 			slog.Int("status", rec.status),
 			slog.Duration("duration", time.Since(start)),
-		)
+		}
+		if r.TLS != nil {
+			attrs = append(attrs,
+				slog.String("tls", tls.VersionName(r.TLS.Version)),
+				slog.String("cipher_suite", tls.CipherSuiteName(r.TLS.CipherSuite)),
+			)
+		}
+
+		logger.LogAttrs(r.Context(), slog.LevelDebug, "request", attrs...)
 	})
 }
 
