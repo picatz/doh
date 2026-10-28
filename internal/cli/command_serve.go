@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/picatz/doh/internal/serve"
 	"github.com/picatz/doh/pkg/doh"
@@ -16,46 +17,80 @@ import (
 // that --tls-cert can also be set with DOH_TLS_CERT.
 const envPrefix = "DOH_"
 
-// serveFlags maps each serve flag to the config field it sets.
-var serveFlags = map[string]setter{
-	"listen":           stringFlag(func(c *serve.Config) *string { return &c.Listen }),
-	"path":             stringFlag(func(c *serve.Config) *string { return &c.Path }),
-	"upstream":         sliceFlag(func(c *serve.Config) *[]string { return &c.Upstreams }),
-	"tls-cert":         stringFlag(func(c *serve.Config) *string { return &c.TLS.CertFile }),
-	"tls-key":          stringFlag(func(c *serve.Config) *string { return &c.TLS.KeyFile }),
-	"acme-domain":      sliceFlag(func(c *serve.Config) *[]string { return &c.TLS.ACME.Domains }),
-	"acme-email":       stringFlag(func(c *serve.Config) *string { return &c.TLS.ACME.Email }),
-	"acme-cache-dir":   stringFlag(func(c *serve.Config) *string { return &c.TLS.ACME.CacheDir }),
-	"acme-directory":   stringFlag(func(c *serve.Config) *string { return &c.TLS.ACME.DirectoryURL }),
-	"acme-http-listen": stringFlag(func(c *serve.Config) *string { return &c.TLS.ACME.HTTPListen }),
-	"log-level":        stringFlag(func(c *serve.Config) *string { return &c.Log.Level }),
-	"log-format":       stringFlag(func(c *serve.Config) *string { return &c.Log.Format }),
-	"plaintext": func(fs *pflag.FlagSet, name string, c *serve.Config) (err error) {
-		c.Plaintext, err = fs.GetBool(name)
-		return err
-	},
-	"timeout": func(fs *pflag.FlagSet, name string, c *serve.Config) error {
-		d, err := fs.GetDuration(name)
-		c.Timeout = serve.Duration(d)
-		return err
-	},
+// serveOption is a serve flag and the config field it sets.
+type serveOption struct {
+	name string
+
+	// define adds the flag to a flag set, returning a function that copies
+	// the flag's current value into a config.
+	define func(fs *pflag.FlagSet) (apply func(*serve.Config))
 }
 
-// setter copies the value of the named flag into a config field.
-type setter func(fs *pflag.FlagSet, name string, c *serve.Config) error
-
-func stringFlag(field func(*serve.Config) *string) setter {
-	return func(fs *pflag.FlagSet, name string, c *serve.Config) (err error) {
-		*field(c), err = fs.GetString(name)
-		return err
+// option returns a serve option for a flag defined with define, such as
+// (*pflag.FlagSet).String, whose value is copied into a config with set.
+func option[T any](
+	define func(fs *pflag.FlagSet, name string, value T, usage string) *T,
+	name string, value T, usage string,
+	set func(c *serve.Config, v T),
+) serveOption {
+	return serveOption{
+		name: name,
+		define: func(fs *pflag.FlagSet) func(*serve.Config) {
+			p := define(fs, name, value, usage)
+			return func(c *serve.Config) { set(c, *p) }
+		},
 	}
 }
 
-func sliceFlag(field func(*serve.Config) *[]string) setter {
-	return func(fs *pflag.FlagSet, name string, c *serve.Config) (err error) {
-		*field(c), err = fs.GetStringSlice(name)
-		return err
+// serveOptions are the serve flags, in the order they're applied.
+var serveOptions = []serveOption{
+	option((*pflag.FlagSet).String, "listen", "", `address to listen on (default ":443", or ":8080" with --plaintext)`,
+		func(c *serve.Config, v string) { c.Listen = v }),
+	option((*pflag.FlagSet).String, "path", doh.DefaultPath, "URI path of the DoH endpoint",
+		func(c *serve.Config, v string) { c.Path = v }),
+	option((*pflag.FlagSet).StringSlice, "upstream", serve.DefaultUpstreams, "upstream resolvers, tried in order",
+		func(c *serve.Config, v []string) { c.Upstreams = v }),
+	option((*pflag.FlagSet).Duration, "timeout", serve.DefaultTimeout, "maximum time to answer each query",
+		func(c *serve.Config, v time.Duration) { c.Timeout = serve.Duration(v) }),
+	option((*pflag.FlagSet).String, "tls-cert", "", "TLS certificate chain file (PEM)",
+		func(c *serve.Config, v string) { c.TLS.CertFile = v }),
+	option((*pflag.FlagSet).String, "tls-key", "", "TLS private key file (PEM)",
+		func(c *serve.Config, v string) { c.TLS.KeyFile = v }),
+	option((*pflag.FlagSet).StringSlice, "acme-domain", nil, "domains to obtain ACME certificates for, enabling ACME",
+		func(c *serve.Config, v []string) { c.TLS.ACME.Domains = v }),
+	option((*pflag.FlagSet).String, "acme-email", "", "contact email for the ACME account",
+		func(c *serve.Config, v string) { c.TLS.ACME.Email = v }),
+	option((*pflag.FlagSet).String, "acme-cache-dir", "", "directory for ACME accounts and certificates (default user cache dir)",
+		func(c *serve.Config, v string) { c.TLS.ACME.CacheDir = v }),
+	option((*pflag.FlagSet).String, "acme-directory", "", "ACME directory URL (default Let's Encrypt)",
+		func(c *serve.Config, v string) { c.TLS.ACME.DirectoryURL = v }),
+	option((*pflag.FlagSet).String, "acme-http-listen", "", "address to answer ACME HTTP-01 challenges on, such as :80",
+		func(c *serve.Config, v string) { c.TLS.ACME.HTTPListen = v }),
+	option((*pflag.FlagSet).Bool, "plaintext", false, "serve unencrypted HTTP, behind a TLS-terminating proxy",
+		func(c *serve.Config, v bool) { c.Plaintext = v }),
+	option((*pflag.FlagSet).String, "log-level", "info", "log level: debug, info, warn, or error",
+		func(c *serve.Config, v string) { c.Log.Level = v }),
+	option((*pflag.FlagSet).String, "log-format", "text", "log format: text or json",
+		func(c *serve.Config, v string) { c.Log.Format = v }),
+}
+
+// serveFlags holds the serve flags defined on a flag set, and how to apply
+// each to a config.
+type serveFlags struct {
+	fs    *pflag.FlagSet
+	apply map[string]func(*serve.Config)
+}
+
+// defineServeFlags defines the config flag and every serve option on fs.
+func defineServeFlags(fs *pflag.FlagSet) serveFlags {
+	fs.String("config", "", "path to a JSON config file")
+
+	flags := serveFlags{fs: fs, apply: make(map[string]func(*serve.Config), len(serveOptions))}
+	for _, o := range serveOptions {
+		flags.apply[o.name] = o.define(fs)
 	}
+
+	return flags
 }
 
 var CommandServe = &cobra.Command{
@@ -88,7 +123,7 @@ Examples:
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		config, err := loadServeConfig(cmd.Flags())
+		config, err := commandServeFlags.load()
 		if err != nil {
 			return err
 		}
@@ -107,12 +142,12 @@ Examples:
 	},
 }
 
-// loadServeConfig builds the serve config from the config file, then
-// environment variables, then flags, each overriding the last.
-func loadServeConfig(fs *pflag.FlagSet) (serve.Config, error) {
+// load builds the serve config from the config file, then environment
+// variables, then flags, each overriding the last.
+func (f serveFlags) load() (serve.Config, error) {
 	var config serve.Config
 
-	path, err := fs.GetString("config")
+	path, err := f.fs.GetString("config")
 	if err != nil {
 		return config, err
 	}
@@ -125,30 +160,26 @@ func loadServeConfig(fs *pflag.FlagSet) (serve.Config, error) {
 		}
 	}
 
+	// Environment variables count as flags the user didn't set explicitly.
 	var errs []error
-	fs.VisitAll(func(f *pflag.Flag) {
-		if _, ok := serveFlags[f.Name]; !ok || f.Changed {
-			return
+	for _, o := range serveOptions {
+		if f.fs.Changed(o.name) {
+			continue
 		}
 
-		value, ok := os.LookupEnv(envName(f.Name))
-		if !ok {
-			return
+		if value, ok := os.LookupEnv(envName(o.name)); ok {
+			if err := f.fs.Set(o.name, value); err != nil {
+				errs = append(errs, fmt.Errorf("invalid %s: %w", envName(o.name), err))
+			}
 		}
-
-		if err := fs.Set(f.Name, value); err != nil {
-			errs = append(errs, fmt.Errorf("invalid %s: %w", envName(f.Name), err))
-		}
-	})
+	}
 	if err := errors.Join(errs...); err != nil {
 		return config, err
 	}
 
-	for name, set := range serveFlags {
-		if fs.Changed(name) {
-			if err := set(fs, name, &config); err != nil {
-				return config, fmt.Errorf("invalid --%s: %w", name, err)
-			}
+	for _, o := range serveOptions {
+		if f.fs.Changed(o.name) {
+			f.apply[o.name](&config)
 		}
 	}
 
@@ -160,27 +191,11 @@ func envName(flag string) string {
 	return envPrefix + strings.ToUpper(strings.ReplaceAll(flag, "-", "_"))
 }
 
+// commandServeFlags are the flags of [CommandServe].
+var commandServeFlags serveFlags
+
 func init() {
-	defineServeFlags(CommandServe.Flags())
+	commandServeFlags = defineServeFlags(CommandServe.Flags())
 
 	CommandRoot.AddCommand(CommandServe)
-}
-
-// defineServeFlags defines the serve flags on fs.
-func defineServeFlags(fs *pflag.FlagSet) {
-	fs.String("config", "", "path to a JSON config file")
-	fs.String("listen", serve.DefaultListen, "address to listen on (default :8080 with --plaintext)")
-	fs.String("path", doh.DefaultPath, "URI path of the DoH endpoint")
-	fs.StringSlice("upstream", serve.DefaultUpstreams, "upstream resolvers, tried in order")
-	fs.Duration("timeout", serve.DefaultTimeout, "maximum time to answer each query")
-	fs.String("tls-cert", "", "TLS certificate chain file (PEM)")
-	fs.String("tls-key", "", "TLS private key file (PEM)")
-	fs.StringSlice("acme-domain", nil, "domains to obtain ACME certificates for, enabling ACME")
-	fs.String("acme-email", "", "contact email for the ACME account")
-	fs.String("acme-cache-dir", "", "directory for ACME accounts and certificates (default user cache dir)")
-	fs.String("acme-directory", "", "ACME directory URL (default Let's Encrypt)")
-	fs.String("acme-http-listen", "", "address to answer ACME HTTP-01 challenges on, such as :80")
-	fs.Bool("plaintext", false, "serve unencrypted HTTP, behind a TLS-terminating proxy")
-	fs.String("log-level", "info", "log level: debug, info, warn, or error")
-	fs.String("log-format", "text", "log format: text or json")
 }

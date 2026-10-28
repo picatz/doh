@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/pflag"
 )
 
-func TestLoadServeConfig(t *testing.T) {
+func TestServeFlags_Load(t *testing.T) {
 	configFile := filepath.Join(t.TempDir(), "config.json")
 	err := os.WriteFile(configFile, []byte(`{
 		"listen": ":1111",
@@ -101,12 +101,12 @@ func TestLoadServeConfig(t *testing.T) {
 			}
 
 			fs := pflag.NewFlagSet("serve", pflag.ContinueOnError)
-			defineServeFlags(fs)
+			flags := defineServeFlags(fs)
 			if err := fs.Parse(test.args); err != nil {
 				t.Fatal(err)
 			}
 
-			config, err := loadServeConfig(fs)
+			config, err := flags.load()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -116,14 +116,13 @@ func TestLoadServeConfig(t *testing.T) {
 	}
 }
 
-func TestLoadServeConfig_Errors(t *testing.T) {
+func TestServeFlags_LoadErrors(t *testing.T) {
 	t.Run("invalid environment value", func(t *testing.T) {
 		t.Setenv("DOH_TIMEOUT", "soon")
 
-		fs := pflag.NewFlagSet("serve", pflag.ContinueOnError)
-		defineServeFlags(fs)
+		flags := defineServeFlags(pflag.NewFlagSet("serve", pflag.ContinueOnError))
 
-		if _, err := loadServeConfig(fs); err == nil {
+		if _, err := flags.load(); err == nil {
 			t.Fatal("expected error for invalid DOH_TIMEOUT")
 		}
 	})
@@ -135,24 +134,23 @@ func TestLoadServeConfig_Errors(t *testing.T) {
 		}
 
 		fs := pflag.NewFlagSet("serve", pflag.ContinueOnError)
-		defineServeFlags(fs)
+		flags := defineServeFlags(fs)
 		if err := fs.Parse([]string{"--config", configFile}); err != nil {
 			t.Fatal(err)
 		}
 
-		if _, err := loadServeConfig(fs); err == nil {
+		if _, err := flags.load(); err == nil {
 			t.Fatal("expected error for unknown field")
 		}
 	})
 
-	t.Run("every serve flag is defined", func(t *testing.T) {
-		fs := pflag.NewFlagSet("serve", pflag.ContinueOnError)
-		defineServeFlags(fs)
-
-		for name := range serveFlags {
-			if fs.Lookup(name) == nil {
-				t.Errorf("serveFlags has %q, but no such flag is defined", name)
+	t.Run("unique option names", func(t *testing.T) {
+		seen := make(map[string]bool)
+		for _, o := range serveOptions {
+			if seen[o.name] {
+				t.Errorf("duplicate serve option %q", o.name)
 			}
+			seen[o.name] = true
 		}
 	})
 }
