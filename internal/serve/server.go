@@ -225,6 +225,14 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 	}
 
+	stopTelemetry, err := s.startTelemetry()
+	if err != nil {
+		closeAll()
+		return err
+	}
+	// Deferred, so it runs after every listener below has drained.
+	defer stopTelemetry()
+
 	g, ctx := errgroup.WithContext(ctx)
 	if ln != nil {
 		g.Go(func() error { return s.Serve(ctx, ln) })
@@ -236,14 +244,6 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	if adminLn != nil {
 		g.Go(func() error { return s.ServeAdmin(ctx, adminLn) })
-	} else if s.telemetry.recorder != nil {
-		// Without an admin listener, run the flight recorder for slow
-		// query snapshots alone.
-		if err := s.telemetry.recorder.start(); err != nil {
-			closeAll()
-			return err
-		}
-		defer s.telemetry.recorder.stop()
 	}
 
 	return g.Wait()

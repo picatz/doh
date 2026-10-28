@@ -157,6 +157,44 @@ func TestTelemetry(t *testing.T) {
 	})
 }
 
+func TestTelemetry_CountsRejectedDNSQueries(t *testing.T) {
+	s, err := New(Config{Plaintext: true, Upstreams: []string{startResolver(t)}}, testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	notify := new(dns.Msg).SetQuestion("example.com.", dns.TypeSOA)
+	notify.Opcode = dns.OpcodeNotify
+	s.answerDNS(t.Context(), "udp", notify)
+
+	if got := s.telemetry.queries.Get("udp"); got == nil || got.String() != "1" {
+		t.Errorf("got %v UDP queries, want the rejected query counted", got)
+	}
+	if got := s.telemetry.responses.Get("NOTIMP"); got == nil || got.String() != "1" {
+		t.Errorf("got %v NOTIMP responses, want 1", got)
+	}
+}
+
+func TestTelemetry_SharesCountersForEquivalentUpstreams(t *testing.T) {
+	resolver := startResolver(t)
+
+	// Both forms name the same upstream, udp://<addr>.
+	s, err := New(Config{Plaintext: true, Upstreams: []string{resolver, "udp://" + resolver}}, testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.answerDNS(t.Context(), "udp", new(dns.Msg).SetQuestion("example.com.", dns.TypeA))
+
+	m, ok := s.telemetry.upstreams.Get("udp://" + resolver).(*upstreamMetrics)
+	if !ok {
+		t.Fatalf("no counters for udp://%s", resolver)
+	}
+	if got := m.queries.Value(); got != 1 {
+		t.Errorf("got %d queries for the upstream, want 1", got)
+	}
+}
+
 func TestTelemetry_FlightRecorder(t *testing.T) {
 	traceDir := t.TempDir()
 
@@ -173,6 +211,16 @@ func TestTelemetry_FlightRecorder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	stop, err := s.startTelemetry()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Cleanups run last-in first-out, so registering this before starting
+	// the listeners stops the recorder after they've shut down, as
+	// ListenAndServe does, waiting for pending snapshots.
+	t.Cleanup(stop)
 
 	admin := startAdmin(t, s)
 	dohAddr := start(t, s)
@@ -213,6 +261,22 @@ func TestTelemetry_FlightRecorder(t *testing.T) {
 
 		if got := s.telemetry.slowQueries.Value(); got != 2 {
 			t.Errorf("got %d slow queries, want 2", got)
+		}
+	})
+
+	t.Run("snapshots are private", func(t *testing.T) {
+		entries, err := os.ReadDir(traceDir)
+		if err != nil || len(entries) == 0 {
+			t.Fatalf("no snapshots: %v", err)
+		}
+
+		info, err := entries[0].Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("got snapshot permissions %v, want 0600", perm)
 		}
 	})
 }

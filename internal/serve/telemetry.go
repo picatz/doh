@@ -86,10 +86,14 @@ func (t *telemetry) observe(ctx context.Context, transport string, d time.Durati
 	}
 }
 
-// instrument wraps e to record its queries under name.
+// instrument wraps e to record its queries under name. Upstreams with the
+// same name, such as "1.1.1.1" and "udp://1.1.1.1:53", share counters.
 func (t *telemetry) instrument(name string, e upstream.Exchanger) upstream.Exchanger {
-	m := &upstreamMetrics{}
-	t.upstreams.Set(name, m)
+	m, ok := t.upstreams.Get(name).(*upstreamMetrics)
+	if !ok {
+		m = &upstreamMetrics{}
+		t.upstreams.Set(name, m)
+	}
 	return &instrumented{Exchanger: e, metrics: m}
 }
 
@@ -282,6 +286,23 @@ func buildInfo() map[string]string {
 	return info
 }
 
+// startTelemetry starts the flight recorder, if enabled, returning a
+// function that stops it once pending snapshots are written. Call it
+// before serving, and stop it after every listener has drained, so
+// snapshots cover the queries still being answered during shutdown.
+func (s *Server) startTelemetry() (stop func(), err error) {
+	r := s.telemetry.recorder
+	if r == nil {
+		return func() {}, nil
+	}
+
+	if err := r.start(); err != nil {
+		return nil, err
+	}
+
+	return r.stop, nil
+}
+
 // ServeAdmin serves the admin endpoints on ln until ctx is done: metrics,
 // expvar-style variables, pprof profiles, and flight recorder snapshots.
 //
@@ -291,14 +312,6 @@ func (s *Server) ServeAdmin(ctx context.Context, ln net.Listener) error {
 	if ap, err := netip.ParseAddrPort(ln.Addr().String()); err == nil && !ap.Addr().IsLoopback() {
 		s.logger.Warn("admin endpoints expose profiles and process details; restrict access to the admin listener",
 			slog.String("addr", ln.Addr().String()))
-	}
-
-	if s.telemetry.recorder != nil {
-		if err := s.telemetry.recorder.start(); err != nil {
-			ln.Close()
-			return err
-		}
-		defer s.telemetry.recorder.stop()
 	}
 
 	srv := s.httpServer(s.adminHandler())
@@ -345,6 +358,9 @@ type flightRecorder struct {
 
 	mu   sync.Mutex
 	last time.Time // when the last slow query snapshot was taken
+
+	// pending tracks snapshots being written in the background.
+	pending sync.WaitGroup
 }
 
 func newFlightRecorder(config AdminConfig, logger *slog.Logger) (*flightRecorder, error) {
@@ -380,7 +396,9 @@ func (r *flightRecorder) start() error {
 	return nil
 }
 
+// stop waits for pending snapshots to be written, then stops recording.
 func (r *flightRecorder) stop() {
+	r.pending.Wait()
 	r.fr.Stop()
 	if r.dir != nil {
 		r.dir.Close()
@@ -404,10 +422,12 @@ func (r *flightRecorder) snapshotSlow(ctx context.Context, d time.Duration) {
 	r.mu.Unlock()
 
 	// Write in the background, so the slow query isn't slowed further.
-	go func() {
+	r.pending.Go(func() {
 		name := traceFileName(now)
 
-		f, err := r.dir.Create(name)
+		// Traces reveal details about the process, so only its owner may
+		// read them, whatever the directory's permissions.
+		f, err := r.dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			r.logger.Warn("saving flight recorder snapshot", slog.Any("error", err))
 			return
@@ -423,7 +443,7 @@ func (r *flightRecorder) snapshotSlow(ctx context.Context, d time.Duration) {
 			slog.Duration("duration", d),
 			slog.String("file", r.dir.Name()+string(os.PathSeparator)+name),
 		)
-	}()
+	})
 }
 
 // traceFileName names a flight recorder snapshot taken at t.

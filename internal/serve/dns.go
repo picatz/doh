@@ -108,13 +108,19 @@ func shutdownDNS(servers []*dns.Server) error {
 // error code rather than forwarding anything that isn't a single-question
 // standard query.
 func (s *Server) answerDNS(ctx context.Context, transport string, req *dns.Msg) *dns.Msg {
+	var rejected *dns.Msg
 	switch {
 	case req.Response:
-		return new(dns.Msg).SetRcodeFormatError(req)
+		rejected = new(dns.Msg).SetRcodeFormatError(req)
 	case req.Opcode != dns.OpcodeQuery:
-		return new(dns.Msg).SetRcode(req, dns.RcodeNotImplemented)
+		rejected = new(dns.Msg).SetRcode(req, dns.RcodeNotImplemented)
 	case len(req.Question) != 1:
-		return new(dns.Msg).SetRcodeFormatError(req)
+		rejected = new(dns.Msg).SetRcodeFormatError(req)
+	}
+	if rejected != nil {
+		// Count rejected queries too; resolve counts the others.
+		s.telemetry.observe(ctx, transport, 0, rejected, nil)
+		return rejected
 	}
 
 	resp, err := s.resolve(ctx, transport, req)
