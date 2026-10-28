@@ -3,11 +3,13 @@ package serve
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -169,6 +171,87 @@ func TestServeDNS_UDPTruncation(t *testing.T) {
 		})
 	}
 }
+
+func TestServeDNS_LargeUDPQuery(t *testing.T) {
+	s, err := New(Config{Plaintext: true, Upstreams: []string{startResolver(t)}}, testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	udpAddr, _ := startDNS(t, s)
+
+	req := new(dns.Msg).SetQuestion("example.com.", dns.TypeA)
+	req.SetEdns0(dns.DefaultMsgSize, false)
+	opt := req.IsEdns0()
+	opt.Option = append(opt.Option, &dns.EDNS0_PADDING{Padding: make([]byte, 1024)})
+
+	if size := req.Len(); size <= dns.MinMsgSize {
+		t.Fatalf("query is %d bytes, want more than %d", size, dns.MinMsgSize)
+	}
+
+	if resp := exchange(t, "udp", udpAddr, req); len(resp.Answer) != 1 {
+		t.Errorf("got %d answers to a large UDP query, want 1", len(resp.Answer))
+	}
+}
+
+func TestServer_ListenAndServeSharesEphemeralDNSPort(t *testing.T) {
+	s, err := New(Config{DNSListen: "127.0.0.1:0", Upstreams: []string{startResolver(t)}}, testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture the addresses the server logs, since port 0 picks them.
+	var (
+		mu       sync.Mutex
+		udp, tcp string
+	)
+	s.logger = slog.New(captureHandler(func(r slog.Record) {
+		mu.Lock()
+		defer mu.Unlock()
+		r.Attrs(func(a slog.Attr) bool {
+			switch a.Key {
+			case "udp":
+				udp = a.Value.String()
+			case "tcp":
+				tcp = a.Value.String()
+			}
+			return true
+		})
+	}))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- s.ListenAndServe(ctx) }()
+
+	for range 100 {
+		mu.Lock()
+		logged := udp != ""
+		mu.Unlock()
+		if logged {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if udp == "" || udp != tcp {
+		t.Errorf("got UDP %q and TCP %q, want the same address", udp, tcp)
+	}
+}
+
+// captureHandler is a slog.Handler that passes each record to f.
+type captureHandler func(slog.Record)
+
+func (h captureHandler) Enabled(context.Context, slog.Level) bool      { return true }
+func (h captureHandler) Handle(_ context.Context, r slog.Record) error { h(r); return nil }
+func (h captureHandler) WithAttrs([]slog.Attr) slog.Handler            { return h }
+func (h captureHandler) WithGroup(string) slog.Handler                 { return h }
 
 func TestServeDNS_UpstreamFailureIsServfail(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

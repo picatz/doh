@@ -193,7 +193,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 		opened = append(opened, pc)
 
-		if dnsLn, err = net.Listen("tcp", s.config.DNSListen); err != nil {
+		// Bind TCP to the port UDP got, so that with port 0 both share an
+		// ephemeral port, and clients can retry truncated answers over TCP.
+		if dnsLn, err = net.Listen("tcp", pc.LocalAddr().String()); err != nil {
 			closeAll()
 			return listenError("serve: dns", s.config.DNSListen, err)
 		}

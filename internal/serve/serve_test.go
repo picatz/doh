@@ -41,7 +41,7 @@ func startResolver(t *testing.T) string {
 		t.Fatal(err)
 	}
 
-	server := &dns.Server{PacketConn: conn, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+	server := &dns.Server{PacketConn: conn, UDPSize: dns.MaxMsgSize, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
 		resp := new(dns.Msg).SetReply(req)
 		resp.Answer = append(resp.Answer, &dns.A{
 			Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -15,8 +16,10 @@ import (
 // ServeDNS serves plain DNS on pc (UDP) and ln (TCP) until ctx is done,
 // then shuts down gracefully, waiting for in-flight queries to finish.
 //
-// Queries are answered from the same upstreams as DoH queries. Responses
-// over UDP are truncated to fit the client's advertised EDNS(0) buffer size
+// Queries are answered from the same upstreams as DoH queries. Messages
+// that are themselves responses are dropped without a reply, as miekg/dns
+// does by default, so two servers can't be made to answer each other in a
+// loop. Responses over UDP are truncated to fit the client's advertised EDNS(0) buffer size
 // (RFC 6891, Section 6.2.5), or 512 bytes without EDNS(0), setting the TC
 // bit so the client retries over TCP.
 func (s *Server) ServeDNS(ctx context.Context, pc net.PacketConn, ln net.Listener) error {
@@ -37,7 +40,9 @@ func (s *Server) ServeDNS(ctx context.Context, pc net.PacketConn, ln net.Listene
 	})
 
 	servers := []*dns.Server{
-		{PacketConn: pc, Handler: handler},
+		// Accept queries up to the DNS message limit, such as EDNS-padded
+		// ones, rather than the 512-byte default.
+		{PacketConn: pc, Handler: handler, UDPSize: dns.MaxMsgSize},
 		{Listener: ln, Handler: handler, ReadTimeout: readTimeout, WriteTimeout: readTimeout},
 	}
 
@@ -80,15 +85,20 @@ func (s *Server) ServeDNS(ctx context.Context, pc net.PacketConn, ln net.Listene
 // readTimeout bounds how long a TCP client may take to send a query.
 const readTimeout = 10 * time.Second
 
-// shutdownDNS gracefully stops servers, which must all have started.
+// shutdownDNS gracefully stops servers, which must all have started,
+// concurrently, so each stops accepting queries at once and shares the
+// full grace period to drain.
 func shutdownDNS(servers []*dns.Server) error {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	var errs []error
-	for _, srv := range servers {
-		errs = append(errs, srv.ShutdownContext(ctx))
+	errs := make([]error, len(servers))
+
+	var wg sync.WaitGroup
+	for i, srv := range servers {
+		wg.Go(func() { errs[i] = srv.ShutdownContext(ctx) })
 	}
+	wg.Wait()
 
 	return errors.Join(errs...)
 }
