@@ -2,6 +2,7 @@ package blocklist
 
 import (
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -196,5 +197,20 @@ func BenchmarkList_Lookup(b *testing.B) {
 
 	for b.Loop() {
 		list.Lookup("a.b.c.www.example.com")
+	}
+}
+
+func TestBuilder_AddIsAllOrNothing(t *testing.T) {
+	var b Builder
+	b.Block("good", "ads.example.com")
+
+	// An exception, then a read error: the exception must not apply.
+	r := io.MultiReader(strings.NewReader("@@||ads.example.com^\n"), iotest.ErrReader(errors.New("broken")))
+	if _, err := b.Add("bad", r); err == nil {
+		t.Fatal("expected the read error")
+	}
+
+	if v := b.List().Lookup("ads.example.com"); !v.Blocked {
+		t.Errorf("got %+v, want the failed source's exception discarded", v)
 	}
 }

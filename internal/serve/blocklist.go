@@ -85,6 +85,22 @@ func (b *blocker) refresh(ctx context.Context, interval time.Duration) error {
 	}
 }
 
+// blockedSOA returns a synthetic authority SOA for a negative answer to a
+// blocked name, so resolvers and HTTP caches keep the answer for
+// blockedTTL seconds, as RFC 2308, Section 5 describes.
+func blockedSOA(v blocklist.Verdict) *dns.SOA {
+	return &dns.SOA{
+		Hdr:     dns.RR_Header{Name: dns.Fqdn(v.Rule.Domain), Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: blockedTTL},
+		Ns:      "localhost.",
+		Mbox:    "nobody.invalid.",
+		Serial:  1,
+		Refresh: blockedTTL,
+		Retry:   blockedTTL,
+		Expire:  blockedTTL,
+		Minttl:  blockedTTL,
+	}
+}
+
 // answer returns a synthesized response if query asks for a blocked name.
 func (b *blocker) answer(query *dns.Msg) (*dns.Msg, blocklist.Verdict) {
 	v := b.list.Load().Lookup(query.Question[0].Name)
@@ -109,8 +125,10 @@ func (b *blocker) answer(query *dns.Msg) (*dns.Msg, blocklist.Verdict) {
 		})
 	case b.config.Response == BlockNull:
 		// Other types get an empty answer (NODATA).
+		resp.Ns = append(resp.Ns, blockedSOA(v))
 	default:
 		resp.Rcode = dns.RcodeNameError
+		resp.Ns = append(resp.Ns, blockedSOA(v))
 	}
 
 	// Tell EDNS clients why, with an Extended DNS Error (RFC 8914,

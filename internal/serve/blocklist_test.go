@@ -62,6 +62,13 @@ func TestServer_Blocklist(t *testing.T) {
 			t.Errorf("got %s with %d answers, want NXDOMAIN", dns.RcodeToString[resp.Rcode], len(resp.Answer))
 		}
 
+		if len(resp.Ns) != 1 {
+			t.Fatalf("got authority %v, want a synthetic SOA", resp.Ns)
+		}
+		if soa, ok := resp.Ns[0].(*dns.SOA); !ok || soa.Minttl != blockedTTL || soa.Hdr.Ttl != blockedTTL || soa.Hdr.Name != "ads.example.com." {
+			t.Errorf("got authority %v, want an SOA for ads.example.com. with TTL and MINIMUM %d", resp.Ns[0], blockedTTL)
+		}
+
 		ede := edeOf(resp)
 		if ede == nil || ede.InfoCode != dns.ExtendedErrorCodeBlocked || !strings.Contains(ede.ExtraText, "test") {
 			t.Errorf("got EDE %v, want Blocked by test", ede)
@@ -119,6 +126,8 @@ func TestServer_Blocklist(t *testing.T) {
 			}
 
 			switch {
+			case test.want == "" && len(resp.Ns) != 1:
+				t.Errorf("%s: got authority %v, want a synthetic SOA", dns.TypeToString[test.qtype], resp.Ns)
 			case test.want == "" && len(resp.Answer) != 0:
 				t.Errorf("%s: got %v, want no records", dns.TypeToString[test.qtype], resp.Answer)
 			case test.want != "" && (len(resp.Answer) != 1 || !strings.HasSuffix(resp.Answer[0].String(), test.want)):

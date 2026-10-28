@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -79,7 +81,23 @@ func ParseSource(s string) (Source, error) {
 		return Source{}, fmt.Errorf("blocklist: unknown preset %q (want one of %s, a URL, or a file path)", s, strings.Join(PresetNames(), ", "))
 	}
 
-	return Source{Name: s, Location: s}, nil
+	return Source{Name: publicName(s), Location: s}, nil
+}
+
+// publicName names an unnamed source by its location, without any URL
+// credentials or query string, since names appear in logs and in the
+// Extended DNS Errors sent to clients.
+func publicName(location string) string {
+	if !isURL(location) {
+		return location
+	}
+
+	u, err := url.Parse(location)
+	if err != nil {
+		return "blocklist"
+	}
+
+	return u.Scheme + "://" + u.Host + u.EscapedPath()
 }
 
 func isURL(s string) bool {
@@ -158,7 +176,12 @@ func (l *Loader) loadSource(ctx context.Context, b *Builder, src Source) (int, e
 		}
 		defer f.Close()
 
-		return b.Add(src.Name, io.LimitReader(f, l.maxSize()))
+		body, err := l.readLimited(f)
+		if err != nil {
+			return 0, fmt.Errorf("blocklist: %s: %w", src.Location, err)
+		}
+
+		return b.Add(src.Name, bytes.NewReader(body))
 	}
 
 	body, err := l.fetch(ctx, src.Location)
@@ -167,6 +190,20 @@ func (l *Loader) loadSource(ctx context.Context, b *Builder, src Source) (int, e
 	}
 
 	return b.Add(src.Name, bytes.NewReader(body))
+}
+
+// readLimited reads all of r, failing rather than truncating if it's larger
+// than the size limit, since a list cut short could even end in a
+// different, valid rule.
+func (l *Loader) readLimited(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, l.maxSize()+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > l.maxSize() {
+		return nil, fmt.Errorf("list exceeds %d bytes", l.maxSize())
+	}
+	return body, nil
 }
 
 // cacheEntry is the metadata stored alongside a cached list.
@@ -242,12 +279,9 @@ func (l *Loader) download(ctx context.Context, url string, cached *cacheEntry) (
 		return nil, cacheEntry{}, fmt.Errorf("blocklist: %s: %s", url, resp.Status)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, l.maxSize()+1))
+	body, err := l.readLimited(resp.Body)
 	if err != nil {
-		return nil, cacheEntry{}, err
-	}
-	if int64(len(body)) > l.maxSize() {
-		return nil, cacheEntry{}, fmt.Errorf("blocklist: %s: list exceeds %d bytes", url, l.maxSize())
+		return nil, cacheEntry{}, fmt.Errorf("blocklist: %s: %w", url, err)
 	}
 
 	return body, cacheEntry{ETag: resp.Header.Get("ETag"), LastModified: resp.Header.Get("Last-Modified")}, nil
@@ -275,11 +309,14 @@ func (l *Loader) openCache() *os.Root {
 	return root
 }
 
-// cacheKey names the cache files for url.
+// cacheKey names the cache file for url.
 func cacheKey(url string) string {
 	sum := sha256.Sum256([]byte(url))
-	return hex.EncodeToString(sum[:16])
+	return hex.EncodeToString(sum[:16]) + ".cache"
 }
+
+// A cache file holds a list and its metadata together, so they're always
+// replaced as a pair: a line of JSON metadata, then the list itself.
 
 // readCache returns a cached list and its metadata, or nils if there's no
 // usable cached copy.
@@ -288,8 +325,13 @@ func readCache(root *os.Root, key string) ([]byte, *cacheEntry) {
 		return nil, nil
 	}
 
-	meta, err := root.ReadFile(key + ".json")
+	data, err := root.ReadFile(key)
 	if err != nil {
+		return nil, nil
+	}
+
+	meta, body, ok := bytes.Cut(data, []byte("\n"))
+	if !ok {
 		return nil, nil
 	}
 
@@ -298,36 +340,40 @@ func readCache(root *os.Root, key string) ([]byte, *cacheEntry) {
 		return nil, nil
 	}
 
-	body, err := root.ReadFile(key + ".txt")
-	if err != nil {
-		return nil, nil
-	}
-
 	return body, &entry
 }
 
-// writeCache stores body and its metadata, writing each to a temporary
-// file first so a crash never leaves a partial list behind.
+// writeCache stores body and its metadata as one file, written under a
+// unique temporary name and then renamed into place, so concurrent
+// writers, such as doh serve and doh blocklist check sharing a cache,
+// never publish a partial file or mismatched metadata.
 func writeCache(root *os.Root, key string, body []byte, entry cacheEntry) error {
 	meta, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
 
-	// Write the list before its metadata, so metadata never describes a
-	// list that wasn't stored.
-	for _, file := range []struct {
-		name string
-		data []byte
-	}{{key + ".txt", body}, {key + ".json", meta}} {
-		tmp := file.name + ".tmp"
-		if err := root.WriteFile(tmp, file.data, 0o640); err != nil {
-			return err
-		}
-		if err := root.Rename(tmp, file.name); err != nil {
-			return err
-		}
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return err
+	}
+	tmp := key + "." + hex.EncodeToString(suffix[:]) + ".tmp"
+
+	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if err != nil {
+		return err
 	}
 
-	return nil
+	_, err = f.Write(append(append(meta, '\n'), body...))
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = root.Rename(tmp, key)
+	}
+	if err != nil {
+		_ = root.Remove(tmp)
+	}
+
+	return err
 }

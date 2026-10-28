@@ -191,3 +191,69 @@ func TestLoader_RejectsOversizedLists(t *testing.T) {
 		t.Errorf("got error %v, want the list rejected as too large", err)
 	}
 }
+
+func TestParseSource_PublicName(t *testing.T) {
+	src, err := ParseSource("https://user:secret@lists.example/block.txt?token=hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(src.Name, "secret") || strings.Contains(src.Name, "hunter2") {
+		t.Errorf("name %q exposes credentials", src.Name)
+	}
+	if src.Name != "https://lists.example/block.txt" {
+		t.Errorf("got name %q", src.Name)
+	}
+	if src.Location != "https://user:secret@lists.example/block.txt?token=hunter2" {
+		t.Errorf("location %q lost its credentials", src.Location)
+	}
+}
+
+func TestLoader_ConcurrentCacheWrites(t *testing.T) {
+	server := newListServer(t, "||ads.example.com^\n")
+	cacheDir := t.TempDir()
+
+	errs := make(chan error, 8)
+	for range cap(errs) {
+		go func() {
+			loader := &Loader{Client: server.Client(), CacheDir: cacheDir}
+			_, err := loader.Load(t.Context(), []Source{{Name: "remote", Location: server.URL}}, nil, nil)
+			errs <- err
+		}()
+	}
+	for range cap(errs) {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || strings.HasSuffix(entries[0].Name(), ".tmp") {
+		t.Fatalf("got cache entries %v, want one complete file", entries)
+	}
+
+	// The cached copy alone, with the server down, must still load.
+	server.down.Store(true)
+	list, err := (&Loader{Client: server.Client(), CacheDir: cacheDir}).Load(t.Context(), []Source{{Name: "remote", Location: server.URL}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !list.Lookup("ads.example.com").Blocked {
+		t.Error("cached list lost its rules")
+	}
+}
+
+func TestLoader_RejectsOversizedFiles(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "list.txt")
+	if err := os.WriteFile(file, []byte(strings.Repeat("||a.example^\n", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := &Loader{MaxSize: 64}
+	if _, err := loader.Load(t.Context(), []Source{{Name: "file", Location: file}}, nil, nil); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("got error %v, want an oversized file rejected rather than truncated", err)
+	}
+}

@@ -279,19 +279,24 @@ type Builder struct {
 
 // Add adds the rules in r, attributing them to source, and returns how
 // many it added.
+//
+// Rules are only added once r has been read without error, so a source
+// that fails partway through adds nothing.
 func (b *Builder) Add(source string, r io.Reader) (int, error) {
-	index := b.source(source)
-
-	var n int
+	var rules []Rule
 	for rule, err := range Rules(r) {
 		if err != nil {
-			return n, err
+			return 0, err
 		}
-		b.add(index, rule)
-		n++
+		rules = append(rules, rule)
 	}
 
-	return n, nil
+	index := b.source(source)
+	for _, rule := range rules {
+		b.add(index, rule)
+	}
+
+	return len(rules), nil
 }
 
 // Block blocks each domain and its subdomains, attributing the rules to
