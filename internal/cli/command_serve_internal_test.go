@@ -60,6 +60,16 @@ func TestServeFlags_Load(t *testing.T) {
 			},
 		},
 		{
+			name: "explicit empty config flag overrides environment",
+			args: []string{"--config="},
+			env:  map[string]string{"DOH_CONFIG": configFile},
+			want: func(t *testing.T, c serve.Config) {
+				if c.Listen != "" {
+					t.Errorf("got listen %q, want the config file ignored", c.Listen)
+				}
+			},
+		},
+		{
 			name: "environment overrides file",
 			args: []string{"--config", configFile},
 			env: map[string]string{

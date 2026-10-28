@@ -147,11 +147,12 @@ Examples:
 func (f serveFlags) load() (serve.Config, error) {
 	var config serve.Config
 
+	// An explicit --config, even an empty one, overrides DOH_CONFIG.
 	path, err := f.fs.GetString("config")
 	if err != nil {
 		return config, err
 	}
-	if path == "" {
+	if !f.fs.Changed("config") {
 		path = os.Getenv(envName("config"))
 	}
 	if path != "" {

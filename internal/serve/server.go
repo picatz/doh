@@ -85,7 +85,7 @@ func (s *Server) upstreams() (upstream.Exchanger, error) {
 	transport.ForceAttemptHTTP2 = true
 
 	opts := upstream.Options{
-		HTTPClient: &http.Client{Transport: transport},
+		HTTPClient: &http.Client{Transport: transport, CheckRedirect: upstream.CheckRedirect},
 		Timeout:    time.Duration(s.config.Timeout),
 	}
 
@@ -124,6 +124,8 @@ func (s *Server) configureTLS() error {
 			manager.Client = &acme.Client{DirectoryURL: acmeConfig.DirectoryURL}
 		}
 
+		// The host policy applies to cached certificates too, so names
+		// removed from the configured domains are refused.
 		config.GetCertificate = manager.GetCertificate
 		// Answer TLS-ALPN-01 challenges (RFC 8737) on the TLS listener.
 		config.NextProtos = append(config.NextProtos, acme.ALPNProto)
@@ -273,22 +275,22 @@ type certReloader struct {
 	certFile, keyFile string
 	logger            *slog.Logger
 
-	mu      sync.Mutex
-	cert    *tls.Certificate
-	modTime time.Time
-	checked time.Time
+	mu       sync.Mutex
+	cert     *tls.Certificate
+	modTimes [2]time.Time // of certFile and keyFile, when cert was loaded
+	checked  time.Time
 }
 
 // newCertReloader loads the certificate, failing if it can't be read.
 func newCertReloader(certFile, keyFile string, logger *slog.Logger) (*certReloader, error) {
 	r := &certReloader{certFile: certFile, keyFile: keyFile, logger: logger}
 
-	modTime, err := r.latestModTime()
+	modTimes, err := r.statFiles()
 	if err != nil {
 		return nil, fmt.Errorf("serve: %w", err)
 	}
 
-	if err := r.load(modTime); err != nil {
+	if err := r.load(modTimes); err != nil {
 		return nil, err
 	}
 
@@ -303,14 +305,16 @@ func (r *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, e
 	if now := time.Now(); now.Sub(r.checked) >= certReloaderInterval {
 		r.checked = now
 
-		modTime, err := r.latestModTime()
+		// Reload when either file's modification time changes in any
+		// direction, since a replacement may carry an older timestamp.
+		modTimes, err := r.statFiles()
 		switch {
 		case err != nil:
 			r.logger.Warn("checking certificate files", slog.Any("error", err))
-		case modTime.After(r.modTime):
+		case !modTimes[0].Equal(r.modTimes[0]) || !modTimes[1].Equal(r.modTimes[1]):
 			// Keep serving the previous certificate if the new one is
 			// invalid, such as when only one file has been replaced so far.
-			if err := r.load(modTime); err != nil {
+			if err := r.load(modTimes); err != nil {
 				r.logger.Warn("reloading certificate", slog.Any("error", err))
 			} else {
 				r.logger.Info("reloaded certificate", slog.String("cert_file", r.certFile))
@@ -321,30 +325,28 @@ func (r *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, e
 	return r.cert, nil
 }
 
-// load reads the certificate files, recording modTime on success.
-func (r *certReloader) load(modTime time.Time) error {
+// load reads the certificate files, recording modTimes on success.
+func (r *certReloader) load(modTimes [2]time.Time) error {
 	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
 	if err != nil {
 		return fmt.Errorf("serve: loading certificate: %w", err)
 	}
 
-	r.cert, r.modTime = &cert, modTime
+	r.cert, r.modTimes = &cert, modTimes
 	return nil
 }
 
-// latestModTime returns the most recent modification time of either file.
-func (r *certReloader) latestModTime() (time.Time, error) {
-	var latest time.Time
+// statFiles returns the modification times of the certificate and key.
+func (r *certReloader) statFiles() ([2]time.Time, error) {
+	var modTimes [2]time.Time
 
-	for _, name := range []string{r.certFile, r.keyFile} {
+	for i, name := range []string{r.certFile, r.keyFile} {
 		info, err := os.Stat(name)
 		if err != nil {
-			return time.Time{}, err
+			return modTimes, err
 		}
-		if info.ModTime().After(latest) {
-			latest = info.ModTime()
-		}
+		modTimes[i] = info.ModTime()
 	}
 
-	return latest, nil
+	return modTimes, nil
 }

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/picatz/doh/internal/upstream"
@@ -114,6 +116,10 @@ func (c *Config) LoadFile(name string) error {
 		return fmt.Errorf("serve: parsing config %s: %w", name, err)
 	}
 
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("serve: parsing config %s: unexpected data after the config object", name)
+	}
+
 	return nil
 }
 
@@ -153,8 +159,8 @@ func (c Config) Validate() error {
 
 	var errs []error
 
-	if c.Path == "" || c.Path[0] != '/' {
-		errs = append(errs, fmt.Errorf("path %q must start with /", c.Path))
+	if err := validatePath(c.Path); err != nil {
+		errs = append(errs, err)
 	}
 
 	if c.Timeout < 0 {
@@ -194,6 +200,22 @@ func (c Config) Validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// validatePath reports whether path can serve the DoH endpoint: an
+// absolute path that isn't the health check, without the wildcard braces
+// or whitespace that [http.ServeMux] patterns would interpret.
+func validatePath(path string) error {
+	switch {
+	case path == "" || path[0] != '/':
+		return fmt.Errorf("path %q must start with /", path)
+	case path == HealthPath:
+		return fmt.Errorf("path %q is reserved for the health check", path)
+	case strings.ContainsAny(path, "{} \t\r\n"):
+		return fmt.Errorf("path %q must not contain braces or whitespace", path)
+	default:
+		return nil
+	}
 }
 
 // handler returns the slog handler described by l.
