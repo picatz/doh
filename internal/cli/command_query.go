@@ -10,8 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/go-cleanhttp"
-	"github.com/hashicorp/go-retryablehttp"
+	"github.com/picatz/doh/internal/httpretry"
 	"github.com/picatz/doh/pkg/dj"
 	"github.com/picatz/doh/pkg/doh"
 	"github.com/spf13/cobra"
@@ -23,39 +22,18 @@ type result struct {
 	Resp   *dj.Response `json:"resp"`
 }
 
-// newHTTPClient returns a new HTTP client, or an error if one occurs.
-func newHTTPClient(retryMax int, insecureSkipVerify bool) (*retryablehttp.Client, error) {
-	retryClient := retryablehttp.NewClient()
-
-	retryClient.RetryMax = retryMax
-
-	retryClient.HTTPClient = cleanhttp.DefaultClient()
-
-	retryClient.Logger = nil // TODO: consider logger
+// newTransport returns a clone of [http.DefaultTransport], optionally
+// skipping TLS certificate verification.
+func newTransport(insecureSkipVerify bool) *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
 
 	if insecureSkipVerify {
-		transport := cleanhttp.DefaultTransport()
-
 		transport.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true,
 		}
-
-		retryClient.HTTPClient.Transport = transport
 	}
 
-	retryClient.CheckRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
-		return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
-	}
-
-	retryClient.Backoff = func(min, max time.Duration, attemptNum int, resp *http.Response) time.Duration {
-		return retryablehttp.DefaultBackoff(min, max, attemptNum, resp)
-	}
-
-	retryClient.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		return nil, err
-	}
-
-	return retryClient, nil
+	return transport
 }
 
 var CommandQuery = &cobra.Command{
@@ -91,10 +69,7 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 			return fmt.Errorf("invalid insecure skip verify: %w", err)
 		}
 
-		retryClient, err := newHTTPClient(retryMax, insecureSkipVerify)
-		if err != nil {
-			return fmt.Errorf("error creating http client: %w", err)
-		}
+		transport := newTransport(insecureSkipVerify)
 
 		resolverAddr, err := cmd.Flags().GetString("resolver-addr")
 		if err != nil {
@@ -123,12 +98,21 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 				},
 			}
 
-			retryClient.HTTPClient.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return dialer.DialContext(ctx, network, addr)
 			}
+
+			// A proxy would resolve DoH server names itself, silently
+			// bypassing the custom resolver, so connect directly instead.
+			transport.Proxy = nil
 		}
 
-		httpClient := retryClient.StandardClient()
+		httpClient := &http.Client{
+			Transport: &httpretry.Transport{
+				Base:       transport,
+				MaxRetries: retryMax,
+			},
+		}
 
 		output := json.NewEncoder(cmd.OutOrStdout())
 
@@ -186,7 +170,7 @@ func init() {
 	CommandQuery.Flags().String("type", "A", "dns record type to query for each domain, such as A, AAAA, MX, etc.")
 	CommandQuery.Flags().StringSlice("servers", defaultServers, "servers to query")
 	CommandQuery.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0s for no timeout")
-	CommandQuery.Flags().String("resolver-addr", "", "address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53)")
+	CommandQuery.Flags().String("resolver-addr", "", "address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53); connects directly, ignoring HTTP(S)_PROXY")
 	CommandQuery.Flags().String("resolver-network", "udp", "protocol to use for resolving DoH server names (e.g. udp, tcp)")
 	CommandQuery.Flags().Int("retry-max", 10, "maximum number of retries for each query")
 	CommandQuery.Flags().BoolP("insecure-skip-verify", "k", false, "allow insecure server connections (e.g. self-signed TLS certificates)")

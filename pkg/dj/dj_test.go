@@ -7,7 +7,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/hashicorp/go-cleanhttp"
 	"github.com/picatz/doh/pkg/dj"
 )
 
@@ -78,7 +77,7 @@ func TestQuery(t *testing.T) {
 func TestQuery_Live(t *testing.T) {
 	requireLiveNetwork(t)
 
-	client := cleanhttp.DefaultClient()
+	client := http.DefaultClient
 
 	tests := []struct {
 		name   string
