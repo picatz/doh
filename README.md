@@ -113,6 +113,33 @@ WantedBy=multi-user.target
 $ sudo systemctl enable --now doh
 ```
 
+### Observability
+
+Add `--admin-listen` to serve metrics and profiling on a separate, operator-only address:
+
+```console
+$ doh serve --dns-listen :53 --admin-listen localhost:9090
+level=INFO msg="serving admin" metrics=http://127.0.0.1:9090/metrics vars=http://127.0.0.1:9090/debug/vars pprof=http://127.0.0.1:9090/debug/pprof/ flight_recorder=false
+```
+
+| Endpoint | What it serves |
+| --- | --- |
+| `/metrics` | [Prometheus](https://prometheus.io/) counters: queries by transport, responses by code, per-upstream queries, errors, and latency, slow queries, and Go runtime gauges |
+| `/debug/vars` | The same counters as JSON, with [runtime metrics](https://pkg.go.dev/runtime/metrics) and build information |
+| `/debug/pprof/` | [pprof](https://pkg.go.dev/net/http/pprof) profiles |
+| `/debug/flightrecorder` | With `--flight-recorder`, a [flight recorder](https://go.dev/blog/flight-recorder) snapshot of the last few seconds of execution, for `go tool trace` |
+
+```console
+$ curl -s localhost:9090/metrics | grep doh_queries_total
+doh_queries_total{transport="udp"} 42
+$ curl -so doh.trace localhost:9090/debug/flightrecorder && go tool trace doh.trace
+```
+
+To capture what happened during slow queries automatically, `--slow-query 500ms --trace-dir /var/lib/doh/traces` saves a snapshot whenever a query takes that long (at most once a minute).
+
+> [!WARNING]
+> Profiles and traces reveal details about the process, so keep `--admin-listen` on a loopback or otherwise private address. `doh` warns if it isn't.
+
 ### Querying your server
 
 Query it like any other DoH server:
@@ -234,17 +261,21 @@ Flags:
       --acme-domain strings       domains to obtain ACME certificates for, enabling ACME
       --acme-email string         contact email for the ACME account
       --acme-http-listen string   address to answer ACME HTTP-01 challenges on, such as :80
+      --admin-listen string       serve metrics, pprof, and flight recorder snapshots on this address, such as localhost:9090
       --config string             path to a JSON config file
       --dns-listen string         also serve plain DNS over UDP and TCP on this address, such as :53
+      --flight-recorder           keep recent execution traces in memory, to snapshot from the admin listener
   -h, --help                      help for serve
       --listen string             address to listen on (default ":443", or ":8080" with --plaintext)
       --log-format string         log format: text or json (default "text")
       --log-level string          log level: debug, info, warn, or error (default "info")
       --path string               URI path of the DoH endpoint (default "/dns-query")
       --plaintext                 serve unencrypted HTTP, behind a TLS-terminating proxy
+      --slow-query duration       save a flight recorder snapshot to --trace-dir when a query takes this long
       --timeout duration          maximum time to answer each query (default 5s)
       --tls-cert string           TLS certificate chain file (PEM)
       --tls-key string            TLS private key file (PEM)
+      --trace-dir string          directory for slow query flight recorder snapshots
       --upstream strings          upstream resolvers, tried in order (default [https://cloudflare-dns.com/dns-query,https://dns.google/dns-query])
 ```
 

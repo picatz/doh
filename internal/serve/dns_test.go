@@ -301,7 +301,7 @@ func TestServer_AnswerDNS_RejectsMalformedQueries(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			resp := s.answerDNS(t.Context(), test.req)
+			resp := s.answerDNS(t.Context(), "udp", test.req)
 
 			if resp.Rcode != test.want {
 				t.Errorf("got rcode %s, want %s", dns.RcodeToString[resp.Rcode], dns.RcodeToString[test.want])

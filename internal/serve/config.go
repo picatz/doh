@@ -51,6 +51,36 @@ type Config struct {
 
 	// Log configures server logging.
 	Log LogConfig `json:"log,omitzero"`
+
+	// Admin configures the admin listener, for metrics and profiling.
+	Admin AdminConfig `json:"admin,omitzero"`
+}
+
+// AdminConfig configures the admin listener, which serves Prometheus
+// metrics, expvar-style variables, pprof profiles, and flight recorder
+// snapshots for operators.
+type AdminConfig struct {
+	// Listen is the address of the admin listener, such as
+	// "localhost:9090". It's disabled if empty. It should only be reachable
+	// by operators, since profiles reveal details about the process.
+	Listen string `json:"listen,omitempty"`
+
+	// FlightRecorder keeps the last few seconds of execution trace data in
+	// memory, to snapshot from the admin listener when something goes
+	// wrong. It's enabled automatically by SlowQuery.
+	FlightRecorder bool `json:"flight_recorder,omitempty"`
+
+	// SlowQuery, if set, saves a flight recorder snapshot to TraceDir when
+	// a query takes at least this long, at most once a minute.
+	SlowQuery Duration `json:"slow_query,omitempty"`
+
+	// TraceDir is where slow query snapshots are saved.
+	TraceDir string `json:"trace_dir,omitempty"`
+}
+
+// flightRecorder reports whether the flight recorder is enabled.
+func (a AdminConfig) flightRecorder() bool {
+	return a.FlightRecorder || a.SlowQuery > 0
 }
 
 // TLSConfig configures the server certificate, either from files or from
@@ -216,6 +246,23 @@ func (c Config) Validate() error {
 
 	if acme && c.TLS.ACME.CacheDir == "" {
 		errs = append(errs, errors.New("tls: acme cache_dir is required (no user cache directory found)"))
+	}
+
+	if c.Admin.Listen != "" {
+		if _, _, err := net.SplitHostPort(c.Admin.Listen); err != nil {
+			errs = append(errs, fmt.Errorf("admin listen: %w", err))
+		}
+	}
+
+	switch {
+	case c.Admin.SlowQuery < 0:
+		errs = append(errs, errors.New("admin slow_query must not be negative"))
+	case c.Admin.SlowQuery > 0 && c.Admin.TraceDir == "":
+		errs = append(errs, errors.New("admin slow_query needs a trace_dir to save snapshots to"))
+	case c.Admin.TraceDir != "" && c.Admin.SlowQuery == 0:
+		errs = append(errs, errors.New("admin trace_dir is only used with slow_query"))
+	case c.Admin.FlightRecorder && c.Admin.Listen == "" && c.Admin.SlowQuery == 0:
+		errs = append(errs, errors.New("admin flight_recorder needs an admin listen address or slow_query to snapshot it"))
 	}
 
 	if _, err := c.Log.handler(os.Stderr); err != nil {
