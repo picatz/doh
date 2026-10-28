@@ -46,6 +46,7 @@ type telemetry struct {
 	responses   expvar.Map // by response code, such as NOERROR
 	upstreams   expvar.Map // by upstream: *upstreamMetrics
 	slowQueries expvar.Int
+	blocked     expvar.Map // by blocklist source
 
 	recorder *flightRecorder
 }
@@ -67,6 +68,7 @@ func newTelemetry() *telemetry {
 	t.queries.Init()
 	t.responses.Init()
 	t.upstreams.Init()
+	t.blocked.Init()
 	return t
 }
 
@@ -172,8 +174,8 @@ func (s *Server) serveVars(w http.ResponseWriter, r *http.Request) {
 
 	t := s.telemetry
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `{"doh": {"queries": %s, "responses": %s, "upstreams": %s, "slow_queries": %s}, "runtime": %s, "build": %s}`+"\n",
-		t.queries.String(), t.responses.String(), t.upstreams.String(), t.slowQueries.String(), runtimeJSON, buildJSON)
+	fmt.Fprintf(w, `{"doh": {"queries": %s, "responses": %s, "blocked": %s, "upstreams": %s, "slow_queries": %s}, "runtime": %s, "build": %s}`+"\n",
+		t.queries.String(), t.responses.String(), t.blocked.String(), t.upstreams.String(), t.slowQueries.String(), runtimeJSON, buildJSON)
 }
 
 // serveMetrics writes the server's counters in the Prometheus text
@@ -191,6 +193,7 @@ func (s *Server) serveMetrics(w http.ResponseWriter, r *http.Request) {
 
 	counter("doh_queries_total", "Queries received, by transport.", &t.queries, "transport")
 	counter("doh_responses_total", "Responses sent, by DNS response code.", &t.responses, "rcode")
+	counter("doh_blocked_total", "Queries blocked, by blocklist source.", &t.blocked, "source")
 
 	upstreamCounter := func(name, help string, value func(*upstreamMetrics) string) {
 		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)

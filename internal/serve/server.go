@@ -40,6 +40,9 @@ type Server struct {
 
 	telemetry *telemetry
 
+	// blocker answers queries for blocked names, if configured.
+	blocker *blocker
+
 	handler   http.Handler
 	tlsConfig *tls.Config
 
@@ -73,6 +76,14 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	}
 	s.exchanger = exchanger
 
+	if config.Blocklist.enabled() {
+		blocker, err := newBlocker(context.Background(), config.Blocklist, logger)
+		if err != nil {
+			return nil, err
+		}
+		s.blocker = blocker
+	}
+
 	handler := func(w http.ResponseWriter, r *http.Request, query *dns.Msg) (*dns.Msg, error) {
 		return s.resolve(r.Context(), "doh", query)
 	}
@@ -98,6 +109,15 @@ func (s *Server) resolve(ctx context.Context, transport string, query *dns.Msg) 
 	defer cancel()
 
 	start := time.Now()
+
+	if s.blocker != nil {
+		if resp, v := s.blocker.answer(query); resp != nil {
+			s.telemetry.blocked.Add(v.Source, 1)
+			s.telemetry.observe(ctx, transport, time.Since(start), resp, nil)
+			return resp, nil
+		}
+	}
+
 	resp, err := s.exchanger.Exchange(ctx, query)
 	s.telemetry.observe(ctx, transport, time.Since(start), resp, err)
 
@@ -241,6 +261,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	if pc != nil {
 		g.Go(func() error { return s.ServeDNS(ctx, pc, dnsLn) })
+	}
+	if s.blocker != nil {
+		g.Go(func() error { return s.blocker.refresh(ctx, time.Duration(s.config.Blocklist.Refresh)) })
 	}
 	if adminLn != nil {
 		g.Go(func() error { return s.ServeAdmin(ctx, adminLn) })
