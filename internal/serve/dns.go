@@ -28,7 +28,7 @@ func (s *Server) ServeDNS(ctx context.Context, pc net.PacketConn, ln net.Listene
 	queryCtx := context.WithoutCancel(ctx)
 
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
-		resp := s.answerDNS(queryCtx, req)
+		resp := s.answerDNS(queryCtx, w.LocalAddr().Network(), req)
 
 		if _, ok := w.LocalAddr().(*net.UDPAddr); ok {
 			resp.Truncate(udpSize(req))
@@ -103,10 +103,11 @@ func shutdownDNS(servers []*dns.Server) error {
 	return errors.Join(errs...)
 }
 
-// answerDNS returns the response to a plain DNS query, replying with an
+// answerDNS returns the response to a plain DNS query received over
+// transport ("udp" or "tcp"), replying with an
 // error code rather than forwarding anything that isn't a single-question
 // standard query.
-func (s *Server) answerDNS(ctx context.Context, req *dns.Msg) *dns.Msg {
+func (s *Server) answerDNS(ctx context.Context, transport string, req *dns.Msg) *dns.Msg {
 	switch {
 	case req.Response:
 		return new(dns.Msg).SetRcodeFormatError(req)
@@ -116,7 +117,7 @@ func (s *Server) answerDNS(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return new(dns.Msg).SetRcodeFormatError(req)
 	}
 
-	resp, err := s.resolve(ctx, req)
+	resp, err := s.resolve(ctx, transport, req)
 	if err != nil {
 		s.logger.WarnContext(ctx, "dns: resolving failed",
 			slog.String("name", req.Question[0].Name),

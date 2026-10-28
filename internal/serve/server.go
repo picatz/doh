@@ -38,6 +38,8 @@ type Server struct {
 	// exchanger forwards queries to the configured upstreams.
 	exchanger upstream.Exchanger
 
+	telemetry *telemetry
+
 	handler   http.Handler
 	tlsConfig *tls.Config
 
@@ -55,7 +57,15 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	}
 	config = config.withDefaults()
 
-	s := &Server{config: config, logger: logger}
+	s := &Server{config: config, logger: logger, telemetry: newTelemetry()}
+
+	if config.Admin.flightRecorder() {
+		recorder, err := newFlightRecorder(config.Admin, logger)
+		if err != nil {
+			return nil, err
+		}
+		s.telemetry.recorder = recorder
+	}
 
 	exchanger, err := s.upstreams()
 	if err != nil {
@@ -64,7 +74,7 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	s.exchanger = exchanger
 
 	handler := func(w http.ResponseWriter, r *http.Request, query *dns.Msg) (*dns.Msg, error) {
-		return s.resolve(r.Context(), query)
+		return s.resolve(r.Context(), "doh", query)
 	}
 
 	mux := doh.NewServerMux(handler, doh.WithPath(config.Path), doh.WithLogger(logger))
@@ -81,12 +91,17 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	return s, nil
 }
 
-// resolve answers query using the upstreams, within the configured timeout.
-func (s *Server) resolve(ctx context.Context, query *dns.Msg) (*dns.Msg, error) {
+// resolve answers query, received over transport, using the upstreams
+// within the configured timeout.
+func (s *Server) resolve(ctx context.Context, transport string, query *dns.Msg) (*dns.Msg, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.config.Timeout))
 	defer cancel()
 
-	return s.exchanger.Exchange(ctx, query)
+	start := time.Now()
+	resp, err := s.exchanger.Exchange(ctx, query)
+	s.telemetry.observe(ctx, transport, time.Since(start), resp, err)
+
+	return resp, err
 }
 
 // upstreams returns an exchanger that fails over across the configured
@@ -106,7 +121,7 @@ func (s *Server) upstreams() (upstream.Exchanger, error) {
 		if err != nil {
 			return nil, err
 		}
-		failover = append(failover, e)
+		failover = append(failover, s.telemetry.instrument(fmt.Sprint(e), e))
 	}
 
 	return failover, nil
@@ -186,6 +201,15 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		opened = append(opened, ln)
 	}
 
+	var adminLn net.Listener
+	if s.config.Admin.Listen != "" {
+		if adminLn, err = net.Listen("tcp", s.config.Admin.Listen); err != nil {
+			closeAll()
+			return listenError("serve: admin", s.config.Admin.Listen, err)
+		}
+		opened = append(opened, adminLn)
+	}
+
 	if s.config.DNSListen != "" {
 		if pc, err = net.ListenPacket("udp", s.config.DNSListen); err != nil {
 			closeAll()
@@ -209,6 +233,17 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	if pc != nil {
 		g.Go(func() error { return s.ServeDNS(ctx, pc, dnsLn) })
+	}
+	if adminLn != nil {
+		g.Go(func() error { return s.ServeAdmin(ctx, adminLn) })
+	} else if s.telemetry.recorder != nil {
+		// Without an admin listener, run the flight recorder for slow
+		// query snapshots alone.
+		if err := s.telemetry.recorder.start(); err != nil {
+			closeAll()
+			return err
+		}
+		defer s.telemetry.recorder.stop()
 	}
 
 	return g.Wait()
