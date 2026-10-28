@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/picatz/doh/internal/cache"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/pkg/doh"
 	"golang.org/x/crypto/acme"
@@ -42,6 +43,9 @@ type Server struct {
 
 	// blocker answers queries for blocked names, if configured.
 	blocker *blocker
+
+	// cache holds upstream answers, unless disabled.
+	cache *cache.Cache
 
 	handler   http.Handler
 	tlsConfig *tls.Config
@@ -75,6 +79,10 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	s.exchanger = exchanger
+
+	if !config.Cache.Disabled {
+		s.cache = cache.New(config.Cache.Size)
+	}
 
 	if config.Blocklist.enabled() {
 		blocker, err := newBlocker(context.Background(), config.Blocklist, logger)
@@ -118,7 +126,19 @@ func (s *Server) resolve(ctx context.Context, transport string, query *dns.Msg) 
 		}
 	}
 
+	if s.cache != nil {
+		if resp := s.cache.Get(query); resp != nil {
+			s.telemetry.cacheHits.Add(1)
+			s.telemetry.observe(ctx, transport, time.Since(start), resp, nil)
+			return resp, nil
+		}
+		s.telemetry.cacheMisses.Add(1)
+	}
+
 	resp, err := s.exchanger.Exchange(ctx, query)
+	if err == nil && s.cache != nil {
+		s.cache.Put(query, resp)
+	}
 	s.telemetry.observe(ctx, transport, time.Since(start), resp, err)
 
 	return resp, err
