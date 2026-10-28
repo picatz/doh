@@ -1,0 +1,350 @@
+package serve
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/miekg/dns"
+	"github.com/picatz/doh/internal/upstream"
+	"github.com/picatz/doh/pkg/doh"
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
+)
+
+// HealthPath is the liveness endpoint, which always responds 200 OK.
+const HealthPath = "/healthz"
+
+// shutdownTimeout bounds how long in-flight requests may take to finish
+// once the server is asked to stop.
+const shutdownTimeout = 10 * time.Second
+
+// Server is a DNS-over-HTTPS server that forwards queries to upstream
+// resolvers.
+type Server struct {
+	config Config
+	logger *slog.Logger
+
+	handler   http.Handler
+	tlsConfig *tls.Config
+
+	// reloader serves certificates from files, if configured.
+	reloader *certReloader
+
+	// acmeHTTP serves ACME HTTP-01 challenges, if enabled.
+	acmeHTTP http.Handler
+}
+
+// New returns a server for config, logging to logger.
+func New(config Config, logger *slog.Logger) (*Server, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	config = config.withDefaults()
+
+	s := &Server{config: config, logger: logger}
+
+	exchanger, err := s.upstreams()
+	if err != nil {
+		return nil, err
+	}
+
+	timeout := time.Duration(config.Timeout)
+	handler := func(w http.ResponseWriter, r *http.Request, query *dns.Msg) (*dns.Msg, error) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+
+		return exchanger.Exchange(ctx, query)
+	}
+
+	mux := doh.NewServerMux(handler, doh.WithPath(config.Path), doh.WithLogger(logger))
+	mux.HandleFunc("GET "+HealthPath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	s.handler = logRequests(logger, mux)
+
+	if err := s.configureTLS(); err != nil {
+		return nil, err
+	}
+
+	return s, nil
+}
+
+// upstreams returns an exchanger that fails over across the configured
+// upstreams.
+func (s *Server) upstreams() (upstream.Exchanger, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ForceAttemptHTTP2 = true
+
+	opts := upstream.Options{
+		HTTPClient: &http.Client{Transport: transport},
+		Timeout:    time.Duration(s.config.Timeout),
+	}
+
+	var failover upstream.Failover
+	for _, u := range s.config.Upstreams {
+		e, err := upstream.Parse(u, opts)
+		if err != nil {
+			return nil, err
+		}
+		failover = append(failover, e)
+	}
+
+	return failover, nil
+}
+
+// configureTLS sets up certificates from files or ACME, unless the server
+// is configured for plaintext.
+func (s *Server) configureTLS() error {
+	if s.config.Plaintext {
+		return nil
+	}
+
+	config := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
+	}
+
+	if acmeConfig := s.config.TLS.ACME; len(acmeConfig.Domains) > 0 {
+		manager := &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(acmeConfig.Domains...),
+			Cache:      autocert.DirCache(acmeConfig.CacheDir),
+			Email:      acmeConfig.Email,
+		}
+		if acmeConfig.DirectoryURL != "" {
+			manager.Client = &acme.Client{DirectoryURL: acmeConfig.DirectoryURL}
+		}
+
+		config.GetCertificate = manager.GetCertificate
+		// Answer TLS-ALPN-01 challenges (RFC 8737) on the TLS listener.
+		config.NextProtos = append(config.NextProtos, acme.ALPNProto)
+
+		if acmeConfig.HTTPListen != "" {
+			s.acmeHTTP = manager.HTTPHandler(nil)
+		}
+	} else {
+		reloader, err := newCertReloader(s.config.TLS.CertFile, s.config.TLS.KeyFile, s.logger)
+		if err != nil {
+			return err
+		}
+		config.GetCertificate = reloader.GetCertificate
+		s.reloader = reloader
+	}
+
+	s.tlsConfig = config
+	return nil
+}
+
+// Handler returns the server's HTTP handler, serving the DoH endpoint and
+// the health check.
+func (s *Server) Handler() http.Handler { return s.handler }
+
+// ListenAndServe listens on the configured address and serves until ctx is
+// done, then shuts down gracefully.
+func (s *Server) ListenAndServe(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.config.Listen)
+	if err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+
+	return s.Serve(ctx, ln)
+}
+
+// Serve serves on ln until ctx is done, then shuts down gracefully,
+// waiting for in-flight requests to finish.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	servers := []*http.Server{s.httpServer(s.handler)}
+
+	if s.tlsConfig != nil {
+		servers[0].TLSConfig = s.tlsConfig
+		ln = tls.NewListener(ln, s.tlsConfig)
+	}
+
+	listeners := []net.Listener{ln}
+
+	if s.acmeHTTP != nil {
+		acmeLn, err := net.Listen("tcp", s.config.TLS.ACME.HTTPListen)
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("serve: acme http listener: %w", err)
+		}
+
+		servers = append(servers, s.httpServer(s.acmeHTTP))
+		listeners = append(listeners, acmeLn)
+	}
+
+	errc := make(chan error, len(servers))
+	for i, srv := range servers {
+		s.logger.Info("serving",
+			slog.String("addr", listeners[i].Addr().String()),
+			slog.Bool("tls", s.tlsConfig != nil && i == 0),
+			slog.String("path", s.config.Path),
+		)
+
+		go func() {
+			if err := srv.Serve(listeners[i]); !errors.Is(err, http.ErrServerClosed) {
+				errc <- err
+			}
+		}()
+	}
+
+	var err error
+	select {
+	case <-ctx.Done():
+	case err = <-errc:
+	}
+
+	s.logger.Info("shutting down")
+
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	defer cancel()
+
+	for _, srv := range servers {
+		err = errors.Join(err, srv.Shutdown(shutdownCtx))
+	}
+
+	return err
+}
+
+// httpServer returns an HTTP server for handler with conservative timeouts.
+func (s *Server) httpServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      time.Duration(s.config.Timeout) + 5*time.Second,
+		IdleTimeout:       2 * time.Minute,
+		ErrorLog:          slog.NewLogLogger(s.logger.Handler(), slog.LevelDebug),
+	}
+}
+
+// logRequests logs each request at debug level.
+func logRequests(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !logger.Enabled(r.Context(), slog.LevelDebug) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+
+		logger.DebugContext(r.Context(), "request",
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.String("proto", r.Proto),
+			slog.String("remote", r.RemoteAddr),
+			slog.Int("status", rec.status),
+			slog.Duration("duration", time.Since(start)),
+		)
+	})
+}
+
+// statusRecorder records the status code written to a response.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// certReloaderInterval is how often certificate files are checked for
+// changes, at most.
+const certReloaderInterval = 10 * time.Second
+
+// certReloader serves a certificate from files, reloading it when either
+// file changes so renewed certificates are picked up without a restart.
+type certReloader struct {
+	certFile, keyFile string
+	logger            *slog.Logger
+
+	mu      sync.Mutex
+	cert    *tls.Certificate
+	modTime time.Time
+	checked time.Time
+}
+
+// newCertReloader loads the certificate, failing if it can't be read.
+func newCertReloader(certFile, keyFile string, logger *slog.Logger) (*certReloader, error) {
+	r := &certReloader{certFile: certFile, keyFile: keyFile, logger: logger}
+
+	modTime, err := r.latestModTime()
+	if err != nil {
+		return nil, fmt.Errorf("serve: %w", err)
+	}
+
+	if err := r.load(modTime); err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+// GetCertificate implements [tls.Config.GetCertificate].
+func (r *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if now := time.Now(); now.Sub(r.checked) >= certReloaderInterval {
+		r.checked = now
+
+		modTime, err := r.latestModTime()
+		switch {
+		case err != nil:
+			r.logger.Warn("checking certificate files", slog.Any("error", err))
+		case modTime.After(r.modTime):
+			// Keep serving the previous certificate if the new one is
+			// invalid, such as when only one file has been replaced so far.
+			if err := r.load(modTime); err != nil {
+				r.logger.Warn("reloading certificate", slog.Any("error", err))
+			} else {
+				r.logger.Info("reloaded certificate", slog.String("cert_file", r.certFile))
+			}
+		}
+	}
+
+	return r.cert, nil
+}
+
+// load reads the certificate files, recording modTime on success.
+func (r *certReloader) load(modTime time.Time) error {
+	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	if err != nil {
+		return fmt.Errorf("serve: loading certificate: %w", err)
+	}
+
+	r.cert, r.modTime = &cert, modTime
+	return nil
+}
+
+// latestModTime returns the most recent modification time of either file.
+func (r *certReloader) latestModTime() (time.Time, error) {
+	var latest time.Time
+
+	for _, name := range []string{r.certFile, r.keyFile} {
+		info, err := os.Stat(name)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+	}
+
+	return latest, nil
+}

@@ -3,7 +3,7 @@
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/picatz/doh/blob/master/LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/picatz/doh/pulls)
 
-> 🍩  DNS over HTTPs command-line client
+> 🍩  DNS over HTTPS command-line client and server
 
 Using [`cloudflare`](https://developers.cloudflare.com/1.1.1.1/dns-over-https/), [`google`](https://developers.google.com/speed/public-dns/docs/dns-over-https), and [`quad9`](https://quad9.net/doh-quad9-dns-servers/) the `doh` command-line utility can concurrently lookup all three sources for one or more given domain(s). You can even specify your own custom source to use.
 
@@ -24,7 +24,7 @@ The `--help` command-line flag can show you the top-level help menu.
 
 ```console
 $ doh --help
-doh is a CLI for querying DNS records from DoH servers
+doh is a CLI for querying and serving DNS over HTTPS (DoH)
 
 Usage:
   doh [command]
@@ -33,6 +33,7 @@ Available Commands:
   completion  Generate the autocompletion script for the specified shell
   help        Help about any command
   query       Query DNS records from DoH servers
+  serve       Serve DNS-over-HTTPS, forwarding queries to upstream resolvers
 
 Flags:
   -h, --help   help for doh
@@ -119,3 +120,45 @@ $ doh query google.com --type ANY --servers=https://dns.google.com/resolve
 
 > [!TIP]
 >  To use a custom DNS over HTTPs source, specify the URL with the `--servers` flag.
+
+# Serving DoH
+
+`doh serve` runs a DNS-over-HTTPS server ([RFC 8484](https://www.rfc-editor.org/rfc/rfc8484.html)) that forwards queries to upstream resolvers, trying each in order until one answers. Upstreams can use DNS-over-HTTPS (`https://…`), DNS-over-TLS (`tls://host[:853]`), or plain DNS (`udp://host[:53]`, `tcp://host[:53]`, or just `host`).
+
+TLS is required unless you opt out with `--plaintext` to run behind a reverse proxy or load balancer that terminates TLS:
+
+```console
+$ doh serve --plaintext --listen :8080 --upstream tls://dns.quad9.net
+```
+
+Certificates can come from files, which are reloaded automatically when they change:
+
+```console
+$ doh serve --tls-cert cert.pem --tls-key key.pem --upstream 192.168.1.1
+```
+
+Or be obtained and renewed automatically from [Let's Encrypt](https://letsencrypt.org/) (or another ACME CA via `--acme-directory`), answering TLS-ALPN-01 challenges on the TLS port:
+
+```console
+$ doh serve --acme-domain doh.example.com --acme-email admin@example.com
+```
+
+Every flag can also be set with a `DOH_`-prefixed environment variable (`--tls-cert` is `DOH_TLS_CERT`, with commas separating lists), or in a JSON config file passed with `--config`. Flags take precedence over the environment, which takes precedence over the file:
+
+```json
+{
+  "listen": ":443",
+  "upstreams": ["https://cloudflare-dns.com/dns-query", "tls://dns.quad9.net"],
+  "timeout": "5s",
+  "tls": {
+    "acme": {
+      "domains": ["doh.example.com"],
+      "email": "admin@example.com",
+      "http_listen": ":80"
+    }
+  },
+  "log": { "level": "info", "format": "json" }
+}
+```
+
+The server exposes a `GET /healthz` liveness endpoint, and shuts down gracefully on interrupt.
