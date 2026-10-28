@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/miekg/dns"
@@ -58,11 +60,19 @@ func (s *Server) ServeDNS(ctx context.Context, pc net.PacketConn, ln net.Listene
 		slog.String("tcp", ln.Addr().String()),
 	)
 
+	if addrs := lanAddrs(pc.LocalAddr()); len(addrs) > 0 {
+		s.logger.Info("set devices, or your router's DHCP DNS server setting, to this address to use it as their resolver",
+			slog.Any("addrs", addrs),
+		)
+	}
+
 	var err error
 	select {
 	case <-ctx.Done():
 	case err = <-errc:
 	}
+
+	s.logger.Info("shutting down dns", slog.Any("cause", context.Cause(ctx)))
 
 	return errors.Join(err, shutdownDNS(servers))
 }
@@ -117,4 +127,43 @@ func udpSize(req *dns.Msg) int {
 	}
 
 	return dns.MinMsgSize
+}
+
+// lanAddrs returns the private network addresses clients can reach the
+// DNS listener at: its own address, or every private interface address if
+// it listens on all of them.
+func lanAddrs(listen net.Addr) []netip.Addr {
+	ap, err := netip.ParseAddrPort(listen.String())
+	if err != nil {
+		return nil
+	}
+
+	if !ap.Addr().IsUnspecified() {
+		if ap.Addr().IsPrivate() {
+			return []netip.Addr{ap.Addr()}
+		}
+		return nil
+	}
+
+	ifaceAddrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+
+	var addrs []netip.Addr
+	for _, a := range ifaceAddrs {
+		prefix, err := netip.ParsePrefix(a.String())
+		if err != nil {
+			continue
+		}
+
+		// An IPv4 listener on all addresses only accepts IPv4 clients.
+		addr := prefix.Addr()
+		if addr.IsPrivate() && (ap.Addr().Is6() || addr.Is4()) {
+			addrs = append(addrs, addr)
+		}
+	}
+
+	slices.SortFunc(addrs, netip.Addr.Compare)
+	return addrs
 }

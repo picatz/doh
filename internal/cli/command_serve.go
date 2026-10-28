@@ -104,10 +104,14 @@ Upstreams are tried in order until one answers, and may use DNS-over-HTTPS
 (https://), DNS-over-TLS (tls://host[:853]), or plain DNS (udp://host[:53],
 tcp://host[:53], or just host).
 
-TLS is required unless --plaintext is set, for running behind a reverse proxy
+DoH requires TLS unless --plaintext is set, for running behind a reverse proxy
 or load balancer that terminates TLS. Certificates come from files, reloaded
 when they change, or are obtained automatically from Let's Encrypt (or another
 ACME certificate authority) with --acme-domain.
+
+With --dns-listen, plain DNS is also served over UDP and TCP, so any device can
+use the server as its resolver. With --dns-listen and no TLS or --plaintext
+setting, only plain DNS is served.
 
 Settings are read from, in increasing order of precedence: a JSON --config
 file, DOH_* environment variables (e.g. DOH_TLS_CERT for --tls-cert, with

@@ -2,7 +2,13 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/netip"
+	"os"
+	"slices"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -268,11 +274,33 @@ func TestServer_ListenAndServeWithDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	listenAndQuery(t, s, dnsAddr)
+
+	t.Run("dns only", func(t *testing.T) {
+		dnsAddr := freePort()
+
+		s, err := New(Config{DNSListen: dnsAddr, Upstreams: []string{startResolver(t)}}, testLogger(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		listenAndQuery(t, s, dnsAddr)
+	})
+}
+
+// listenAndQuery runs s.ListenAndServe, queries its DNS listener over TCP
+// and UDP, then shuts it down.
+func listenAndQuery(t *testing.T, s *Server, dnsAddr string) {
+	t.Helper()
+
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- s.ListenAndServe(ctx) }()
 
-	var resp *dns.Msg
+	var (
+		resp *dns.Msg
+		err  error
+	)
 	for range 100 {
 		resp, _, err = (&dns.Client{Net: "tcp", Timeout: time.Second}).Exchange(new(dns.Msg).SetQuestion("example.com.", dns.TypeA), dnsAddr)
 		if err == nil {
@@ -301,5 +329,102 @@ func TestServer_ListenAndServeWithDNS(t *testing.T) {
 		}
 	case <-time.After(shutdownTimeout + time.Second):
 		t.Fatal("server did not shut down")
+	}
+}
+
+func TestConfig_DNSOnly(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  Config
+		wantErr string
+	}{
+		{name: "dns only", config: Config{DNSListen: ":53"}},
+		{name: "dns only with explicit listen", config: Config{DNSListen: ":53", Listen: ":443"}, wantErr: "only plain DNS is served"},
+		{name: "nothing to serve", config: Config{}, wantErr: "dns_listen"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.config.Validate()
+
+			switch {
+			case test.wantErr == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)):
+				t.Fatalf("got error %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+
+	t.Run("serve refuses DoH without TLS", func(t *testing.T) {
+		s, err := New(Config{DNSListen: ":53", Upstreams: []string{startResolver(t)}}, testLogger(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if s.tlsConfig != nil {
+			t.Error("configured TLS for a DNS-only server")
+		}
+
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := s.Serve(t.Context(), ln); err == nil {
+			t.Fatal("expected Serve to refuse unencrypted DoH")
+		}
+	})
+}
+
+func TestListenError(t *testing.T) {
+	opErr := func(errno syscall.Errno) error {
+		return &net.OpError{Op: "listen", Net: "udp", Err: os.NewSyscallError("bind", errno)}
+	}
+
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{err: opErr(syscall.EACCES), want: "cap_net_bind_service"},
+		{err: opErr(syscall.EADDRINUSE), want: "systemd-resolved"},
+		{err: errors.New("other"), want: "serve: other"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.want, func(t *testing.T) {
+			err := listenError("serve", ":53", test.err)
+
+			if !strings.Contains(err.Error(), test.want) {
+				t.Errorf("got %q, want mention of %q", err, test.want)
+			}
+
+			if !errors.Is(err, test.err) {
+				t.Errorf("got %v, want it to wrap %v", err, test.err)
+			}
+		})
+	}
+}
+
+func TestLANAddrs(t *testing.T) {
+	udp := func(s string) net.Addr { return net.UDPAddrFromAddrPort(netip.MustParseAddrPort(s)) }
+
+	if got := lanAddrs(udp("192.168.1.10:53")); !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.168.1.10")}) {
+		t.Errorf("got %v for a specific private address, want it alone", got)
+	}
+
+	if got := lanAddrs(udp("8.8.8.8:53")); got != nil {
+		t.Errorf("got %v for a public address, want none", got)
+	}
+
+	for _, listen := range []string{"0.0.0.0:53", "[::]:53"} {
+		for _, addr := range lanAddrs(udp(listen)) {
+			if !addr.IsPrivate() {
+				t.Errorf("%s: got non-private address %s", listen, addr)
+			}
+			if netip.MustParseAddrPort(listen).Addr().Is4() && !addr.Is4() {
+				t.Errorf("%s: got IPv6 address %s for an IPv4 listener", listen, addr)
+			}
+		}
 	}
 }

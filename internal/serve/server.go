@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -113,7 +115,7 @@ func (s *Server) upstreams() (upstream.Exchanger, error) {
 // configureTLS sets up certificates from files or ACME, unless the server
 // is configured for plaintext.
 func (s *Server) configureTLS() error {
-	if s.config.Plaintext {
+	if s.config.Plaintext || !s.config.servesDoH() {
 		return nil
 	}
 
@@ -163,38 +165,74 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // is done, then shuts down gracefully. If any listener fails, all of them
 // are shut down.
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	ln, err := net.Listen("tcp", s.config.Listen)
-	if err != nil {
-		return fmt.Errorf("serve: %w", err)
+	var (
+		ln     net.Listener
+		pc     net.PacketConn
+		dnsLn  net.Listener
+		opened []io.Closer
+		err    error
+	)
+
+	closeAll := func() {
+		for _, c := range opened {
+			c.Close()
+		}
 	}
 
-	if s.config.DNSListen == "" {
-		return s.Serve(ctx, ln)
+	if s.config.servesDoH() {
+		if ln, err = net.Listen("tcp", s.config.Listen); err != nil {
+			return listenError("serve", s.config.Listen, err)
+		}
+		opened = append(opened, ln)
 	}
 
-	pc, err := net.ListenPacket("udp", s.config.DNSListen)
-	if err != nil {
-		ln.Close()
-		return fmt.Errorf("serve: dns: %w", err)
-	}
+	if s.config.DNSListen != "" {
+		if pc, err = net.ListenPacket("udp", s.config.DNSListen); err != nil {
+			closeAll()
+			return listenError("serve: dns", s.config.DNSListen, err)
+		}
+		opened = append(opened, pc)
 
-	dnsLn, err := net.Listen("tcp", s.config.DNSListen)
-	if err != nil {
-		ln.Close()
-		pc.Close()
-		return fmt.Errorf("serve: dns: %w", err)
+		if dnsLn, err = net.Listen("tcp", s.config.DNSListen); err != nil {
+			closeAll()
+			return listenError("serve: dns", s.config.DNSListen, err)
+		}
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return s.Serve(ctx, ln) })
-	g.Go(func() error { return s.ServeDNS(ctx, pc, dnsLn) })
+	if ln != nil {
+		g.Go(func() error { return s.Serve(ctx, ln) })
+	} else {
+		s.logger.Info("DoH disabled: no TLS certificate or plaintext configured, serving plain DNS only")
+	}
+	if pc != nil {
+		g.Go(func() error { return s.ServeDNS(ctx, pc, dnsLn) })
+	}
 
 	return g.Wait()
+}
+
+// listenError explains common reasons a listener can't be opened, such as
+// on the privileged DNS port 53.
+func listenError(prefix, addr string, err error) error {
+	switch {
+	case errors.Is(err, syscall.EACCES):
+		return fmt.Errorf("%s: %w (ports below 1024 need privileges: run as root, or allow the binary with `sudo setcap cap_net_bind_service=+ep $(command -v doh)`)", prefix, err)
+	case errors.Is(err, syscall.EADDRINUSE):
+		return fmt.Errorf("%s: %w (another server is using %s; on Linux, systemd-resolved often holds port 53: listen on a specific address such as 192.168.1.10:53, or set DNSStubListener=no in /etc/systemd/resolved.conf)", prefix, err, addr)
+	default:
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
 }
 
 // Serve serves on ln until ctx is done, then shuts down gracefully,
 // waiting for in-flight requests to finish.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	if !s.config.servesDoH() {
+		ln.Close()
+		return errors.New("serve: DoH needs a TLS certificate, an ACME domain, or plaintext")
+	}
+
 	servers := []*http.Server{s.httpServer(s.handler)}
 
 	if s.tlsConfig != nil {
@@ -236,7 +274,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	case err = <-errc:
 	}
 
-	s.logger.Info("shutting down")
+	s.logger.Info("shutting down", slog.Any("cause", context.Cause(ctx)))
 
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()
