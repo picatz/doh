@@ -24,7 +24,7 @@ type result struct {
 }
 
 // newHTTPClient returns a new HTTP client, or an error if one occurs.
-func newHTTPClient(retryMax int, insecureSkipVerify bool) (*http.Client, error) {
+func newHTTPClient(retryMax int, insecureSkipVerify bool) (*retryablehttp.Client, error) {
 	retryClient := retryablehttp.NewClient()
 
 	retryClient.RetryMax = retryMax
@@ -55,9 +55,7 @@ func newHTTPClient(retryMax int, insecureSkipVerify bool) (*http.Client, error) 
 		return nil, err
 	}
 
-	httpClient := retryClient.StandardClient()
-
-	return httpClient, nil
+	return retryClient, nil
 }
 
 var CommandQuery = &cobra.Command{
@@ -93,7 +91,7 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 			return fmt.Errorf("invalid insecure skip verify: %w", err)
 		}
 
-		httpClient, err := newHTTPClient(retryMax, insecureSkipVerify)
+		retryClient, err := newHTTPClient(retryMax, insecureSkipVerify)
 		if err != nil {
 			return fmt.Errorf("error creating http client: %w", err)
 		}
@@ -125,10 +123,12 @@ which can be piped to other commands (e.g. jq) or redirected to a file.`,
 				},
 			}
 
-			httpClient.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			retryClient.HTTPClient.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return dialer.DialContext(ctx, network, addr)
 			}
 		}
+
+		httpClient := retryClient.StandardClient()
 
 		output := json.NewEncoder(cmd.OutOrStdout())
 
