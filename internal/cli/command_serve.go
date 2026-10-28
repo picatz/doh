@@ -46,6 +46,8 @@ func option[T any](
 var serveOptions = []serveOption{
 	option((*pflag.FlagSet).String, "listen", "", `address to listen on (default ":443", or ":8080" with --plaintext)`,
 		func(c *serve.Config, v string) { c.Listen = v }),
+	option((*pflag.FlagSet).String, "dns-listen", "", "also serve plain DNS over UDP and TCP on this address, such as :53",
+		func(c *serve.Config, v string) { c.DNSListen = v }),
 	option((*pflag.FlagSet).String, "path", doh.DefaultPath, "URI path of the DoH endpoint",
 		func(c *serve.Config, v string) { c.Path = v }),
 	option((*pflag.FlagSet).StringSlice, "upstream", serve.DefaultUpstreams, "upstream resolvers, tried in order",
@@ -119,7 +121,10 @@ Examples:
   doh serve --acme-domain doh.example.com --acme-email admin@example.com
 
   # With your own certificate, forwarding to a local resolver
-  doh serve --tls-cert cert.pem --tls-key key.pem --upstream 192.168.1.1`,
+  doh serve --tls-cert cert.pem --tls-key key.pem --upstream 192.168.1.1
+
+  # Local network resolver: plain DNS in, encrypted DNS out
+  doh serve --dns-listen :53`,
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {

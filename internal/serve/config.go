@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -23,6 +24,11 @@ type Config struct {
 	// Listen is the TCP address to serve on. It defaults to ":443", or
 	// ":8080" when Plaintext is set.
 	Listen string `json:"listen,omitempty"`
+
+	// DNSListen, if set, also serves plain DNS over UDP and TCP on this
+	// address (typically ":53"), so clients on a local network that can't
+	// speak DoH can use the server as their resolver.
+	DNSListen string `json:"dns_listen,omitempty"`
 
 	// Path is the URI path of the DoH endpoint. It defaults to
 	// [doh.DefaultPath].
@@ -166,6 +172,12 @@ func (c Config) Validate() error {
 
 	if c.Timeout < 0 {
 		errs = append(errs, errors.New("timeout must not be negative"))
+	}
+
+	if c.DNSListen != "" {
+		if _, _, err := net.SplitHostPort(c.DNSListen); err != nil {
+			errs = append(errs, fmt.Errorf("dns_listen: %w", err))
+		}
 	}
 
 	for _, u := range c.Upstreams {

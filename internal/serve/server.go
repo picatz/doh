@@ -17,6 +17,7 @@ import (
 	"github.com/picatz/doh/pkg/doh"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/sync/errgroup"
 )
 
 // HealthPath is the liveness endpoint, which always responds 200 OK.
@@ -31,6 +32,9 @@ const shutdownTimeout = 10 * time.Second
 type Server struct {
 	config Config
 	logger *slog.Logger
+
+	// exchanger forwards queries to the configured upstreams.
+	exchanger upstream.Exchanger
 
 	handler   http.Handler
 	tlsConfig *tls.Config
@@ -55,13 +59,10 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.exchanger = exchanger
 
-	timeout := time.Duration(config.Timeout)
 	handler := func(w http.ResponseWriter, r *http.Request, query *dns.Msg) (*dns.Msg, error) {
-		ctx, cancel := context.WithTimeout(r.Context(), timeout)
-		defer cancel()
-
-		return exchanger.Exchange(ctx, query)
+		return s.resolve(r.Context(), query)
 	}
 
 	mux := doh.NewServerMux(handler, doh.WithPath(config.Path), doh.WithLogger(logger))
@@ -76,6 +77,14 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+// resolve answers query using the upstreams, within the configured timeout.
+func (s *Server) resolve(ctx context.Context, query *dns.Msg) (*dns.Msg, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.config.Timeout))
+	defer cancel()
+
+	return s.exchanger.Exchange(ctx, query)
 }
 
 // upstreams returns an exchanger that fails over across the configured
@@ -150,15 +159,37 @@ func (s *Server) configureTLS() error {
 // the health check.
 func (s *Server) Handler() http.Handler { return s.handler }
 
-// ListenAndServe listens on the configured address and serves until ctx is
-// done, then shuts down gracefully.
+// ListenAndServe listens on the configured addresses and serves until ctx
+// is done, then shuts down gracefully. If any listener fails, all of them
+// are shut down.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.config.Listen)
 	if err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
 
-	return s.Serve(ctx, ln)
+	if s.config.DNSListen == "" {
+		return s.Serve(ctx, ln)
+	}
+
+	pc, err := net.ListenPacket("udp", s.config.DNSListen)
+	if err != nil {
+		ln.Close()
+		return fmt.Errorf("serve: dns: %w", err)
+	}
+
+	dnsLn, err := net.Listen("tcp", s.config.DNSListen)
+	if err != nil {
+		ln.Close()
+		pc.Close()
+		return fmt.Errorf("serve: dns: %w", err)
+	}
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return s.Serve(ctx, ln) })
+	g.Go(func() error { return s.ServeDNS(ctx, pc, dnsLn) })
+
+	return g.Wait()
 }
 
 // Serve serves on ln until ctx is done, then shuts down gracefully,
