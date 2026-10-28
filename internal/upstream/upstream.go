@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -178,9 +179,11 @@ func (u *dohUpstream) String() string { return u.name }
 
 // CheckRedirect is an [http.Client] redirect policy for DNS-over-HTTPS
 // upstreams: it follows up to 10 redirects, like the default policy, but
-// refuses any from HTTPS to a URL that isn't, which would expose queries.
+// refuses any to a URL that isn't HTTPS once the chain has used HTTPS,
+// which would expose queries.
 func CheckRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) > 0 && via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
+	usedHTTPS := slices.ContainsFunc(via, func(r *http.Request) bool { return r.URL.Scheme == "https" })
+	if usedHTTPS && req.URL.Scheme != "https" {
 		return fmt.Errorf("refusing redirect from HTTPS to %s", req.URL.Redacted())
 	}
 

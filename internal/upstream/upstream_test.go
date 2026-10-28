@@ -500,6 +500,26 @@ func TestCheckRedirect_PlainHTTP(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestCheckRedirect_MixedChain(t *testing.T) {
+	request := func(rawURL string) *http.Request {
+		r, err := http.NewRequest(http.MethodGet, rawURL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// http:// → https:// → http:// downgrades from HTTPS at the last hop.
+	via := []*http.Request{request("http://a.example/dns-query"), request("https://b.example/dns-query")}
+	if err := CheckRedirect(request("http://c.example/dns-query"), via); err == nil {
+		t.Error("allowed a redirect to HTTP after an HTTPS hop")
+	}
+
+	if err := CheckRedirect(request("https://c.example/dns-query"), via); err != nil {
+		t.Errorf("refused an HTTPS redirect: %v", err)
+	}
+}
+
 func TestWithTLSObserver(t *testing.T) {
 	observed := func(t *testing.T, e Exchanger) tls.ConnectionState {
 		t.Helper()

@@ -213,7 +213,7 @@ func init() {
 
 	CommandQuery.Flags().String("type", "A", "dns record type to query for each domain, such as A, AAAA, MX, etc.")
 	CommandQuery.Flags().StringSlice("servers", defaultServers, "servers to query: https://, http://, tls://, udp://, tcp://, or host")
-	CommandQuery.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0s for no timeout")
+	CommandQuery.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0s for none (plain DNS and DNS-over-TLS exchanges still give up after 5s)")
 	CommandQuery.Flags().String("resolver-addr", "", "address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53); connects directly, ignoring HTTP(S)_PROXY")
 	CommandQuery.Flags().String("resolver-network", "udp", "protocol to use for resolving DoH server names (e.g. udp, tcp)")
 	CommandQuery.Flags().Int("retry-max", 10, "maximum number of retries for each DoH query")

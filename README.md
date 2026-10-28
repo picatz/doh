@@ -234,7 +234,7 @@ Flags:
       --resolver-network string   protocol to use for resolving DoH server names (e.g. udp, tcp) (default "udp")
       --retry-max int             maximum number of retries for each query (default 10)
       --servers strings           servers to query (default [https://dns.google/dns-query,https://cloudflare-dns.com/dns-query,https://dns.quad9.net:5053/dns-query])
-      --timeout duration          timeout for query, 0s for no timeout (default 30s)
+      --timeout duration          timeout for query, 0s for none (plain DNS and DNS-over-TLS exchanges still give up after 5s) (default 30s)
       --type string               dns record type to query for each domain, such as A, AAAA, MX, etc. (default "A")
 ```
 
