@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -17,6 +19,7 @@ import (
 	"github.com/picatz/doh/pkg/doh"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/sync/errgroup"
 )
 
 // HealthPath is the liveness endpoint, which always responds 200 OK.
@@ -31,6 +34,9 @@ const shutdownTimeout = 10 * time.Second
 type Server struct {
 	config Config
 	logger *slog.Logger
+
+	// exchanger forwards queries to the configured upstreams.
+	exchanger upstream.Exchanger
 
 	handler   http.Handler
 	tlsConfig *tls.Config
@@ -55,13 +61,10 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.exchanger = exchanger
 
-	timeout := time.Duration(config.Timeout)
 	handler := func(w http.ResponseWriter, r *http.Request, query *dns.Msg) (*dns.Msg, error) {
-		ctx, cancel := context.WithTimeout(r.Context(), timeout)
-		defer cancel()
-
-		return exchanger.Exchange(ctx, query)
+		return s.resolve(r.Context(), query)
 	}
 
 	mux := doh.NewServerMux(handler, doh.WithPath(config.Path), doh.WithLogger(logger))
@@ -76,6 +79,14 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+// resolve answers query using the upstreams, within the configured timeout.
+func (s *Server) resolve(ctx context.Context, query *dns.Msg) (*dns.Msg, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.config.Timeout))
+	defer cancel()
+
+	return s.exchanger.Exchange(ctx, query)
 }
 
 // upstreams returns an exchanger that fails over across the configured
@@ -104,7 +115,7 @@ func (s *Server) upstreams() (upstream.Exchanger, error) {
 // configureTLS sets up certificates from files or ACME, unless the server
 // is configured for plaintext.
 func (s *Server) configureTLS() error {
-	if s.config.Plaintext {
+	if s.config.Plaintext || !s.config.servesDoH() {
 		return nil
 	}
 
@@ -150,20 +161,80 @@ func (s *Server) configureTLS() error {
 // the health check.
 func (s *Server) Handler() http.Handler { return s.handler }
 
-// ListenAndServe listens on the configured address and serves until ctx is
-// done, then shuts down gracefully.
+// ListenAndServe listens on the configured addresses and serves until ctx
+// is done, then shuts down gracefully. If any listener fails, all of them
+// are shut down.
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	ln, err := net.Listen("tcp", s.config.Listen)
-	if err != nil {
-		return fmt.Errorf("serve: %w", err)
+	var (
+		ln     net.Listener
+		pc     net.PacketConn
+		dnsLn  net.Listener
+		opened []io.Closer
+		err    error
+	)
+
+	closeAll := func() {
+		for _, c := range opened {
+			c.Close()
+		}
 	}
 
-	return s.Serve(ctx, ln)
+	if s.config.servesDoH() {
+		if ln, err = net.Listen("tcp", s.config.Listen); err != nil {
+			return listenError("serve", s.config.Listen, err)
+		}
+		opened = append(opened, ln)
+	}
+
+	if s.config.DNSListen != "" {
+		if pc, err = net.ListenPacket("udp", s.config.DNSListen); err != nil {
+			closeAll()
+			return listenError("serve: dns", s.config.DNSListen, err)
+		}
+		opened = append(opened, pc)
+
+		// Bind TCP to the port UDP got, so that with port 0 both share an
+		// ephemeral port, and clients can retry truncated answers over TCP.
+		if dnsLn, err = net.Listen("tcp", pc.LocalAddr().String()); err != nil {
+			closeAll()
+			return listenError("serve: dns", s.config.DNSListen, err)
+		}
+	}
+
+	g, ctx := errgroup.WithContext(ctx)
+	if ln != nil {
+		g.Go(func() error { return s.Serve(ctx, ln) })
+	} else {
+		s.logger.Info("DoH disabled: no TLS certificate or plaintext configured, serving plain DNS only")
+	}
+	if pc != nil {
+		g.Go(func() error { return s.ServeDNS(ctx, pc, dnsLn) })
+	}
+
+	return g.Wait()
+}
+
+// listenError explains common reasons a listener can't be opened, such as
+// on the privileged DNS port 53.
+func listenError(prefix, addr string, err error) error {
+	switch {
+	case errors.Is(err, syscall.EACCES):
+		return fmt.Errorf("%s: %w (ports below 1024 need privileges: run as root, or allow the binary with `sudo setcap cap_net_bind_service=+ep $(command -v doh)`)", prefix, err)
+	case errors.Is(err, syscall.EADDRINUSE):
+		return fmt.Errorf("%s: %w (another server is using %s; on Linux, systemd-resolved often holds port 53: listen on a specific address such as 192.168.1.10:53, or set DNSStubListener=no in /etc/systemd/resolved.conf)", prefix, err, addr)
+	default:
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
 }
 
 // Serve serves on ln until ctx is done, then shuts down gracefully,
 // waiting for in-flight requests to finish.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	if !s.config.servesDoH() {
+		ln.Close()
+		return errors.New("serve: DoH needs a TLS certificate, an ACME domain, or plaintext")
+	}
+
 	servers := []*http.Server{s.httpServer(s.handler)}
 
 	if s.tlsConfig != nil {
@@ -205,7 +276,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	case err = <-errc:
 	}
 
-	s.logger.Info("shutting down")
+	s.logger.Info("shutting down", slog.Any("cause", context.Cause(ctx)))
 
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()

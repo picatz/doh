@@ -57,7 +57,7 @@ $ doh query example.com --servers https://dns.example/dns-query --resolver-addr 
 
 `doh serve` runs a DoH server ([RFC 8484](https://www.rfc-editor.org/rfc/rfc8484.html)) that forwards queries to upstream resolvers, trying each in order until one answers. Upstreams can use DoH (`https://…`), DNS-over-TLS (`tls://host[:853]`), or plain DNS (`udp://host[:53]`, `tcp://host[:53]`, or just `host`), and default to Cloudflare and Google over DoH.
 
-TLS is required unless you opt out with `--plaintext`, to run behind a reverse proxy or load balancer that terminates TLS:
+DoH requires TLS unless you opt out with `--plaintext`, to run behind a reverse proxy or load balancer that terminates TLS:
 
 ```console
 $ doh serve --plaintext --listen :8080 --upstream tls://dns.quad9.net
@@ -75,7 +75,47 @@ Or be obtained and renewed automatically from Let's Encrypt (or another ACME CA 
 $ doh serve --acme-domain doh.example.com --acme-email admin@example.com
 ```
 
-Then query it like any other DoH server:
+### Local network resolver
+
+To encrypt DNS for every device on your network, including the ones that can't speak DoH, serve plain DNS on port 53 and let `doh` forward it over DoH:
+
+```console
+$ sudo doh serve --dns-listen :53
+level=INFO msg="DoH disabled: no TLS certificate or plaintext configured, serving plain DNS only"
+level=INFO msg="serving dns" udp=[::]:53 tcp=[::]:53
+level=INFO msg="set devices, or your router's DHCP DNS server setting, to this address to use it as their resolver" addrs=[192.168.1.10]
+```
+
+Then point your router's DHCP DNS server setting (or individual devices) at the address it logs. Add `--tls-cert`/`--tls-key` or `--plaintext` to serve DoH on the same machine too.
+
+> [!TIP]
+> Instead of running as root, allow the binary to bind port 53 with `sudo setcap cap_net_bind_service=+ep $(command -v doh)`. On Linux, if `systemd-resolved` already holds port 53, listen on your LAN address instead (`--dns-listen 192.168.1.10:53`), or set `DNSStubListener=no` in `/etc/systemd/resolved.conf`.
+
+To keep it running, a minimal systemd unit (`/etc/systemd/system/doh.service`):
+
+```ini
+[Unit]
+Description=doh DNS resolver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/doh serve --dns-listen :53
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+DynamicUser=yes
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```console
+$ sudo systemctl enable --now doh
+```
+
+### Querying your server
+
+Query it like any other DoH server:
 
 ```console
 $ doh query example.com --servers https://doh.example.com/dns-query
@@ -159,10 +199,14 @@ Upstreams are tried in order until one answers, and may use DNS-over-HTTPS
 (https://), DNS-over-TLS (tls://host[:853]), or plain DNS (udp://host[:53],
 tcp://host[:53], or just host).
 
-TLS is required unless --plaintext is set, for running behind a reverse proxy
+DoH requires TLS unless --plaintext is set, for running behind a reverse proxy
 or load balancer that terminates TLS. Certificates come from files, reloaded
 when they change, or are obtained automatically from Let's Encrypt (or another
 ACME certificate authority) with --acme-domain.
+
+With --dns-listen, plain DNS is also served over UDP and TCP, so any device can
+use the server as its resolver. With --dns-listen and no TLS or --plaintext
+setting, only plain DNS is served.
 
 Settings are read from, in increasing order of precedence: a JSON --config
 file, DOH_* environment variables (e.g. DOH_TLS_CERT for --tls-cert, with
@@ -178,6 +222,9 @@ Examples:
   # With your own certificate, forwarding to a local resolver
   doh serve --tls-cert cert.pem --tls-key key.pem --upstream 192.168.1.1
 
+  # Local network resolver: plain DNS in, encrypted DNS out
+  doh serve --dns-listen :53
+
 Usage:
   doh serve [flags]
 
@@ -188,6 +235,7 @@ Flags:
       --acme-email string         contact email for the ACME account
       --acme-http-listen string   address to answer ACME HTTP-01 challenges on, such as :80
       --config string             path to a JSON config file
+      --dns-listen string         also serve plain DNS over UDP and TCP on this address, such as :53
   -h, --help                      help for serve
       --listen string             address to listen on (default ":443", or ":8080" with --plaintext)
       --log-format string         log format: text or json (default "text")

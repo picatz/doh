@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -23,6 +24,12 @@ type Config struct {
 	// Listen is the TCP address to serve on. It defaults to ":443", or
 	// ":8080" when Plaintext is set.
 	Listen string `json:"listen,omitempty"`
+
+	// DNSListen, if set, also serves plain DNS over UDP and TCP on this
+	// address (typically ":53"), so clients on a local network that can't
+	// speak DoH can use the server as their resolver. If no TLS or
+	// plaintext setting is configured, only plain DNS is served.
+	DNSListen string `json:"dns_listen,omitempty"`
 
 	// Path is the URI path of the DoH endpoint. It defaults to
 	// [doh.DefaultPath].
@@ -154,8 +161,15 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// servesDoH reports whether c configures the DoH listener: with TLS, or
+// in plaintext. Without either, only plain DNS is served on DNSListen.
+func (c Config) servesDoH() bool {
+	return c.Plaintext || c.TLS.CertFile != "" || c.TLS.KeyFile != "" || len(c.TLS.ACME.Domains) > 0
+}
+
 // Validate reports whether c is complete and consistent, after defaults.
 func (c Config) Validate() error {
+	listen := c.Listen
 	c = c.withDefaults()
 
 	var errs []error
@@ -166,6 +180,12 @@ func (c Config) Validate() error {
 
 	if c.Timeout < 0 {
 		errs = append(errs, errors.New("timeout must not be negative"))
+	}
+
+	if c.DNSListen != "" {
+		if _, _, err := net.SplitHostPort(c.DNSListen); err != nil {
+			errs = append(errs, fmt.Errorf("dns_listen: %w", err))
+		}
 	}
 
 	for _, u := range c.Upstreams {
@@ -184,8 +204,10 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("tls: use either certificate files or ACME, not both"))
 	case c.Plaintext && (files || acme):
 		errs = append(errs, errors.New("plaintext can't be combined with TLS settings"))
-	case !c.Plaintext && !files && !acme:
-		errs = append(errs, errors.New("no TLS certificate configured: set a certificate and key, an ACME domain, or plaintext to serve behind a TLS-terminating proxy"))
+	case !c.Plaintext && !files && !acme && c.DNSListen == "":
+		errs = append(errs, errors.New("no TLS certificate configured: set a certificate and key, an ACME domain, or plaintext to serve behind a TLS-terminating proxy (or dns_listen to serve only plain DNS)"))
+	case !c.servesDoH() && listen != "":
+		errs = append(errs, errors.New("listen needs a TLS certificate, an ACME domain, or plaintext; without them only plain DNS is served on dns_listen"))
 	}
 
 	if c.TLS.ACME.HTTPListen != "" && !acme {
