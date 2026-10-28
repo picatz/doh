@@ -232,8 +232,8 @@ Flags:
   -k, --insecure-skip-verify      allow insecure server connections (e.g. self-signed TLS certificates)
       --resolver-addr string      address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53); connects directly, ignoring HTTP(S)_PROXY
       --resolver-network string   protocol to use for resolving DoH server names (e.g. udp, tcp) (default "udp")
-      --retry-max int             maximum number of retries for each query (default 10)
-      --servers strings           servers to query (default [https://dns.google/dns-query,https://cloudflare-dns.com/dns-query,https://dns.quad9.net:5053/dns-query])
+      --retry-max int             maximum number of retries for each DoH query (default 10)
+      --servers strings           servers to query: https://, http://, tls://, udp://, tcp://, or host (default [https://dns.google/dns-query,https://cloudflare-dns.com/dns-query,https://dns.quad9.net:5053/dns-query])
       --timeout duration          timeout for query, 0s for none (plain DNS and DNS-over-TLS exchanges still give up after 5s) (default 30s)
       --type string               dns record type to query for each domain, such as A, AAAA, MX, etc. (default "A")
 ```
@@ -305,6 +305,7 @@ Flags:
       --timeout duration             maximum time to answer each query (default 5s)
       --tls-cert string              TLS certificate chain file (PEM)
       --tls-key string               TLS private key file (PEM)
+      --tls-min-version string       oldest TLS version to accept: 1.2 or 1.3 (TLS 1.3 is preferred either way) (default "1.2")
       --trace-dir string             directory for slow query flight recorder snapshots
       --upstream strings             upstream resolvers, tried in order (default [https://cloudflare-dns.com/dns-query,https://dns.google/dns-query])
 ```
