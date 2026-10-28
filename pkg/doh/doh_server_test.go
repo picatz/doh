@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hashicorp/go-cleanhttp"
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/pkg/doh"
 )
@@ -200,7 +199,7 @@ func TestNewServer(t *testing.T) {
 }
 
 func TestForwarder(t *testing.T) {
-	mux := doh.NewServerMux(doh.Forwarder(cleanhttp.DefaultClient(), testServerURL(t)))
+	mux := doh.NewServerMux(doh.Forwarder(http.DefaultClient, testServerURL(t)))
 
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
