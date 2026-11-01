@@ -56,6 +56,7 @@ import (
 
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/policy"
+	"github.com/picatz/doh/internal/services"
 	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
 )
@@ -183,6 +184,10 @@ type Feature struct {
 type Catalog struct {
 	Features []Feature          `json:"features"`
 	Presets  []blocklist.Preset `json:"presets"`
+
+	// Services are the apps and sites profiles and schedules can block by
+	// name.
+	Services []services.Service `json:"services"`
 }
 
 // Profiles is the body listing every profile.

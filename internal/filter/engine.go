@@ -10,6 +10,8 @@
 //	rewrite           the profile's local answers
 //	allow             the profile's allowed domains, which skip every other check
 //	deny              the profile's denied domains
+//	service           the profile's blocked services, such as TikTok
+//	schedule          the profile's schedules in effect now
 //	bypass            Firefox's DoH canary; with Security.Bypass, Private Relay and public encrypted DNS
 //	tld               the profile's blocked top-level domains
 //	list              the profile's blocklists, unless a list has an exception for the name
@@ -20,7 +22,7 @@
 //
 // Answers are then checked too, unless the name was allowed:
 //
-//	cname             CNAME targets on the profile's deny list, blocked TLDs, or blocklists, uncovering trackers cloaked behind first-party names
+//	cname             CNAME targets on the profile's deny list, blocked services, schedules in effect, blocked TLDs, or blocklists, uncovering trackers and apps cloaked behind other names
 //	rebinding         Security.Rebinding
 package filter
 
@@ -48,6 +50,8 @@ const (
 	ReasonRewrite         = "rewrite"
 	ReasonAllow           = "allow"
 	ReasonDeny            = "deny"
+	ReasonService         = "service"
+	ReasonSchedule        = "schedule"
 	ReasonBypass          = "bypass"
 	ReasonTLD             = "tld"
 	ReasonList            = "list"
@@ -90,6 +94,9 @@ type Options struct {
 
 	// Baseline applies to every profile, in addition to its own settings.
 	Baseline Baseline
+
+	// Now returns the current time, for schedules. Nil means time.Now.
+	Now func() time.Time
 }
 
 // Baseline is policy applied to every profile, such as from command-line
@@ -147,6 +154,9 @@ type Profile struct {
 	blockResponse string
 	filters       bool
 	devices       map[string]bool
+	services      serviceSet
+	schedules     []schedule
+	location      *time.Location
 }
 
 // New compiles p, which must be valid.
@@ -181,6 +191,29 @@ func New(p *policy.Policy, opts Options) (*Engine, error) {
 			wildRewrites:  make(map[string][]netip.Addr),
 			blockResponse: cmp.Or(cfg.BlockResponse, opts.Baseline.BlockResponse, policy.BlockNXDomain),
 			devices:       make(map[string]bool),
+			services:      newServiceSet(cfg.Services),
+			location:      time.Local,
+		}
+
+		if cfg.TimeZone != "" {
+			loc, err := time.LoadLocation(cfg.TimeZone)
+			if err != nil {
+				return nil, fmt.Errorf("filter: profile %q: %w", cfg.ID, err)
+			}
+			pr.location = loc
+		}
+		for _, sc := range cfg.Schedules {
+			compiled, err := compileSchedule(sc)
+			if err != nil {
+				return nil, fmt.Errorf("filter: profile %q: %w", cfg.ID, err)
+			}
+			pr.schedules = append(pr.schedules, compiled)
+			for _, src := range compiled.lists {
+				if !seen[src] {
+					seen[src] = true
+					e.sources = append(e.sources, src)
+				}
+			}
 		}
 
 		for _, l := range slices.Concat(cfg.Lists, opts.Baseline.Lists) {
@@ -210,6 +243,7 @@ func New(p *policy.Policy, opts Options) (*Engine, error) {
 
 		sec := cfg.Security
 		pr.filters = len(pr.lists) > 0 || len(pr.deny) > 0 || len(pr.tlds) > 0 || cfg.SafeSearch ||
+			len(cfg.Services) > 0 || len(cfg.Schedules) > 0 ||
 			sec.Rebinding || sec.Homograph || sec.NewlyRegistered || sec.Tunneling || sec.Bypass
 
 		claim := func(s, device string) {
@@ -241,6 +275,14 @@ func New(p *policy.Policy, opts Options) (*Engine, error) {
 	slices.SortFunc(e.bits6, func(a, b int) int { return b - a })
 
 	return e, nil
+}
+
+// now returns the current time.
+func (e *Engine) now() time.Time {
+	if e.opts.Now != nil {
+		return e.opts.Now()
+	}
+	return time.Now()
 }
 
 // Policy returns a copy of the policy the engine applies.
@@ -371,6 +413,13 @@ func (p *Profile) Check(ctx context.Context, q Query, t *Trace) Decision {
 		return block(ReasonDeny, d, "", "denied by profile "+p.config.ID)
 	}
 	t.Add(ReasonDeny, api.CheckPass, "not on the deny list")
+
+	if d, ok := p.serviceBlock(name, t); ok {
+		return d
+	}
+	if d, ok := p.scheduleBlock(name, t); ok {
+		return d
+	}
 
 	if name == firefoxCanary && p.filters {
 		t.Add(ReasonBypass, api.CheckMatch, "Firefox's DoH canary: telling Firefox to use this resolver")
@@ -604,6 +653,10 @@ func (p *Profile) cnameBlock(resp *dns.Msg, t *Trace) (Decision, bool) {
 		if d, ok := p.deny.match(target); ok {
 			t.Add(ReasonCNAME, api.CheckMatch, "CNAME target %s is denied", target)
 			return block(ReasonCNAME, d, "", "CNAME to denied "+target), true
+		}
+		if d, ok := p.targetBlock(target); ok {
+			t.Add(ReasonCNAME, api.CheckMatch, "%s", d.Detail)
+			return d, true
 		}
 		if d, ok := p.tlds.match(target[strings.LastIndexByte(target, '.')+1:]); ok {
 			t.Add(ReasonCNAME, api.CheckMatch, "CNAME target %s is under blocked TLD .%s", target, d)

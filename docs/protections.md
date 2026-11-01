@@ -5,6 +5,7 @@
 - [How a query is decided](#how-a-query-is-decided)
 - [Protections](#protections)
 - [Blocklists](#blocklists)
+- [Apps and schedules](#apps-and-schedules)
 - [Profiles and devices](#profiles-and-devices)
 - [The policy file](#the-policy-file)
 - [Local names and forward zones](#local-names-and-forward-zones)
@@ -59,15 +60,17 @@ Answer: NXDOMAIN
 | 2 | `rewrite` | The profile's local answers, such as `nas.home.arpa` → `192.168.1.5`. |
 | 3 | `allow` | Allowed domains skip **every** other check, including answer checks. |
 | 4 | `deny` | Denied domains are always blocked. |
-| 5 | `bypass` | Firefox's DoH canary; with bypass protection, Private Relay and public encrypted DNS. |
-| 6 | `tld` | Blocked top-level domains. |
-| 7 | `list` | Blocklists, unless any of the profile's lists has an exception for the name. |
-| 8 | `homograph` | Look-alike internationalized names. |
-| 9 | `tunneling` | Data smuggled through DNS. |
-| 10 | `newly-registered` | Domains registered recently. |
-| 11 | `safe-search` | Safe search hosts for search engines and YouTube. |
-| 12 | `cname` | Answers whose CNAME targets are denied, under a blocked TLD, or on a blocklist. |
-| 13 | `rebinding` | Answers that point public names at local addresses. |
+| 5 | `service` | Blocked apps and sites, such as TikTok. |
+| 6 | `schedule` | Schedules in effect now. |
+| 7 | `bypass` | Firefox's DoH canary; with bypass protection, Private Relay and public encrypted DNS. |
+| 8 | `tld` | Blocked top-level domains. |
+| 9 | `list` | Blocklists, unless any of the profile's lists has an exception for the name. |
+| 10 | `homograph` | Look-alike internationalized names. |
+| 11 | `tunneling` | Data smuggled through DNS. |
+| 12 | `newly-registered` | Domains registered recently. |
+| 13 | `safe-search` | Safe search hosts for search engines and YouTube. |
+| 14 | `cname` | Answers whose CNAME targets are denied, under a blocked TLD, or on a blocklist. |
+| 15 | `rebinding` | Answers that point public names at local addresses. |
 
 Blocked names get `NXDOMAIN` (or, with `block_response: "null"`, `0.0.0.0` and `::`), a synthetic SOA so they're cached for only a minute, and an [Extended DNS Error](https://www.rfc-editor.org/rfc/rfc8914.html#section-4.16) naming the reason, such as `blocked: rebinding` or `blocked by threat-intel`.
 
@@ -99,6 +102,30 @@ Profiles list blocklists by preset name, URL, or file path, optionally named as 
 | Parental | `gambling`, `adult`, `social` |
 
 `doh blocklist presets` describes each one. `--blocklist`, `--block-domain`, `--allow-domain`, and `--block-response` apply to **every** profile, as a baseline; a profile's allow list overrides baseline blocks.
+
+## Apps and schedules
+
+Profiles can block apps and sites by name, always or on a schedule.
+
+**Services** block an app's domains with one setting: `tiktok`, `instagram`, `facebook`, `snapchat`, `x`, `reddit`, `pinterest`, `youtube`, `twitch`, `netflix`, `roblox`, `fortnite`, `minecraft`, `steam`, `discord`, `whatsapp`, and `telegram`. Each lists only domains the service owns, never shared ones such as `googleapis.com`, so blocking one doesn't break others. CNAME targets are checked too, so an app can't slip through behind another name. Apps change their domains, though, so a blocked service is a strong default, not a guarantee; add domains to deny alongside it if something gets through.
+
+**Schedules** block more during a recurring period, in the profile's `time_zone` (an IANA name such as `America/New_York`; the server's own by default):
+
+```json
+{
+  "id": "kids",
+  "time_zone": "America/New_York",
+  "services": ["tiktok"],
+  "schedules": [
+    { "name": "Homework", "days": ["mon", "tue", "wed", "thu", "fri"], "start": "15:00", "end": "18:00",
+      "services": ["youtube", "roblox"], "lists": ["social"] },
+    { "name": "Bedtime", "days": ["sun", "mon", "tue", "wed", "thu"], "start": "21:00", "end": "07:00",
+      "block_all": true, "allow": ["school.example"] }
+  ]
+}
+```
+
+A period that ends before it starts runs past midnight and belongs to the day it starts on: Thursday's bedtime lasts into Friday morning, and Friday night has none. During a period, the schedule's services, lists, and denied domains are blocked; with `block_all`, everything is, except the profile's allowed domains, the schedule's `allow`, and names local to the network, such as the router and printer. Blocked queries are logged with reason `schedule` and the schedule's name, and the block says until when, as in "Homework: YouTube is blocked until 18:00".
 
 ## Profiles and devices
 

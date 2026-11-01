@@ -214,3 +214,65 @@ func TestValidate_Tenants(t *testing.T) {
 		t.Errorf("clashing claim: %v", err)
 	}
 }
+
+func TestValidate_ServicesAndSchedules(t *testing.T) {
+	valid := &Policy{Profiles: []Profile{{
+		ID:       "kids",
+		Services: []string{"tiktok", "roblox"},
+		TimeZone: "America/New_York",
+		Schedules: []Schedule{
+			{Name: "Bedtime", Start: "21:00", End: "07:00", BlockAll: true, Allow: []string{"school.example"}},
+			{Name: "Homework", Days: []string{"mon", "tue", "wed", "thu", "fri"}, Start: "15:00", End: "18:00", Services: []string{"youtube"}, Lists: []string{"social"}},
+		},
+	}}}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid schedules: %v", err)
+	}
+
+	for _, tt := range []struct {
+		desc    string
+		profile Profile
+		want    string
+	}{
+		{"unknown service", Profile{ID: "a", Services: []string{"myspace"}}, `unknown service "myspace"`},
+		{"bad time zone", Profile{ID: "a", TimeZone: "Mars/Olympus"}, "IANA time zone"},
+		{"local time zone", Profile{ID: "a", TimeZone: "Local"}, "IANA time zone"},
+		{"unnamed", Profile{ID: "a", Schedules: []Schedule{{Start: "1:00", End: "2:00", BlockAll: true}}}, "name it"},
+		{"bad day", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Days: []string{"monday"}, Start: "01:00", End: "02:00", BlockAll: true}}}, `day "monday"`},
+		{"bad start", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "9pm", End: "02:00", BlockAll: true}}}, "HH:MM"},
+		{"out of range", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "24:30", End: "02:00", BlockAll: true}}}, "HH:MM"},
+		{"empty period", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "09:00", End: "09:00", BlockAll: true}}}, "same time"},
+		{"blocks nothing", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "09:00", End: "10:00"}}}, "blocks nothing"},
+		{"bad scheduled service", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "09:00", End: "10:00", Services: []string{"nope"}}}}, "unknown service"},
+		{"bad allow", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "09:00", End: "10:00", BlockAll: true, Allow: []string{"not a domain"}}}}, "invalid domain"},
+	} {
+		err := (&Policy{Profiles: []Profile{tt.profile}}).Validate()
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: Validate = %v, want an error containing %q", tt.desc, err, tt.want)
+		}
+	}
+
+	// A tenant's scheduled lists follow its list rules too.
+	tenanted := &Policy{
+		Tenants: []Tenant{{ID: "smiths"}},
+		Profiles: []Profile{{ID: "a", Tenant: "smiths", Schedules: []Schedule{
+			{Name: "x", Start: "09:00", End: "10:00", Lists: []string{"/etc/shadow"}},
+		}}},
+	}
+	if err := tenanted.Validate(); err == nil || !strings.Contains(err.Error(), "preset lists") {
+		t.Errorf("tenant schedule with a file list: %v", err)
+	}
+}
+
+func TestParseClock(t *testing.T) {
+	for in, want := range map[string]int{"00:00": 0, "07:30": 450, "23:59": 1439} {
+		if got, err := ParseClock(in); err != nil || got != want {
+			t.Errorf("ParseClock(%q) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "7:30", "07:3", "24:00", "12:60", "noon", "07:30:00"} {
+		if _, err := ParseClock(bad); err == nil {
+			t.Errorf("ParseClock(%q) succeeded", bad)
+		}
+	}
+}

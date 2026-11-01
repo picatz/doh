@@ -144,7 +144,7 @@ $ doh blocklist check www.google-analytics.com
 
 ### Protections and profiles
 
-Out of the box, `doh serve` blocks known malware, phishing, and scam domains, DNS rebinding attacks, and look-alike internationalized domains such as `аpple.com` (with a Cyrillic `а`), for every device that uses it. More protections are a toggle away: newly registered domains, DNS tunneling, bypass methods, safe search, and lists of ads, trackers, and content households restrict.
+Out of the box, `doh serve` blocks known malware, phishing, and scam domains, DNS rebinding attacks, and look-alike internationalized domains such as `аpple.com` (with a Cyrillic `а`), for every device that uses it. More protections are a toggle away: newly registered domains, DNS tunneling, bypass methods, safe search, and lists of ads, trackers, and content households restrict. Apps such as TikTok or Roblox can be blocked by name, always or on a schedule, like homework hours or bedtime ([apps and schedules](docs/protections.md#apps-and-schedules)).
 
 Protections belong to **profiles**, so a group of devices gets the rules it needs. Streaming sticks running sketchy apps can get stricter rules and closer logging, and the kids' tablets safe search, without affecting anyone else. Devices join a profile by address, or over DoH by path, as `https://doh.example.com/dns-query/kids/tablet`:
 
