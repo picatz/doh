@@ -243,3 +243,19 @@ func TestScript_PasskeyFallbacks(t *testing.T) {
 		t.Errorf("PublicKeyCredential is used %d times, want once, inside the converter", n)
 	}
 }
+
+// TestIndex_OperatorOnlyStartsHidden checks that what only the server's
+// operator may use starts hidden, so tenants never glimpse it before the
+// script learns who they are.
+func TestIndex_OperatorOnlyStartsHidden(t *testing.T) {
+	index := readStatic(t, "index.html")
+	for _, el := range []string{
+		`<button type="button" class="nav" data-view="tenants" id="nav-tenants" hidden>`,
+		`<div id="c-tenant-row" hidden>`,
+		`<section id="view-tenants" class="view" hidden`,
+	} {
+		if !strings.Contains(index, el) {
+			t.Errorf("index.html lacks %s", el)
+		}
+	}
+}

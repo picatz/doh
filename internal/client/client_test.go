@@ -381,13 +381,13 @@ func TestClient_SigninLink(t *testing.T) {
 			t.Errorf("Content-Type = %q", ct)
 		}
 		var req api.SigninLinkRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Role != "reader" {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Role != "reader" || req.Tenant != "smiths" {
 			t.Errorf("request = %+v, %v", req, err)
 		}
 		writeJSON(w, http.StatusCreated, api.SigninLink{URL: "http://localhost:9090/#signin=abc", Expires: expires, PasskeyRequired: true})
 	})
 
-	link, err := c.SigninLink(context.Background(), "reader")
+	link, err := c.SigninLink(context.Background(), "reader", "smiths")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,5 +435,50 @@ func TestClient_People(t *testing.T) {
 	var e *Error
 	if err := c.DeletePerson(ctx, "nobody"); !errors.As(err, &e) || e.Status != 404 {
 		t.Errorf("DeletePerson(nobody) = %v, want 404", err)
+	}
+}
+
+func TestClient_Tenants(t *testing.T) {
+	var calls []string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.EscapedPath())
+		switch r.Method + " " + r.URL.EscapedPath() {
+		case "GET /api/v1/tenants":
+			writeJSON(w, 200, api.Tenants{Tenants: []policy.Tenant{{ID: "smiths", Name: "The Smiths", Networks: []string{"192.168.10.0/24"}}}})
+		case "POST /api/v1/tenants":
+			var tn policy.Tenant
+			if err := json.NewDecoder(r.Body).Decode(&tn); err != nil || tn.ID != "jones" || len(tn.Networks) != 1 {
+				t.Errorf("create body = %+v, %v", tn, err)
+			}
+			writeJSON(w, http.StatusCreated, tn)
+		case "PATCH /api/v1/tenants/jones":
+			if ct := r.Header.Get("Content-Type"); ct != api.MergePatchType {
+				t.Errorf("patch Content-Type = %q", ct)
+			}
+			writeJSON(w, 200, policy.Tenant{ID: "jones", CustomLists: true})
+		case "DELETE /api/v1/tenants/jones":
+			writeJSON(w, http.StatusBadRequest, api.Error{Error: `tenant "jones" still has 2 profiles; delete or move them first`})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	})
+	ctx := context.Background()
+
+	tenants, err := c.Tenants(ctx)
+	if err != nil || len(tenants) != 1 || tenants[0].Name != "The Smiths" {
+		t.Errorf("Tenants = %+v, %v", tenants, err)
+	}
+	if tn, err := c.CreateTenant(ctx, policy.Tenant{ID: "jones", Networks: []string{"192.168.20.0/24"}}); err != nil || tn.ID != "jones" {
+		t.Errorf("CreateTenant = %+v, %v", tn, err)
+	}
+	if tn, err := c.PatchTenant(ctx, "jones", map[string]any{"custom_lists": true}); err != nil || !tn.CustomLists {
+		t.Errorf("PatchTenant = %+v, %v", tn, err)
+	}
+	var apiErr *Error
+	if err := c.DeleteTenant(ctx, "jones"); !errors.As(err, &apiErr) || apiErr.Status != 400 || !strings.Contains(apiErr.Message, "still has 2 profiles") {
+		t.Errorf("DeleteTenant = %v, want the server's refusal", err)
+	}
+	if len(calls) != 4 {
+		t.Errorf("calls = %v", calls)
 	}
 }

@@ -238,3 +238,20 @@ dialog form { display: grid; gap: .5rem; }
   .kv { grid-template-columns: 1fr; }
   .kv dt { margin-top: .4rem; }
 }
+
+/* Tenants */
+.badge.tenant { background: var(--info-bg); color: var(--info); }
+.who .badge.tenant { margin-right: .35rem; }
+.profiles .card .badge.tenant { margin-top: .35rem; }
+.tenants { display: grid; gap: .9rem; }
+.tenant-card { display: grid; gap: .9rem; }
+.tenant-head { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
+.tenant-head h3 { margin: 0; }
+.tenant-head .spacer { flex: 1; }
+.tenant-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: .9rem 1.5rem; }
+.tenant-grid .section { margin: 0; padding: 0; border: 0; }
+.invite { display: grid; gap: .5rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: .75rem; }
+.invite .link { display: flex; gap: .4rem; align-items: center; }
+.invite .link output { flex: 1; min-width: 0; font-family: var(--mono); font-size: .85rem; overflow-wrap: anywhere; user-select: all; }
+.invite-form { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
+.field-note { color: var(--muted); font-size: .85rem; margin: .25rem 0 0; }
