@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 
@@ -87,8 +88,8 @@ func (s *Server) apiPatchTenant(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// apiDeleteTenant removes a tenant that has no profiles left, and its
-// people, ending their sessions.
+// apiDeleteTenant removes a tenant that has no profiles left, its people,
+// ending their sessions, and its service accounts, revoking their keys.
 func (s *Server) apiDeleteTenant(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	_, ok := s.updatePolicy(w, r, func(p *policy.Policy) error {
@@ -112,6 +113,13 @@ func (s *Server) apiDeleteTenant(w http.ResponseWriter, r *http.Request) {
 				_ = svc.DeletePerson(person.ID)
 			}
 		}
+	}
+	// Were this to fail, the keys would still be refused: a service
+	// account works only while its tenant exists.
+	if n, err := s.accounts.DeleteTenant(id); err != nil {
+		s.logger.Error("admin: removing a deleted tenant's service accounts", slog.String("tenant", id), slog.Any("error", err))
+	} else if n > 0 {
+		s.audit(r, "service accounts deleted with their tenant", slog.String("deleted_tenant", id), slog.Int("count", n))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -166,7 +166,7 @@ func newPeopleRemovePasskeyCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		passkey, err := find(person.Passkeys, args[1], "passkey", func(k signin.Passkey) (string, string) { return k.ID, k.Name })
+		passkey, err := find(person.Passkeys, args[1], "passkey", "doh people list", func(k signin.Passkey) (string, string) { return k.ID, k.Name })
 		if err != nil {
 			return err
 		}
@@ -185,12 +185,13 @@ func findPerson(ctx context.Context, c *client.Client, ref string) (signin.Perso
 	if err != nil {
 		return signin.Person{}, err
 	}
-	return find(people, ref, "person", func(p signin.Person) (string, string) { return p.ID, p.Name })
+	return find(people, ref, "person", "doh people list", func(p signin.Person) (string, string) { return p.ID, p.Name })
 }
 
 // find returns the item whose ID is ref, or else the only one named ref
-// (ignoring case), describing items as kind in errors.
-func find[T any](items []T, ref, kind string, key func(T) (id, name string)) (T, error) {
+// (ignoring case), describing items as kind in errors, and suggesting
+// the command that lists them.
+func find[T any](items []T, ref, kind, list string, key func(T) (id, name string)) (T, error) {
 	var zero T
 	if i := slices.IndexFunc(items, func(item T) bool { id, _ := key(item); return id == ref }); i >= 0 {
 		return items[i], nil
@@ -206,7 +207,7 @@ func find[T any](items []T, ref, kind string, key func(T) (id, name string)) (T,
 	case 1:
 		return matches[0], nil
 	case 0:
-		return zero, fmt.Errorf("no %s with ID or name %q; see doh people list", kind, ref)
+		return zero, fmt.Errorf("no %s with ID or name %q; see %s", kind, ref, list)
 	default:
 		ids := make([]string, len(matches))
 		for i, m := range matches {

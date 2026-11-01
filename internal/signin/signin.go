@@ -33,11 +33,12 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/picatz/doh/internal/atomicfile"
 
 	"github.com/picatz/doh/internal/webauthn"
 )
@@ -429,30 +430,7 @@ func (s *Service) save(people []Person) error {
 		return err
 	}
 
-	dir := filepath.Dir(s.config.Path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("signin: %w", err)
-	}
-	f, err := os.CreateTemp(dir, "."+filepath.Base(s.config.Path)+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("signin: %w", err)
-	}
-	tmp := f.Name()
-	_, err = f.Write(b)
-	if err == nil {
-		err = f.Chmod(0o600)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp, s.config.Path)
-	}
-	if err != nil {
-		_ = os.Remove(tmp)
+	if err := atomicfile.WriteFile(s.config.Path, b, 0o600); err != nil {
 		return fmt.Errorf("signin: saving %s: %w", s.config.Path, err)
 	}
 	return nil

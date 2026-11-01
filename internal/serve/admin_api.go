@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"github.com/picatz/doh/internal/serviceaccount"
 	"io"
 	"log/slog"
 	"maps"
@@ -62,10 +63,17 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("GET "+p+"/logs/stream", s.apiStream)
 	mux.HandleFunc("GET "+p+"/stats", s.apiStats)
 	mux.HandleFunc("GET "+p+"/explain", s.apiExplain)
-	mux.HandleFunc("POST "+p+"/signin-links", s.apiSigninLink)
-	mux.HandleFunc("GET "+p+"/people", s.apiPeople)
-	mux.HandleFunc("DELETE "+p+"/people/{id}", s.apiDeletePerson)
-	mux.HandleFunc("DELETE "+p+"/people/{id}/passkeys/{passkey}", s.apiDeletePasskey)
+	mux.HandleFunc("POST "+p+"/signin-links", peopleOnly(s.apiSigninLink))
+	mux.HandleFunc("GET "+p+"/people", peopleOnly(s.apiPeople))
+	mux.HandleFunc("DELETE "+p+"/people/{id}", peopleOnly(s.apiDeletePerson))
+	mux.HandleFunc("DELETE "+p+"/people/{id}/passkeys/{passkey}", peopleOnly(s.apiDeletePasskey))
+	mux.HandleFunc("GET "+p+"/service-accounts", peopleOnly(s.apiServiceAccounts))
+	mux.HandleFunc("POST "+p+"/service-accounts", peopleOnly(s.apiCreateServiceAccount))
+	mux.HandleFunc("GET "+p+"/service-accounts/{id}", peopleOnly(s.apiServiceAccount))
+	mux.HandleFunc("DELETE "+p+"/service-accounts/{id}", peopleOnly(s.apiDeleteServiceAccount))
+	mux.HandleFunc("POST "+p+"/service-accounts/{id}/keys", peopleOnly(s.apiAddKey))
+	mux.HandleFunc("POST "+p+"/service-accounts/{id}/keys/{key}/rotate", peopleOnly(s.apiRotateKey))
+	mux.HandleFunc("DELETE "+p+"/service-accounts/{id}/keys/{key}", peopleOnly(s.apiDeleteKey))
 	mux.HandleFunc("GET "+p+"/profiles/{id}/setup", s.apiSetup)
 	mux.HandleFunc("GET "+p+"/profiles/{id}/apple.mobileconfig", s.apiMobileConfig)
 	mux.HandleFunc(p+"/", func(w http.ResponseWriter, r *http.Request) {
@@ -88,11 +96,12 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 			return
 		}
 
-		// A bearer token, from the CLI or automation, which acts as the
-		// operator; or a browser's signed-in session.
+		// A bearer token, from the CLI or automation: a service account's
+		// key, or the operator's own token. Otherwise, a browser's
+		// signed-in session.
 		p, _ := s.sessionPrincipal(r)
 		if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-			p = principal{role: s.tokens.roleOf(strings.TrimSpace(token))}
+			p = s.tokenPrincipal(strings.TrimSpace(token))
 		}
 
 		switch {
@@ -101,11 +110,33 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "sign in, or send a valid bearer token")
 		case p.role == roleReader && r.Method != http.MethodGet && r.Method != http.MethodHead:
 			w.Header().Set("WWW-Authenticate", `Bearer realm="doh", error="insufficient_scope"`)
-			writeError(w, http.StatusForbidden, "this token can only read; use the admin token to make changes")
+			writeError(w, http.StatusForbidden, "this credential can only read; use an admin's to make changes")
 		default:
 			next.ServeHTTP(w, withPrincipal(r, p))
 		}
 	})
+}
+
+// tokenPrincipal returns who a bearer token belongs to.
+func (s *Server) tokenPrincipal(token string) principal {
+	if serviceaccount.IsSecret(token) {
+		a, k, ok := s.accounts.Authenticate(token)
+		if !ok || (a.Tenant != "" && s.engine.Load().Policy().Tenant(a.Tenant) == nil) {
+			return principal{} // revoked, expired, or its tenant is gone
+		}
+		p := principal{role: roleReader, tenant: a.Tenant, account: a.ID, by: "service account " + a.ID + " key " + k.ID}
+		if a.Role == serviceaccount.RoleAdmin {
+			p.role = roleAdmin
+		}
+		return p
+	}
+	switch r := s.tokens.roleOf(token); r {
+	case roleAdmin:
+		return principal{role: r, by: "admin token"}
+	case roleReader:
+		return principal{role: r, by: "reader token"}
+	}
+	return principal{}
 }
 
 // writeJSON writes v as a JSON response.

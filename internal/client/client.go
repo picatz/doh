@@ -20,6 +20,7 @@ import (
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
+	"github.com/picatz/doh/internal/serviceaccount"
 	"github.com/picatz/doh/internal/signin"
 )
 
@@ -337,6 +338,58 @@ func (c *Client) DeletePerson(ctx context.Context, id string) error {
 // DeletePasskey removes one of a person's passkeys.
 func (c *Client) DeletePasskey(ctx context.Context, person, passkey string) error {
 	_, err := c.call(ctx, http.MethodDelete, "/people"+segment(person)+"/passkeys"+segment(passkey), nil, nil, "", nil, nil)
+	return err
+}
+
+// ServiceAccounts returns the service accounts the caller can see: every
+// one for the operator, or a tenant's own. Service accounts can't list
+// service accounts.
+func (c *Client) ServiceAccounts(ctx context.Context) ([]serviceaccount.Account, error) {
+	var out api.ServiceAccounts
+	if _, err := c.get(ctx, "/service-accounts", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.ServiceAccounts, nil
+}
+
+// CreateServiceAccount adds a service account, without keys.
+func (c *Client) CreateServiceAccount(ctx context.Context, req api.ServiceAccountRequest) (*serviceaccount.Account, error) {
+	var out serviceaccount.Account
+	if _, err := c.call(ctx, http.MethodPost, "/service-accounts", nil, req, "application/json", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteServiceAccount removes a service account, revoking its keys.
+func (c *Client) DeleteServiceAccount(ctx context.Context, id string) error {
+	_, err := c.call(ctx, http.MethodDelete, "/service-accounts"+segment(id), nil, nil, "", nil, nil)
+	return err
+}
+
+// AddServiceAccountKey adds a key to a service account. The returned
+// secret is shown only this once.
+func (c *Client) AddServiceAccountKey(ctx context.Context, account string, req api.KeyRequest) (*api.NewKey, error) {
+	var out api.NewKey
+	if _, err := c.call(ctx, http.MethodPost, "/service-accounts"+segment(account)+"/keys", nil, req, "application/json", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RotateServiceAccountKey replaces a key with a new one, letting the old
+// one work until req.PreviousExpires.
+func (c *Client) RotateServiceAccountKey(ctx context.Context, account, key string, req api.RotateKeyRequest) (*api.NewKey, error) {
+	var out api.NewKey
+	if _, err := c.call(ctx, http.MethodPost, "/service-accounts"+segment(account)+"/keys"+segment(key)+"/rotate", nil, req, "application/json", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteServiceAccountKey revokes a key at once.
+func (c *Client) DeleteServiceAccountKey(ctx context.Context, account, key string) error {
+	_, err := c.call(ctx, http.MethodDelete, "/service-accounts"+segment(account)+"/keys"+segment(key), nil, nil, "", nil, nil)
 	return err
 }
 
