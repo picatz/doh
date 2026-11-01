@@ -222,7 +222,9 @@ $ doh log --json -q google | jq .   # JSON lines
 
 ## Admin API and web UI
 
-With `--admin-listen`, the admin listener serves a web UI at `/` and a JSON API at `/api/v1`, alongside metrics and profiling. The UI toggles every protection and list, edits allow and deny lists, devices, and rewrites, connects devices, searches and follows the query log, allows or blocks a name from any log entry in one click, and explains any decision.
+With `--admin-listen`, the admin listener serves a web UI at `/` and a JSON API at `/api/v1`, alongside metrics and profiling. The UI toggles every protection and list, edits allow and deny lists, devices, and rewrites, connects devices, searches and follows the query log (its **Activity** view), allows or blocks a name from any log entry in one click, and explains any decision.
+
+It works the same by mouse, touch, and keyboard, on phones, tablets, and desktops, in light and dark themes. Every view has a URL. Press <kbd>⌘K</kbd> (<kbd>Ctrl K</kbd>) to jump anywhere, or type a domain to explain, find, block, or allow it; changes made this way can be undone from the notice that confirms them. Press <kbd>?</kbd> for every shortcut. [docs/design.md](design.md) describes the principles behind it.
 
 ### Signing in
 

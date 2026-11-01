@@ -176,10 +176,11 @@ func TestScript_NoUnsafeDOMOrDynamicCode(t *testing.T) {
 	}
 
 	// The only absolute URL the script builds is the DoH URL it shows for
-	// a profile; it never fetches anything off-origin.
+	// a profile; it never fetches anything off-origin. The SVG namespace
+	// is a name, never fetched.
 	urls := regexp.MustCompile(`https?://[^\s"'`+"`"+`]*`).FindAllString(js, -1)
 	for _, u := range urls {
-		if u != "https://${host}/dns-query/${id}" && u != "https://example.com/list.txt" {
+		if u != "https://${host}/dns-query/${id}" && u != "https://example.com/list.txt" && u != "http://www.w3.org/2000/svg" {
 			t.Errorf("app.js contains URL %q", u)
 		}
 	}
@@ -187,11 +188,24 @@ func TestScript_NoUnsafeDOMOrDynamicCode(t *testing.T) {
 		t.Error("app.js fetches an absolute URL")
 	}
 
-	// Session cookies are HttpOnly, and nothing else is stored.
-	for _, bad := range []string{"localStorage", "sessionStorage", "indexedDB", "document.cookie"} {
+	// Session cookies are HttpOnly. The only thing stored in the browser
+	// is the theme someone chose, by theme.js, under one key.
+	for _, bad := range []string{"sessionStorage", "indexedDB", "document.cookie"} {
 		if strings.Contains(js, bad) {
-			t.Errorf("app.js uses %s", bad)
+			t.Errorf("a script uses %s", bad)
 		}
+	}
+	for _, name := range []string{"app.js", "format.js", "palette.js", "schedule.js"} {
+		if strings.Contains(readStatic(t, name), "localStorage") {
+			t.Errorf("%s uses localStorage; only theme.js stores anything", name)
+		}
+	}
+	theme := readStatic(t, "theme.js")
+	if keys := regexp.MustCompile(`const KEY = "([^"]+)"`).FindAllStringSubmatch(theme, -1); len(keys) != 1 || keys[0][1] != "doh.theme" {
+		t.Errorf("theme.js stores under %v, want only doh.theme", keys)
+	}
+	if strings.Count(theme, "localStorage.") != 3 || strings.Count(theme, "localStorage.setItem(KEY") != 1 {
+		t.Error("theme.js stores something besides the theme")
 	}
 }
 
