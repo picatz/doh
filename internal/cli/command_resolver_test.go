@@ -21,34 +21,6 @@ import (
 	"github.com/picatz/doh/pkg/doh"
 )
 
-func resetResolverFlags(t *testing.T) {
-	t.Helper()
-	flags := cli.CommandQuery.Flags()
-	for _, name := range []string{"resolver-addr", "resolver-network", "insecure-skip-verify", "retry-max", "timeout"} {
-		flag := flags.Lookup(name)
-		value, changed := flag.Value.String(), flag.Changed
-		t.Cleanup(func() {
-			if err := flag.Value.Set(value); err != nil {
-				t.Error(err)
-			}
-			flag.Changed = changed
-		})
-	}
-	servers, err := flags.GetStringSlice("servers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { setResolverServers(t, servers...) })
-}
-
-func setResolverServers(t *testing.T, servers ...string) {
-	t.Helper()
-	value := cli.CommandQuery.Flags().Lookup("servers").Value.(interface{ Replace([]string) error })
-	if err := value.Replace(servers); err != nil {
-		t.Error(err)
-	}
-}
-
 func TestCommand_Query_CustomResolver(t *testing.T) {
 	for _, network := range []string{"udp", "tcp"} {
 		for _, secure := range []bool{false, true} {
@@ -61,7 +33,6 @@ func TestCommand_Query_CustomResolver(t *testing.T) {
 				name += "/retry"
 			}
 			t.Run(name, func(t *testing.T) {
-				resetResolverFlags(t)
 				defer func() {
 					if value := recover(); value != nil {
 						t.Errorf("custom resolver panicked: %v", value)
@@ -150,13 +121,12 @@ func TestCommand_Query_CustomResolver(t *testing.T) {
 					t.Fatal(err)
 				}
 				serverURL.Host = net.JoinHostPort("doh.test", serverURL.Port())
-				setResolverServers(t, serverURL.String())
 				retryMax := 0
 				if retry {
 					retryMax = 1
 				}
 
-				output := testCommand(t, "query", "example.com",
+				output := testCommand(t, "query", "example.com", "--servers", serverURL.String(),
 					"--resolver-addr", resolverAddr, "--resolver-network", network,
 					"--retry-max", strconv.Itoa(retryMax), "--timeout", "5s", "--insecure-skip-verify="+strconv.FormatBool(secure))
 				var result struct {
@@ -181,19 +151,17 @@ func TestCommand_Query_CustomResolver(t *testing.T) {
 }
 
 func TestCommand_Query_CustomResolverError(t *testing.T) {
-	resetResolverFlags(t)
 	defer func() {
 		if value := recover(); value != nil {
 			t.Errorf("custom resolver panicked: %v", value)
 		}
 	}()
-	setResolverServers(t, "http://doh.test/dns-query")
-	cli.CommandRoot.SetArgs([]string{"query", "example.com",
+	cmd := cli.New()
+	cmd.SetArgs([]string{"query", "example.com", "--servers", "http://doh.test/dns-query",
 		"--resolver-addr", "127.0.0.1:0", "--resolver-network", "tcp", "--retry-max", "0", "--timeout", "1s"})
-	cli.CommandRoot.SetOut(new(bytes.Buffer))
-	cli.CommandRoot.SetErr(io.Discard)
-	t.Cleanup(func() { cli.CommandRoot.SetErr(nil) })
-	if err := cli.CommandRoot.Execute(); err == nil || !strings.Contains(err.Error(), "error dialing with custom resolver") {
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "error dialing with custom resolver") {
 		t.Errorf("expected custom resolver error, got %v", err)
 	}
 }

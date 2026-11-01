@@ -20,7 +20,7 @@ func main() {
 	)
 	defer cancel()
 
-	err := cli.CommandRoot.ExecuteContext(ctx)
+	err := cli.New().ExecuteContext(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

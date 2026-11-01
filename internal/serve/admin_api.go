@@ -509,6 +509,10 @@ func (s *Server) apiStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Subscribe before responding, so no entry logged after the client
+	// sees the stream start is missed.
+	entries := s.qlog.Subscribe(r.Context(), f)
+
 	rc := http.NewResponseController(w)
 	// Streams outlive the admin server's write timeout.
 	_ = rc.SetWriteDeadline(time.Time{})
@@ -520,8 +524,6 @@ func (s *Server) apiStream(w http.ResponseWriter, r *http.Request) {
 	if err := rc.Flush(); err != nil {
 		return
 	}
-
-	entries := s.qlog.Subscribe(r.Context(), f)
 	heartbeat := time.NewTicker(streamHeartbeat)
 	defer heartbeat.Stop()
 
