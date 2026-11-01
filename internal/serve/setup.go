@@ -107,8 +107,12 @@ func (s *Server) platforms(setup api.Setup, pr *policy.Profile, dotPort string) 
 	}
 
 	if len(platforms) == 0 {
-		add("none", "Nothing to set up yet",
-			"Set --hostname to this server's public name and serve DoH or DoT (--dot-listen :853) with a certificate to connect devices from anywhere, or --dns-listen :53 for devices on this network.")
+		step := "Set --hostname to this server's public name and serve DoH or DoT (--dot-listen :853) with a certificate to connect devices from anywhere, or --dns-listen :53 for devices on this network."
+		if pr.Tenant != "" {
+			// Tenants can't change how the server runs; their operator can.
+			step = "This server isn't reachable by name yet. Ask its operator to give it a public host name and serve encrypted DNS, so devices can connect from anywhere."
+		}
+		add("none", "Nothing to set up yet", step)
 	}
 	return platforms
 }

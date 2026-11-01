@@ -310,3 +310,19 @@ func TestAdmin_DebugNeedsOperatorWhenPublished(t *testing.T) {
 		t.Errorf("GET %s = %d", MetricsPath, resp.StatusCode)
 	}
 }
+
+func TestTenants_SetupGuidanceFitsWhoCanAct(t *testing.T) {
+	f := newTenantFixture(t)
+
+	var setup api.Setup
+	if s := f.smith.do(http.MethodGet, "/api/v1/profiles/smith-home/setup", "", &setup); s != http.StatusOK {
+		t.Fatalf("setup = %d", s)
+	}
+	for _, p := range setup.Platforms {
+		for _, step := range p.Steps {
+			if strings.Contains(step, "--") {
+				t.Errorf("tenant's setup step %q tells them to change server flags", step)
+			}
+		}
+	}
+}
