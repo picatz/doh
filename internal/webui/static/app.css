@@ -445,6 +445,29 @@ input[role=switch]:checked::after { transform: translateX(1rem); }
   .endpoints { grid-template-columns: minmax(0, 1fr); gap: .15rem; }
   .endpoints dd { margin-bottom: .5rem; }
 }
+/* The profile editor: a header, then tabs that stay in reach. */
+.editor { padding: var(--s-5) var(--s-4) var(--s-4); }
+.editor-title h2 { margin: 0; }
+.editor-sub { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .6rem; margin: .3rem 0 0; font-size: .9rem; }
+.tabs-strip {
+  position: sticky; top: 0; z-index: 5; display: flex; gap: 2px; margin: var(--s-4) calc(-1 * var(--s-4)) 0; padding: var(--s-2) var(--s-4);
+  overflow-x: auto; scrollbar-width: none; scroll-padding-inline: var(--s-4);
+  background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.tabs-strip::-webkit-scrollbar { display: none; }
+.tabs-strip [role=tab] { flex: none; gap: .4rem; background: transparent; border-color: transparent; color: var(--muted); font-weight: 500; }
+.tabs-strip [role=tab] .icon { width: 1.05rem; height: 1.05rem; }
+.tabs-strip [role=tab]:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.tabs-strip [role=tab][aria-selected=true] { background: var(--glaze-soft); color: var(--glaze-ink); font-weight: 600; }
+.tab-count { min-width: 1.35rem; padding: 0 .35rem; border-radius: 999px; background: var(--surface-3); color: var(--text); font-size: .74rem; font-weight: 600; line-height: 1.35rem; text-align: center; font-variant-numeric: tabular-nums; }
+.tabs-strip [aria-selected=true] .tab-count { background: var(--glaze); color: var(--accent-text); }
+.tab-panel { animation: view-in var(--t) var(--ease); }
+.tab-panel > .section:first-child { border-top: 0; margin-top: var(--s-2); }
+@media (max-width: 719px) {
+  .tabs-strip { top: calc(3.25rem + env(safe-area-inset-top)); }
+  .tabs-strip [role=tab] .icon { display: none; }
+}
 .editor-head { display: flex; justify-content: space-between; align-items: start; gap: 1rem; flex-wrap: wrap; }
 
 .drawer {
