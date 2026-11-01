@@ -807,7 +807,7 @@ func newLogPrinter(w io.Writer, asJSON, color bool) func(querylog.Entry) error {
 			reason = "cached"
 		}
 		_, err := fmt.Fprintf(w, "%-8s  %-18s  %s  %-5s  %-40s  %s\n",
-			e.Time.Local().Format(time.TimeOnly), cmp.Or(e.Device, e.Client, "-"), status, e.Type, e.Name, cmp.Or(reason, "-"))
+			e.Time.Local().Format(time.TimeOnly), cmp.Or(e.Device, e.Hostname, e.Client, "-"), status, e.Type, e.Name, cmp.Or(reason, "-"))
 		return err
 	}
 }

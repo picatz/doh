@@ -104,6 +104,10 @@ type Config struct {
 	// treated as local: their answers may point to private addresses.
 	Forward map[string][]string `json:"forward,omitempty"`
 
+	// DeviceNames configures learning device names from the network, for
+	// query logs.
+	DeviceNames DeviceNamesConfig `json:"device_names,omitzero"`
+
 	// TrustedProxies are the addresses or prefixes of reverse proxies whose
 	// X-Forwarded-For headers are trusted to name DoH clients' addresses.
 	TrustedProxies []string `json:"trusted_proxies,omitempty"`
@@ -111,6 +115,27 @@ type Config struct {
 	// RDAP configures domain registration lookups, for newly registered
 	// domain protection.
 	RDAP RDAPConfig `json:"rdap,omitzero"`
+}
+
+// DeviceNamesConfig configures learning the names of devices on the local
+// network from their addresses, so query logs name them without anyone
+// typing them in. Names are looked up in the background, only for local
+// addresses, and are labels for people: since devices choose their own
+// hostnames, they never select profiles or affect any other decision.
+type DeviceNamesConfig struct {
+	// Resolvers are DNS servers to ask for devices' names by reverse
+	// lookup, typically the router, such as "192.168.1.1". Forward zones
+	// covering a device's reverse zone are asked first. If no resolvers
+	// are set, the default gateway is asked, on Linux.
+	Resolvers []string `json:"resolvers,omitempty"`
+
+	// Leases are DHCP lease files to read names from, asked before any
+	// resolver: dnsmasq's (as on OpenWrt and Pi-hole) or Kea's CSV files,
+	// for when doh runs beside the DHCP server.
+	Leases []string `json:"leases,omitempty"`
+
+	// Disabled turns learning device names off.
+	Disabled bool `json:"disabled,omitzero"`
 }
 
 // PolicySourceOff, as a policy source, turns profiles off, so only the
@@ -576,6 +601,12 @@ func (c Config) Validate() error {
 			if _, err := upstream.Parse(u, upstream.Options{}); err != nil {
 				errs = append(errs, fmt.Errorf("forward %q: %w", domain, err))
 			}
+		}
+	}
+
+	for _, r := range c.DeviceNames.Resolvers {
+		if _, err := upstream.Parse(r, upstream.Options{}); err != nil {
+			errs = append(errs, fmt.Errorf("device_names resolvers: %w", err))
 		}
 	}
 

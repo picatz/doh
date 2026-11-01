@@ -301,6 +301,9 @@ func (s *Server) log(req request, res result, err error, elapsed time.Duration) 
 	}
 	if req.client.IsValid() {
 		e.Client = req.client.String()
+		if e.Device == "" {
+			e.Hostname = s.hostnames.Name(req.client)
+		}
 	}
 
 	switch {

@@ -169,6 +169,18 @@ $ doh serve --dns-listen :53 --forward lan=192.168.1.1 --forward 168.192.in-addr
 
 Or answer a name yourself with a profile rewrite, as `nas.home.arpa` in the example above.
 
+### Device names
+
+The query log names devices without anyone typing names in: it learns what each device on the local network calls itself, and shows `living-room-tv` rather than `192.168.1.50`. Names come from, in order:
+
+1. DHCP lease files, with `--dhcp-leases`, when doh runs beside the DHCP server: dnsmasq's (as on OpenWrt and Pi-hole), or Kea's CSV files.
+2. Reverse lookups through forward zones that cover the device's address, such as `--forward 168.192.in-addr.arpa=192.168.1.1`: most home routers answer them with their DHCP clients' hostnames.
+3. Reverse lookups to `--device-names-from`, or with none set, to the default gateway (on Linux).
+
+Names are looked up in the background, only for private, unique local, and link-local addresses, and cached for an hour, so answering never waits on them: a new device is named from its next query on. Stats count each device once, however its name was known.
+
+Devices choose their own hostnames, so a name like `kids-tablet` proves nothing. Learned names are shown as a device's `hostname`, apart from the device names you configure, and never select a profile or affect any other decision. `--no-device-names` turns them off.
+
 ## Query log
 
 Every query is logged with its profile, device, client, name, type, outcome, reason, matching rule and list, answers, upstream, and duration. The newest 50,000 entries are kept in memory to search, and every entry is written to a daily file in `querylog/` in the data directory, which is reloaded on restart and deleted after `--query-log-retention` (seven days by default). Turn logging off for a profile with `"logging": {"disabled": true}`, or for the whole server with `--no-query-log`; queries are still counted in metrics.

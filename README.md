@@ -203,7 +203,7 @@ It's built on `golang.org/x/net/quic`, which its authors don't yet consider read
 
 ### Your network's own names
 
-Special-use and private names, such as `localhost`, `home.arpa`, and reverse lookups of private addresses, are answered locally rather than leaked upstream. To resolve your network's hostnames, forward their domain to the router, or give names fixed answers with a profile's rewrites:
+Special-use and private names, such as `localhost`, `home.arpa`, and reverse lookups of private addresses, are answered locally rather than leaked upstream. To resolve your network's hostnames, forward their domain to the router, or give names fixed answers with a profile's rewrites. The query log then names your devices on its own, learning what each calls itself from the router or DHCP leases ([device names](docs/protections.md#device-names)):
 
 ```console
 $ sudo doh serve --dns-listen :53 --forward lan=192.168.1.1 --forward 168.192.in-addr.arpa=192.168.1.1
@@ -407,6 +407,8 @@ Flags:
       --cache-size int                 most upstream answers to cache, for as long as their records live; 0 disables the cache (default 10000)
       --config string                  path to a JSON config file
       --data-dir string                directory for the policy, admin API tokens, query log, and registration cache (default $STATE_DIRECTORY, or doh in the user config dir)
+      --device-names-from strings      DNS servers to ask for device names by reverse lookup, such as your router at 192.168.1.1 (default the forward zones, then the default gateway)
+      --dhcp-leases strings            DHCP lease files to read device names from: dnsmasq's, or Kea's CSV
       --dns-listen string              also serve plain DNS over UDP and TCP on this address, such as :53
       --doq-listen string              also serve DNS-over-QUIC (experimental) on this UDP address, such as :853, with the DoH certificate
       --dot-listen string              also serve DNS-over-TLS on this address, such as :853, with the DoH certificate
@@ -417,6 +419,7 @@ Flags:
       --listen string                  address to listen on (default ":443", or ":8080" with --plaintext)
       --log-format string              log format: text or json (default "text")
       --log-level string               log level: debug, info, warn, or error (default "info")
+      --no-device-names                don't learn device names from the network
       --no-query-log                   don't log queries
       --path string                    URI path of the DoH endpoint (default "/dns-query")
       --plaintext                      serve unencrypted HTTP, behind a TLS-terminating proxy

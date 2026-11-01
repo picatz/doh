@@ -22,6 +22,7 @@ import (
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/cache"
 	"github.com/picatz/doh/internal/filter"
+	"github.com/picatz/doh/internal/hostnames"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
 	"github.com/picatz/doh/internal/ratelimit"
@@ -79,6 +80,9 @@ type Server struct {
 
 	// qlog is the query log, unless disabled.
 	qlog *querylog.Log
+
+	// hostnames learns devices' names for the query log, unless disabled.
+	hostnames *hostnames.Directory
 
 	// tokens authorize admin API requests, and signin signs browsers in
 	// to the web UI, once the admin listener knows its address.
@@ -152,6 +156,11 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 
 	if err := s.configureQueryLog(); err != nil {
 		s.lists.Close()
+		return nil, err
+	}
+
+	if err := s.configureHostnames(); err != nil {
+		s.Close()
 		return nil, err
 	}
 
@@ -239,6 +248,7 @@ func requestHost(r *http.Request) string {
 // query log. ListenAndServe closes the server when it returns.
 func (s *Server) Close() error {
 	s.lists.Close()
+	s.hostnames.Close()
 	if s.ages != nil {
 		if err := s.ages.Save(); err != nil {
 			s.logger.Warn("saving registration cache", slog.Any("error", err))

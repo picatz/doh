@@ -1014,7 +1014,8 @@ function logFilter() {
 }
 
 function logRow(e) {
-  const who = e.device ? `${e.device}` : e.client || "—";
+  // Hostnames are what devices call themselves, so they read as labels.
+  const who = e.device || e.hostname || e.client || "—";
   const tr = h("tr", { tabindex: 0 },
     h("td", { title: fmtTime(e.time, true), text: fmtTime(e.time) }),
     h("td", { class: "mono", title: e.client || "", text: who }),
@@ -1097,6 +1098,7 @@ function openDrawer(e) {
   kv("Rcode", e.rcode);
   kv("Profile", e.profile);
   kv("Device", e.device);
+  kv("Hostname", e.hostname && h("span", { title: "What the device calls itself on your network, as your router reports it. Devices choose their own hostnames, so it never decides which profile applies.", text: e.hostname }));
   kv("Client", e.client && h("span", { class: "mono", text: e.client }));
   kv("Transport", e.transport);
   kv("Upstream", e.upstream && h("span", { class: "mono", text: e.upstream }));
