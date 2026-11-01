@@ -19,7 +19,7 @@
 ```mermaid
 flowchart TD
     Q["Query"] --> P{"Which profile?"}
-    P -- "DoH path, then client address, then default" --> C["Checks, in order"]
+    P -- "DoH path, host name, client address, then default" --> C["Checks, in order"]
     P -- "no profile matches" --> R["REFUSED"]
     C -- "a check matches" --> B["Blocked: NXDOMAIN or 0.0.0.0<br/>with an Extended DNS Error"]
     C -- "rewrite or safe search" --> W["Answered locally"]
@@ -103,8 +103,9 @@ Profiles list blocklists by preset name, URL, or file path, optionally named as 
 A query is matched to a profile by, in order:
 
 1. **The DoH path.** `https://doh.example.com/dns-query/kids` uses profile `kids`; `/dns-query/kids/tablet` also names the device `tablet` in the log. Unknown profiles get `404`. Profile IDs are identifiers, not secrets: anyone who knows one can use that profile.
-2. **The client's address**, against every profile's `clients` (addresses or prefixes) and `devices`. The most specific prefix wins, so a device listed by address overrides the network it's on. Behind a reverse proxy, set `--trusted-proxy` so `X-Forwarded-For` names the client; it's ignored from anyone else.
-3. **The `default` profile.** Remove it to make the server **closed**: queries from unmatched clients get `REFUSED` with an Extended DNS Error, which keeps a server on the internet from being an open resolver.
+2. **The host name**, with `--hostname dns.example.com` (or an ACME domain): over DoT, the TLS server name, and over DoH, the host. `kids.dns.example.com` selects profile `kids`, and `tablet--kids.dns.example.com` also names the device. Names under the hostname that name no profile are refused, rather than falling back to another profile. `doh setup` prints the right settings for each platform.
+3. **The client's address**, against every profile's `clients` (addresses or prefixes) and `devices`. The most specific prefix wins, so a device listed by address overrides the network it's on. Behind a reverse proxy, set `--trusted-proxy` so `X-Forwarded-For` names the client; it's ignored from anyone else.
+4. **The `default` profile.** Remove it to make the server **closed**: queries from unmatched clients get `REFUSED` with an Extended DNS Error, which keeps a server on the internet from being an open resolver.
 
 ```console
 $ doh profile create streaming --name "Streaming sticks"

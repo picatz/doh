@@ -168,6 +168,23 @@ Or do all of it in the web UI: `doh ui` prints a sign-in link.
 
 Profiles live in `policy.json` in the data directory, created with the secure defaults on first run, so they can be kept in version control and edited by hand as well as through the UI and API. A home server can also follow the policy of a server in the cloud, so one place manages a family's devices. See **[Profiles and protections](docs/protections.md)** for every protection, how each works, and its limits.
 
+### Connecting phones and laptops, anywhere
+
+On a server with a public name, add `--dot-listen :853` so Android's Private DNS can use it, and every profile becomes reachable by name, over DNS-over-TLS and DoH: `kids.dns.example.com` selects profile `kids`, and `tablet--kids.dns.example.com` also names the device. With an ACME domain, certificates for those names are obtained as they're first used, only for profiles that exist; with your own certificate, use a wildcard (`*.dns.example.com`).
+
+```console
+$ doh serve --acme-domain dns.example.com --dot-listen :853 --admin-listen localhost:9090
+$ doh setup kids --device tablet --platform android
+DoT host  tablet--kids.dns.example.com
+
+Android
+  1. Open Settings, then Network & internet (or Connections), then Private DNS.
+  2. Choose Private DNS provider hostname, enter tablet--kids.dns.example.com, and save.
+$ doh setup kids --device ipad --mobileconfig ipad.mobileconfig   # open it on the iPad
+```
+
+The web UI's **Connect a device** panel shows the same, for every platform, with one-click configuration profile downloads.
+
 ### Your network's own names
 
 Special-use and private names, such as `localhost`, `home.arpa`, and reverse lookups of private addresses, are answered locally rather than leaked upstream. To resolve your network's hostnames, forward their domain to the router, or give names fixed answers with a profile's rewrites:
@@ -345,6 +362,10 @@ Examples:
   # ...with the web UI and admin API, and the router answering for .lan
   doh serve --dns-listen :53 --admin-listen localhost:9090 --forward lan=192.168.1.1
 
+  # Phones and laptops anywhere: DoH and DoT, a profile per host name
+  doh serve --acme-domain dns.example.com --dot-listen :853 --admin-listen localhost:9090
+  doh setup kids --device tablet
+
   # A home resolver following the policy of a server in the cloud
   doh serve --dns-listen :53 --policy https://doh.example.com:9090/api/v1/policy --policy-token-file reader.token
 
@@ -368,9 +389,11 @@ Flags:
       --config string                  path to a JSON config file
       --data-dir string                directory for the policy, admin API tokens, query log, and registration cache (default $STATE_DIRECTORY, or doh in the user config dir)
       --dns-listen string              also serve plain DNS over UDP and TCP on this address, such as :53
+      --dot-listen string              also serve DNS-over-TLS on this address, such as :853, with the DoH certificate
       --flight-recorder                keep recent execution traces in memory, to snapshot from the admin listener
       --forward strings                send names under a domain to other upstreams, as domain=upstream, such as lan=192.168.1.1
   -h, --help                           help for serve
+      --hostname string                public host name, such as dns.example.com, under which profiles are reachable as {profile}.{hostname} (default the first --acme-domain)
       --listen string                  address to listen on (default ":443", or ":8080" with --plaintext)
       --log-format string              log format: text or json (default "text")
       --log-level string               log level: debug, info, warn, or error (default "info")
