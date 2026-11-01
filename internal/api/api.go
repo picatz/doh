@@ -3,8 +3,9 @@
 // UI, and the doh CLI's client commands.
 //
 // Every endpoint is under [Prefix] and needs a bearer token
-// ([RFC 6750, Section 2.1]): an admin token for every request, or a
-// reader token for GET requests only. Errors are reported as an [Error]
+// ([RFC 6750, Section 2.1]) or a signed-in web UI session: admin for every
+// request, or reader for GET requests only. Browsers sign in at
+// signin.Prefix, with sign-in links from POST /signin-links, or passkeys. Errors are reported as an [Error]
 // with a 4xx or 5xx status.
 //
 // The policy is versioned with entity tags: responses that return or
@@ -30,6 +31,10 @@
 //	GET    /api/v1/logs/stream                    text/event-stream of querylog.Entry
 //	GET    /api/v1/stats                          querylog.Stats
 //	GET    /api/v1/explain?name=&type=&profile=&client=   Explanation
+//	POST   /api/v1/signin-links                   SigninLinkRequest → SigninLink
+//	GET    /api/v1/people                         People
+//	DELETE /api/v1/people/{id}                    204
+//	DELETE /api/v1/people/{id}/passkeys/{passkey} 204
 //	GET    /api/v1/profiles/{id}/setup?device=    Setup
 //	GET    /api/v1/profiles/{id}/apple.mobileconfig?device=&protocol=   Apple configuration profile
 //
@@ -47,6 +52,7 @@ import (
 
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/policy"
+	"github.com/picatz/doh/internal/signin"
 )
 
 // Prefix is the path prefix of every API endpoint.
@@ -298,3 +304,29 @@ type Platform struct {
 
 // MobileConfigType is the media type of Apple configuration profiles.
 const MobileConfigType = "application/x-apple-aspen-config"
+
+// SigninLinkRequest asks for a sign-in link.
+type SigninLinkRequest struct {
+	// Role is what the link's session may do: "admin" (the default) or
+	// "reader".
+	Role string `json:"role,omitempty"`
+}
+
+// SigninLink is a single-use link that signs a browser in to the web UI.
+type SigninLink struct {
+	// URL opens the web UI and signs in. The code is in its fragment, which
+	// browsers never send to servers, so it stays out of logs.
+	URL string `json:"url"`
+
+	// Expires is when the link stops working, if unused.
+	Expires time.Time `json:"expires"`
+
+	// PasskeyRequired reports that the link only starts signing in: someone
+	// has a passkey, so one must finish it.
+	PasskeyRequired bool `json:"passkey_required"`
+}
+
+// People lists who can sign in with passkeys.
+type People struct {
+	People []signin.Person `json:"people"`
+}

@@ -57,6 +57,10 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("GET "+p+"/logs/stream", s.apiStream)
 	mux.HandleFunc("GET "+p+"/stats", s.apiStats)
 	mux.HandleFunc("GET "+p+"/explain", s.apiExplain)
+	mux.HandleFunc("POST "+p+"/signin-links", s.apiSigninLink)
+	mux.HandleFunc("GET "+p+"/people", s.apiPeople)
+	mux.HandleFunc("DELETE "+p+"/people/{id}", s.apiDeletePerson)
+	mux.HandleFunc("DELETE "+p+"/people/{id}/passkeys/{passkey}", s.apiDeletePasskey)
 	mux.HandleFunc("GET "+p+"/profiles/{id}/setup", s.apiSetup)
 	mux.HandleFunc("GET "+p+"/profiles/{id}/apple.mobileconfig", s.apiMobileConfig)
 	mux.HandleFunc(p+"/", func(w http.ResponseWriter, r *http.Request) {
@@ -79,16 +83,17 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 			return
 		}
 
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		role := roleNone
-		if ok {
+		// A bearer token, from the CLI or automation, or a browser's
+		// signed-in session.
+		role := s.sessionRole(r)
+		if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 			role = s.tokens.roleOf(strings.TrimSpace(token))
 		}
 
 		switch {
 		case role == roleNone:
 			w.Header().Set("WWW-Authenticate", `Bearer realm="doh"`)
-			writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
+			writeError(w, http.StatusUnauthorized, "sign in, or send a valid bearer token")
 		case role == roleReader && r.Method != http.MethodGet && r.Method != http.MethodHead:
 			w.Header().Set("WWW-Authenticate", `Bearer realm="doh", error="insufficient_scope"`)
 			writeError(w, http.StatusForbidden, "this token can only read; use the admin token to make changes")

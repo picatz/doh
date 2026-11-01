@@ -109,6 +109,8 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v bool) { c.QueryLog.Disabled = v }),
 	option((*pflag.FlagSet).Duration, "query-log-retention", 0, "how long to keep daily query log files (default 168h)",
 		func(c *serve.Config, v time.Duration) { c.QueryLog.Retention = serve.Duration(v) }),
+	option((*pflag.FlagSet).StringSlice, "admin-origin", nil, "origins the web UI is opened at, such as https://admin.dns.example.com, for browser sign-in and passkeys (default http://localhost:{port} on a loopback --admin-listen)",
+		func(c *serve.Config, v []string) { c.Admin.Origins = v }),
 	option((*pflag.FlagSet).String, "admin-token-file", "", "file holding the admin API token (default admin.token in --data-dir, generated)",
 		func(c *serve.Config, v string) { c.Admin.TokenFile = v }),
 	option((*pflag.FlagSet).String, "admin-listen", "", "serve metrics, pprof, and flight recorder snapshots on this address, such as localhost:9090",

@@ -25,6 +25,7 @@ import (
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
 	"github.com/picatz/doh/internal/rdap"
+	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/pkg/doh"
 	"golang.org/x/crypto/acme"
@@ -77,8 +78,10 @@ type Server struct {
 	// qlog is the query log, unless disabled.
 	qlog *querylog.Log
 
-	// tokens authorize admin API requests.
+	// tokens authorize admin API requests, and signin signs browsers in
+	// to the web UI, once the admin listener knows its address.
 	tokens tokens
+	signin atomic.Pointer[signin.Service]
 
 	trustedProxies []netip.Prefix
 

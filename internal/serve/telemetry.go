@@ -22,6 +22,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/internal/webui"
 )
@@ -161,7 +162,8 @@ func (s *Server) adminHandler() http.Handler {
 	})
 
 	mux.Handle(api.Prefix+"/", s.apiHandler())
-	mux.Handle("GET /{$}", webui.Handler())
+	mux.Handle(signin.Prefix+"/", s.signinHandler())
+	mux.Handle("GET /{$}", s.canonicalHost(webui.Handler()))
 	mux.Handle("GET "+webui.AssetPrefix, webui.Handler())
 
 	mux.HandleFunc("GET "+MetricsPath, s.serveMetrics)
@@ -188,7 +190,10 @@ func (s *Server) adminHandler() http.Handler {
 		}
 	})
 
-	return mux
+	// Refuse cross-origin browser requests that change state, so a page
+	// on another site can't act with a signed-in session. API clients
+	// such as the CLI send no browser fetch headers, and are unaffected.
+	return http.NewCrossOriginProtection().Handler(mux)
 }
 
 // serveVars writes the server's counters, runtime metrics, and build
@@ -357,13 +362,18 @@ func (s *Server) ServeAdmin(ctx context.Context, ln net.Listener) error {
 			slog.String("addr", ln.Addr().String()))
 	}
 
+	if err := s.configureSignin(ln.Addr()); err != nil {
+		ln.Close()
+		return fmt.Errorf("serve: admin sign-in: %w", err)
+	}
+
 	srv := s.httpServer(s.adminHandler())
 	// Profiles and traces take a while to collect, so don't cut them off.
 	srv.WriteTimeout = 0
 
 	s.setListener("admin", ln.Addr())
 	s.logger.Info("serving admin",
-		slog.String("ui", "http://"+ln.Addr().String()+"/"),
+		slog.String("ui", s.uiURL()),
 		slog.String("metrics", "http://"+ln.Addr().String()+MetricsPath),
 		slog.String("vars", "http://"+ln.Addr().String()+VarsPath),
 		slog.String("pprof", "http://"+ln.Addr().String()+PprofPath),
