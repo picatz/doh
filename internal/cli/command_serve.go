@@ -49,6 +49,10 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v string) { c.Listen = v }),
 	option((*pflag.FlagSet).String, "dns-listen", "", "also serve plain DNS over UDP and TCP on this address, such as :53",
 		func(c *serve.Config, v string) { c.DNSListen = v }),
+	option((*pflag.FlagSet).String, "dot-listen", "", "also serve DNS-over-TLS on this address, such as :853, with the DoH certificate",
+		func(c *serve.Config, v string) { c.DoTListen = v }),
+	option((*pflag.FlagSet).String, "hostname", "", "public host name, such as dns.example.com, under which profiles are reachable as {profile}.{hostname} (default the first --acme-domain)",
+		func(c *serve.Config, v string) { c.Hostname = v }),
 	option((*pflag.FlagSet).String, "path", doh.DefaultPath, "URI path of the DoH endpoint",
 		func(c *serve.Config, v string) { c.Path = v }),
 	option((*pflag.FlagSet).StringSlice, "upstream", serve.DefaultUpstreams, "upstream resolvers, tried in order",
@@ -186,6 +190,10 @@ Examples:
 
   # ...with the web UI and admin API, and the router answering for .lan
   doh serve --dns-listen :53 --admin-listen localhost:9090 --forward lan=192.168.1.1
+
+  # Phones and laptops anywhere: DoH and DoT, a profile per host name
+  doh serve --acme-domain dns.example.com --dot-listen :853 --admin-listen localhost:9090
+  doh setup kids --device tablet
 
   # A home resolver following the policy of a server in the cloud
   doh serve --dns-listen :53 --policy https://doh.example.com:9090/api/v1/policy --policy-token-file reader.token`,

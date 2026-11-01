@@ -57,6 +57,8 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("GET "+p+"/logs/stream", s.apiStream)
 	mux.HandleFunc("GET "+p+"/stats", s.apiStats)
 	mux.HandleFunc("GET "+p+"/explain", s.apiExplain)
+	mux.HandleFunc("GET "+p+"/profiles/{id}/setup", s.apiSetup)
+	mux.HandleFunc("GET "+p+"/profiles/{id}/apple.mobileconfig", s.apiMobileConfig)
 	mux.HandleFunc(p+"/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such endpoint")
 	})
@@ -140,6 +142,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 	pol := engine.Policy()
 
 	status := api.Status{
+		Hostname:  s.config.Hostname,
 		Version:   version(),
 		Started:   s.started,
 		Upstreams: s.config.Upstreams,

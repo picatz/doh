@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/miekg/dns"
@@ -664,34 +666,76 @@ func TestAdminAPI_PolicyFollowsRemote(t *testing.T) {
 	}
 }
 
-func TestServer_PolicyFileReload(t *testing.T) {
-	up, _ := startZone(t, nil)
-	s, dataDir := newPolicyServer(t, up, &policy.Policy{Profiles: []policy.Profile{{ID: "default"}}})
-	udp, _ := startDNS(t, s)
-
-	go func() { _ = s.store.watch(t.Context(), s.applyPolicy) }()
-
-	// Hand edits apply; invalid ones are ignored.
-	if err := os.WriteFile(filepath.Join(dataDir, PolicyFile), []byte(`{"profiles":[{"id":"BAD"}]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(policyFileInterval + 500*time.Millisecond)
-	if s.store.status().Error == "" {
-		t.Error("invalid edit not reported")
-	}
-
-	future := time.Now().Add(time.Minute)
-	writePolicy(t, dataDir, &policy.Policy{Profiles: []policy.Profile{{ID: "default", Deny: []string{"edited.example"}}}})
-	_ = os.Chtimes(filepath.Join(dataDir, PolicyFile), future, future)
-
-	deadline := time.Now().Add(3 * policyFileInterval)
-	for time.Now().Before(deadline) {
-		if resp := exchange(t, "udp", udp, new(dns.Msg).SetQuestion("edited.example.", dns.TypeA)); resp.Rcode == dns.RcodeNameError {
-			return
+func TestPolicyStore_Watch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		st := &policyStore{path: filepath.Join(dir, PolicyFile), logger: testLogger(t)}
+		if _, err := st.load(t.Context()); err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	t.Error("hand edit to the policy file not applied")
+
+		var applied []*policy.Policy
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = st.watch(ctx, func(p *policy.Policy) error {
+				applied = append(applied, p)
+				return nil
+			})
+		}()
+
+		// tick advances the fake clock past the next check, and waits for
+		// the watcher to act on it.
+		tick := func() {
+			time.Sleep(policyFileInterval)
+			synctest.Wait()
+		}
+		// edit replaces the file, with a modification time that differs
+		// from the last, as a real edit's would.
+		edit := func(content string, age time.Duration) {
+			name := filepath.Join(dir, PolicyFile)
+			if err := os.WriteFile(name, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			when := time.Unix(1_000_000, 0).Add(age)
+			if err := os.Chtimes(name, when, when); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		tick()
+		if len(applied) != 0 {
+			t.Fatalf("applied %d policies without an edit", len(applied))
+		}
+
+		// Invalid edits are reported and ignored.
+		edit(`{"profiles":[{"id":"BAD"}]}`, time.Hour)
+		tick()
+		if len(applied) != 0 || st.status().Error == "" {
+			t.Fatalf("invalid edit: applied %d, error %q", len(applied), st.status().Error)
+		}
+
+		// Valid edits apply once, however long they sit unchanged.
+		edit(`{"profiles":[{"id":"default","deny":["edited.example"]}]}`, 2*time.Hour)
+		tick()
+		tick()
+		if len(applied) != 1 || applied[0].Profiles[0].Deny[0] != "edited.example" || st.status().Error != "" {
+			t.Fatalf("valid edit: applied %+v, error %q", applied, st.status().Error)
+		}
+
+		// A deleted file keeps the current policy.
+		if err := os.Remove(filepath.Join(dir, PolicyFile)); err != nil {
+			t.Fatal(err)
+		}
+		tick()
+		if len(applied) != 1 {
+			t.Errorf("deleting the file applied a policy")
+		}
+
+		cancel()
+		<-done
+	})
 }
 
 func TestConfig_ValidatePolicy(t *testing.T) {

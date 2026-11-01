@@ -67,10 +67,9 @@ type Policy struct {
 // Profile is the policy for a group of clients, such as a household's
 // phones, its streaming sticks, or a child's tablet.
 type Profile struct {
-	// ID identifies the profile in DoH paths, logs, and the API: 1 to 63
-	// lower-case letters, digits, and hyphens, starting with a letter or
-	// digit. It's an identifier, not a secret: anyone who knows it can use
-	// the profile over DoH.
+	// ID identifies the profile in DoH paths, host names, logs, and the
+	// API, as [ValidID] describes. It's an identifier, not a secret: anyone
+	// who knows it can use the profile.
 	ID string `json:"id"`
 
 	// Name is a human-readable name, such as "Streaming sticks".
@@ -121,9 +120,10 @@ type Profile struct {
 
 // Device is a named client.
 type Device struct {
-	// Name identifies the device in logs: 1 to 63 lower-case letters,
-	// digits, and hyphens. Over DoH, a device can also name itself in the
-	// path, as /dns-query/{profile}/{device}.
+	// Name identifies the device in logs, as [ValidID] describes. Over
+	// DoH, a device can also name itself in the path, as
+	// /dns-query/{profile}/{device}, or in the host name, as
+	// {device}--{profile}.{hostname}.
 	Name string `json:"name"`
 
 	// Addrs are the device's addresses or prefixes.
@@ -261,11 +261,21 @@ func Unmarshal(b []byte) (*Policy, error) {
 	return &p, nil
 }
 
-// idPattern matches profile IDs and device names.
-var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+// idPattern matches profile IDs and device names: DNS labels of lower-case
+// letters, digits, and hyphens, which neither start nor end with a hyphen.
+var idPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
-// ValidID reports whether id can name a profile or device.
-func ValidID(id string) bool { return idPattern.MatchString(id) }
+// IDSeparator separates a device name from a profile ID in a host name
+// label, as in "tablet--kids.dns.example.com". IDs can't contain it.
+const IDSeparator = "--"
+
+// ValidID reports whether id can name a profile or device: 1 to 63
+// lower-case letters, digits, and hyphens, starting and ending with a
+// letter or digit, without [IDSeparator]. Such IDs are valid DNS labels,
+// so they can appear in host names.
+func ValidID(id string) bool {
+	return idPattern.MatchString(id) && !strings.Contains(id, IDSeparator)
+}
 
 // Validate reports every problem with p, so they can be fixed at once.
 func (p *Policy) Validate() error {
@@ -290,7 +300,7 @@ func (p *Policy) Validate() error {
 
 		switch {
 		case !ValidID(pr.ID):
-			fail("id must be 1 to 63 lower-case letters, digits, and hyphens, starting with a letter or digit")
+			fail("id must be 1 to 63 lower-case letters, digits, and single hyphens, starting and ending with a letter or digit")
 		case ids[pr.ID]:
 			fail("duplicate id")
 		}
@@ -314,7 +324,7 @@ func (p *Policy) Validate() error {
 		}
 		for _, d := range pr.Devices {
 			if !ValidID(d.Name) {
-				fail("device name %q must be 1 to 63 lower-case letters, digits, and hyphens", d.Name)
+				fail("device name %q must be 1 to 63 lower-case letters, digits, and single hyphens, starting and ending with a letter or digit", d.Name)
 			}
 			if devices[pr.ID+"/"+d.Name] {
 				fail("duplicate device %q", d.Name)

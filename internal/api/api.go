@@ -30,6 +30,8 @@
 //	GET    /api/v1/logs/stream                    text/event-stream of querylog.Entry
 //	GET    /api/v1/stats                          querylog.Stats
 //	GET    /api/v1/explain?name=&type=&profile=&client=   Explanation
+//	GET    /api/v1/profiles/{id}/setup?device=    Setup
+//	GET    /api/v1/profiles/{id}/apple.mobileconfig?device=&protocol=   Apple configuration profile
 //
 // The logs, stream, and stats endpoints take the filter parameters that
 // querylog.ParseFilter reads: profile, device, client, status, reason, q,
@@ -80,6 +82,10 @@ type Status struct {
 
 	// Upstreams are the resolvers queries are forwarded to.
 	Upstreams []string `json:"upstreams"`
+
+	// Hostname is the server's public host name, under which each profile
+	// is reachable by name, if configured.
+	Hostname string `json:"hostname,omitempty"`
 
 	// Policy describes where the policy comes from.
 	Policy PolicyStatus `json:"policy"`
@@ -242,3 +248,53 @@ type Check struct {
 	// Detail explains the result.
 	Detail string `json:"detail,omitempty"`
 }
+
+// Setup tells people how to point a device at a profile.
+type Setup struct {
+	// Profile and Device are the profile, and the device name if one was
+	// given, that the settings select.
+	Profile string `json:"profile"`
+	Device  string `json:"device,omitempty"`
+
+	// Hostname is the server's public host name, if configured. Without
+	// one, encrypted settings can't be given.
+	Hostname string `json:"hostname,omitempty"`
+
+	// DoHURL is the DNS-over-HTTPS URL that selects the profile and device,
+	// if the server serves DoH and has a host name. Like DoTHost, it
+	// assumes clients reach the server on the standard port (443, or 853
+	// for DoT), as they do through port forwarding or a proxy.
+	DoHURL string `json:"doh_url,omitempty"`
+
+	// DoTHost is the DNS-over-TLS host name that selects the profile and
+	// device, such as Android's Private DNS setting takes, if the server
+	// serves DoT and has a host name.
+	DoTHost string `json:"dot_host,omitempty"`
+
+	// DNSAddrs are the addresses of the plain DNS listener, for devices
+	// that select the profile by address.
+	DNSAddrs []string `json:"dns_addrs,omitempty"`
+
+	// Platforms are step-by-step instructions, by platform.
+	Platforms []Platform `json:"platforms"`
+}
+
+// Platform is how to set up one kind of device.
+type Platform struct {
+	// ID identifies the platform: "apple", "android", "windows", "linux",
+	// "browser", or "router".
+	ID string `json:"id"`
+
+	// Name is the platform's name for people, such as "iPhone, iPad, and Mac".
+	Name string `json:"name"`
+
+	// Steps are the instructions, in order.
+	Steps []string `json:"steps"`
+
+	// Download, if set, is the API path of a file that sets the device up,
+	// such as an Apple configuration profile.
+	Download string `json:"download,omitempty"`
+}
+
+// MobileConfigType is the media type of Apple configuration profiles.
+const MobileConfigType = "application/x-apple-aspen-config"

@@ -153,19 +153,23 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	}
 
 	handler := func(w http.ResponseWriter, r *http.Request, query *dns.Msg) (*dns.Msg, error) {
+		profile, device := r.PathValue("profile"), r.PathValue("device")
+		if profile == "" {
+			profile, device, _ = s.profileFromHost(requestHost(r))
+		}
 		return s.resolve(r.Context(), request{
 			transport: "doh",
 			query:     query,
 			client:    s.clientAddr(r),
-			profile:   r.PathValue("profile"),
-			device:    r.PathValue("device"),
+			profile:   profile,
+			device:    device,
 		})
 	}
 
 	dohHandler := doh.NewHandler(handler, doh.WithLogger(logger))
 	mux := http.NewServeMux()
-	mux.Handle("GET "+config.Path, dohHandler)
-	mux.Handle("POST "+config.Path, dohHandler)
+	mux.Handle("GET "+config.Path, s.hostProfileGate(dohHandler))
+	mux.Handle("POST "+config.Path, s.hostProfileGate(dohHandler))
 	base := strings.TrimSuffix(config.Path, "/")
 	for _, pattern := range []string{base + "/{profile}", base + "/{profile}/{device}"} {
 		mux.Handle("GET "+pattern, s.profilePath(dohHandler))
@@ -200,6 +204,27 @@ func (s *Server) profilePath(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hostProfileGate serves DoH requests to the bare path, rejecting requests to
+// a host name under the hostname that names no profile with 404 Not Found.
+func (s *Server) hostProfileGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if profile, _, ok := s.profileFromHost(requestHost(r)); ok && s.engine.Load().Profile(profile) == nil {
+			http.Error(w, "unknown profile", http.StatusNotFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requestHost returns the host name a DoH request was made to: the TLS
+// server name, or behind a TLS-terminating proxy, the Host header.
+func requestHost(r *http.Request) string {
+	if r.TLS != nil && r.TLS.ServerName != "" {
+		return r.TLS.ServerName
+	}
+	return r.Host
 }
 
 // Close releases the server's resources: background list loads, and the
@@ -300,7 +325,7 @@ func (s *Server) configureTLS() error {
 	if acmeConfig := s.config.TLS.ACME; len(acmeConfig.Domains) > 0 {
 		manager := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(acmeConfig.Domains...),
+			HostPolicy: s.acmeHostPolicy(acmeConfig.Domains),
 			Cache:      autocert.DirCache(acmeConfig.CacheDir),
 			Email:      acmeConfig.Email,
 		}
@@ -309,7 +334,8 @@ func (s *Server) configureTLS() error {
 		}
 
 		// The host policy applies to cached certificates too, so names
-		// removed from the configured domains are refused.
+		// removed from the configured domains, or of deleted profiles, are
+		// refused.
 		config.GetCertificate = manager.GetCertificate
 		// Answer TLS-ALPN-01 challenges (RFC 8737) on the TLS listener.
 		config.NextProtos = append(config.NextProtos, acme.ALPNProto)
@@ -361,6 +387,15 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		opened = append(opened, ln)
 	}
 
+	var dotLn net.Listener
+	if s.config.DoTListen != "" {
+		if dotLn, err = net.Listen("tcp", s.config.DoTListen); err != nil {
+			closeAll()
+			return listenError("serve: dot", s.config.DoTListen, err)
+		}
+		opened = append(opened, dotLn)
+	}
+
 	var adminLn net.Listener
 	if s.config.Admin.Listen != "" {
 		if adminLn, err = net.Listen("tcp", s.config.Admin.Listen); err != nil {
@@ -402,6 +437,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if pc != nil {
 		g.Go(func() error { return s.ServeDNS(ctx, pc, dnsLn) })
 	}
+	if dotLn != nil {
+		g.Go(func() error { return s.ServeDoT(ctx, dotLn) })
+	}
 	g.Go(func() error { return s.lists.Refresh(ctx, time.Duration(s.config.Blocklist.Refresh)) })
 	if s.store != nil {
 		g.Go(func() error { return s.store.watch(ctx, s.applyPolicy) })
@@ -418,6 +456,14 @@ func (s *Server) setListener(kind string, addr net.Addr) {
 	s.listenersMu.Lock()
 	s.listeners[kind] = addr.String()
 	s.listenersMu.Unlock()
+}
+
+// listenerAddr returns the address served on for kind ("doh", "dns",
+// "dot", or "admin"), or "" if it isn't served.
+func (s *Server) listenerAddr(kind string) string {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
+	return s.listeners[kind]
 }
 
 // listenError explains common reasons a listener can't be opened, such as
