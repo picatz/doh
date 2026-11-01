@@ -5,6 +5,8 @@
 // createElement and textContent: never from HTML strings.
 
 import { fromNow, formatDate } from "./format.js";
+import { Palette, looksLikeDomain } from "./palette.js";
+import { currentTheme, applyTheme, nextTheme, themeLabel } from "./theme.js";
 import { WEEKDAYS, DAY_NAMES, DAY_PRESETS, clockMinutes, overnight, scheduleActive, formatDays, describeBlocks, formatPeriod } from "./schedule.js";
 
 const API = "/api/v1";
@@ -56,6 +58,20 @@ function h(tag, attrs = {}, ...children) {
 // count says how many of a thing there are: "1 list", "3 lists".
 const count = (n, noun) => `${fmtNum(n)} ${noun}${n === 1 ? "" : "s"}`;
 
+// icon returns one of the page's icons, by its symbol's ID without the
+// "i-" prefix, hidden from assistive technology: what it means is always
+// said in words beside it.
+const SVG = "http://www.w3.org/2000/svg";
+function icon(name, className = "") {
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("class", ("icon " + className).trim());
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS(SVG, "use");
+  use.setAttribute("href", "#i-" + name);
+  svg.append(use);
+  return svg;
+}
+
 function clear(el) {
   el.replaceChildren();
   return el;
@@ -68,11 +84,32 @@ function edit(el) {
   return el;
 }
 
-function toast(message, { error = false, details = [] } = {}) {
-  const t = h("div", { class: "toast" + (error ? " error" : ""), role: error ? "alert" : "status" }, message);
-  if (details.length) t.append(h("ul", {}, details.map((d) => h("li", { text: d }))));
+// toast tells someone what just happened. With an action, such as Undo,
+// it stays longer, and pauses while pointed at or focused, so there's
+// time to use it.
+function toast(message, { error = false, details = [], action = null } = {}) {
+  const body = h("div", { class: "toast-body" }, h("span", {}, message));
+  if (details.length) body.append(h("ul", {}, details.map((d) => h("li", { text: d }))));
+  const t = h("div", { class: "toast" + (error ? " error" : ""), role: error ? "alert" : "status" },
+    icon(error ? "warn" : "check"), body);
+  let timer;
+  const dismiss = () => {
+    clearTimeout(timer);
+    t.classList.add("leaving");
+    t.addEventListener("animationend", () => t.remove(), { once: true });
+    setTimeout(() => t.remove(), 400); // without animations, go anyway
+  };
+  if (action) {
+    t.append(h("button", { type: "button", class: "toast-action", text: action.label, onClick: async () => { dismiss(); await Promise.resolve(action.run()).catch(report); } }));
+  }
+  const wait = error ? 8000 : action ? 6500 : 3500;
+  const arm = () => { clearTimeout(timer); timer = setTimeout(dismiss, wait); };
+  t.addEventListener("pointerenter", () => clearTimeout(timer));
+  t.addEventListener("pointerleave", arm);
+  t.addEventListener("focusin", () => clearTimeout(timer));
+  t.addEventListener("focusout", arm);
   $("toasts").append(t);
-  setTimeout(() => t.remove(), error ? 8000 : 3500);
+  arm();
 }
 
 const nf = new Intl.NumberFormat();
@@ -301,12 +338,18 @@ async function refreshAuth() {
 function renderWho() {
   const s = state.auth?.session;
   const tenant = state.status?.tenant;
-  // Node.append would turn a missing badge into the text "null", so filter.
-  clear($("who")).append(...[
-    tenant && h("span", { class: "badge tenant", title: "Your tenant", text: tenantName(tenant) }),
-    h("span", { class: "who-name", text: s?.name || "" }),
-    s?.role && h("span", { class: "badge", text: s.role }),
-  ].filter(Boolean));
+  const name = s?.name || "";
+  const role = [s?.role === "reader" ? "Reader" : "Admin", tenant ? tenantName(tenant) : isOperator() ? "Operator" : ""].filter(Boolean).join(" · ");
+  const initial = (name.match(/\p{L}|\p{N}/u)?.[0] || "?").toUpperCase();
+  // A link sign-in isn't anyone yet: a key, not an initial.
+  const face = () => s?.person ? document.createTextNode(initial) : icon("key");
+  for (const box of [$("who"), $("who-mobile")]) {
+    clear(box).append(
+      h("span", { class: "avatar", "aria-hidden": "true" }, face()),
+      h("span", { class: "who-text" }, h("span", { class: "who-name", text: name, title: name }), h("span", { class: "who-role", text: role })),
+    );
+  }
+  clear($("avatar")).append(face());
   $("passkey-banner").hidden = !(s && !s.person && !state.auth.passkeys_required);
 }
 
@@ -386,7 +429,7 @@ async function enterApp() {
   renderWho();
   $("signin").hidden = true;
   $("app").hidden = false;
-  show(state.view);
+  applyRoute();
 }
 
 function setReadOnly(policy) {
@@ -415,14 +458,63 @@ async function loadPolicy() {
   if (state.view === "profiles") renderProfiles();
 }
 
+// ---------- routing ----------
+//
+// Every view has a URL, #/view or #/view/argument, so back, forward,
+// reload, and links work. Sign-in links use #signin=..., handled apart.
+
+const VIEWS = ["overview", "profiles", "logs", "explain", "security", "tenants"];
+
+// parseRoute reads the view and its argument, such as a profile ID, from
+// a URL hash.
+function parseRoute(hash = location.hash) {
+  const m = /^#\/([a-z]+)(?:\/([^?]*))?/.exec(hash);
+  if (!m || !VIEWS.includes(m[1])) return { view: "overview", arg: "" };
+  let arg = "";
+  try { arg = decodeURIComponent(m[2] || ""); } catch { /* a malformed link: ignore its argument */ }
+  return { view: m[1], arg };
+}
+
+const routeHash = (view, arg = "") => `#/${view}${arg ? "/" + encodeURIComponent(arg) : ""}`;
+
+// go navigates to a view, adding to history.
+function go(view, arg = "") {
+  const hash = routeHash(view, arg);
+  if (location.hash === hash) applyRoute();
+  else location.hash = hash;
+}
+
+// setRoute records where the page is without rendering again, such as
+// after creating a profile that's already shown.
+function setRoute(view, arg = "") {
+  history.replaceState(null, "", routeHash(view, arg));
+}
+
+// applyRoute shows what the URL names.
+function applyRoute() {
+  const { view, arg } = parseRoute();
+  if (!location.hash) setRoute(view, arg);
+  if (view === "profiles") state.selected = arg;
+  show(view);
+}
+
 function show(view) {
   if (view === "tenants" && !isOperator()) view = "overview";
+  const changed = state.view !== view;
   state.view = view;
   for (const b of document.querySelectorAll(".nav")) {
     if (b.dataset.view === view) b.setAttribute("aria-current", "page");
     else b.removeAttribute("aria-current");
   }
-  for (const v of ["overview", "profiles", "logs", "explain", "security", "tenants"]) $("view-" + v).hidden = v !== view;
+  for (const v of VIEWS) $("view-" + v).hidden = v !== view;
+  const section = $("view-" + view);
+  if (changed) {
+    section.classList.remove("entering");
+    void section.offsetWidth; // restart the entrance
+    section.classList.add("entering");
+    window.scrollTo({ top: 0 });
+    document.title = `${section.querySelector("h2")?.textContent || "doh"} · doh`;
+  }
   closeDrawer();
   if (view !== "logs") stopLive();
   const load = { overview: renderOverview, profiles: renderProfiles, logs: () => loadLogs(true), explain: () => {}, security: renderSecurity, tenants: renderTenants }[view];
@@ -537,9 +629,8 @@ function renderProfiles() {
 }
 
 function selectProfile(id) {
-  state.selected = state.selected === id ? "" : id;
-  renderProfiles();
-  if (state.selected) $("profile-editor").scrollIntoView({ behavior: "smooth", block: "start" });
+  go("profiles", state.selected === id ? "" : id);
+  if (state.selected) requestAnimationFrame(() => $("profile-editor").scrollIntoView({ behavior: "smooth", block: "start" }));
 }
 
 function profile() {
@@ -1301,6 +1392,7 @@ async function deleteProfile(p) {
     await api("DELETE", `/profiles/${encodeURIComponent(p.id)}`);
     state.profiles = state.profiles.filter((x) => x.id !== p.id);
     state.selected = "";
+    setRoute("profiles");
     fillProfileSelects();
     renderProfiles();
     toast(`Deleted ${p.id}`);
@@ -1331,6 +1423,7 @@ async function createProfile(e) {
     $("create-dialog").close();
     replaceProfile(p);
     state.selected = p.id;
+    setRoute("profiles", p.id);
     fillProfileSelects();
     renderProfiles();
     toast(`Created ${p.id}`);
@@ -1480,7 +1573,7 @@ function openDrawer(e) {
       $("x-type").value = e.type || "A";
       $("x-profile").value = e.profile || "";
       $("x-client").value = e.client || "";
-      show("explain");
+      go("explain");
       runExplain().catch(report);
     },
   }));
@@ -1978,6 +2071,173 @@ async function removePerson(person, mine) {
   }
 }
 
+// ---------- theme ----------
+
+function wireTheme() {
+  const sync = () => {
+    const t = currentTheme();
+    const icon = { system: "i-system", light: "i-sun", dark: "i-moon" }[t];
+    for (const b of document.querySelectorAll("[data-theme-toggle]")) {
+      b.setAttribute("aria-label", `Theme: ${themeLabel(t)}. Change it`);
+      b.title = `Theme: ${themeLabel(t)}`;
+      b.querySelector("use").setAttribute("href", "#" + icon);
+      const label = b.querySelector("[data-theme-label]");
+      if (label) label.textContent = `Theme: ${themeLabel(t)}`;
+    }
+  };
+  for (const b of document.querySelectorAll("[data-theme-toggle]")) {
+    b.addEventListener("click", () => { cycleTheme(); sync(); });
+  }
+  sync();
+  wireTheme.sync = sync;
+}
+
+function cycleTheme() {
+  const t = nextTheme(currentTheme());
+  applyTheme(t);
+  wireTheme.sync?.();
+  toast(`Theme: ${themeLabel(t)}`);
+}
+
+// ---------- command palette ----------
+
+let palette;
+
+// commands returns what the palette offers for query: places, profiles,
+// actions, and, for anything that looks like a domain, what can be done
+// with it.
+function commands(query) {
+  const list = [];
+  const goTo = (view, title, icon, keywords = []) => ({ id: "go-" + view, group: "Go to", title, icon, keywords, run: () => go(view) });
+  list.push(
+    goTo("overview", "Overview", "i-overview", ["home", "dashboard", "stats"]),
+    goTo("profiles", "Profiles", "i-profiles", ["devices", "rules", "settings"]),
+    goTo("logs", "Activity", "i-log", ["query log", "logs", "queries", "history"]),
+    goTo("explain", "Explain a query", "i-explain", ["why", "debug", "test"]),
+    goTo("security", "Security", "i-security", ["passkeys", "people", "service accounts", "keys", "tokens"]),
+  );
+  if (isOperator()) list.push(goTo("tenants", "Tenants", "i-tenants", ["households", "customers", "organizations"]));
+
+  for (const p of state.profiles) {
+    list.push({ id: "profile-" + p.id, group: "Profiles", title: p.name || p.id, hint: p.name ? p.id : "", icon: "i-profiles", keywords: [p.id, "profile"], run: () => go("profiles", p.id) });
+  }
+
+  const d = query.trim().toLowerCase().replace(/\.$/, "");
+  if (looksLikeDomain(d)) {
+    const group = d;
+    list.unshift(
+      { id: "explain-d", group, title: `Explain ${d}`, icon: "i-explain", run: () => explainDomain(d) },
+      { id: "find-d", group, title: `Find ${d} in activity`, icon: "i-log", run: () => findInActivity(d) },
+    );
+    if (!state.readOnly) {
+      const targets = state.profiles.slice(0, 6);
+      list.splice(2, 0,
+        ...targets.map((p) => ({ id: "block-" + p.id, group, title: `Block ${d} in ${p.name || p.id}`, icon: "i-block", run: () => changeDomain(p, d, "deny") })),
+        ...targets.map((p) => ({ id: "allow-" + p.id, group, title: `Allow ${d} in ${p.name || p.id}`, icon: "i-allow", run: () => changeDomain(p, d, "allow") })),
+      );
+    }
+  }
+
+  if (isAdmin()) {
+    list.push(
+      { id: "new-profile", group: "Actions", title: "New profile", icon: "i-plus", keywords: ["create", "add"], run: () => { go("profiles"); openCreate(); } },
+      { id: "new-sa", group: "Actions", title: "New service account", icon: "i-key", keywords: ["create", "token", "api key", "automation"], run: () => { go("security"); openCreateAccount(); } },
+    );
+    if (isOperator()) list.push({ id: "new-tenant", group: "Actions", title: "New tenant", icon: "i-tenants", keywords: ["create", "household"], run: () => { go("tenants"); openCreateTenant(); } });
+  }
+  list.push(
+    { id: "theme", group: "Preferences", title: `Change the theme (now ${themeLabel(currentTheme()).toLowerCase()})`, icon: "i-sun", keywords: ["dark", "light", "appearance"], run: cycleTheme },
+    { id: "shortcuts", group: "Help", title: "Keyboard shortcuts", icon: "i-keyboard", keywords: ["keys", "help"], run: () => $("shortcuts").showModal() },
+    { id: "signout", group: "Account", title: "Sign out", icon: "i-signout", hidden: true, run: signOut },
+  );
+  return list;
+}
+
+function paletteItem(c) {
+  return h("li", { class: "palette-item" },
+    icon((c.icon || "i-arrow").replace(/^i-/, "")),
+    h("span", { class: "palette-title", text: c.title }),
+    c.hint ? h("span", { class: "palette-hint mono", text: c.hint }) : null,
+    icon("arrow", "palette-go"));
+}
+
+function wirePalette() {
+  palette = new Palette($("palette"), commands, paletteItem);
+  $("palette").addEventListener("palette-error", (e) => report(e.detail));
+  for (const b of document.querySelectorAll("[data-palette]")) b.addEventListener("click", () => palette.open());
+  // Show the shortcut the way this platform writes it.
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  for (const k of document.querySelectorAll("[data-mod-key]")) k.textContent = mac ? "⌘K" : "Ctrl K";
+}
+
+async function explainDomain(d) {
+  $("x-name").value = d;
+  $("x-type").value = "A";
+  go("explain");
+  await runExplain();
+}
+
+function findInActivity(d) {
+  $("f-q").value = d;
+  $("f-status").value = "";
+  go("logs");
+}
+
+// changeDomain allows or blocks d in profile p at once, offering to undo.
+async function changeDomain(p, d, list) {
+  const name = p.name || p.id;
+  const path = `/profiles/${encodeURIComponent(p.id)}/${list}`;
+  const updated = await api("POST", path, { body: { domain: d } });
+  replaceProfile(updated);
+  if (state.view === "profiles") renderProfiles();
+  toast(`${list === "deny" ? "Blocked" : "Allowed"} ${d} in ${name}.`, {
+    action: {
+      label: "Undo",
+      run: async () => {
+        replaceProfile(await api("DELETE", `${path}/${encodeURIComponent(d)}`));
+        if (state.view === "profiles") renderProfiles();
+        toast(`Undone: ${d} is back as it was in ${name}.`);
+      },
+    },
+  });
+}
+
+// ---------- keyboard shortcuts ----------
+
+// typing reports whether a key event is someone typing, which shortcuts
+// leave alone.
+const typing = (e) => e.target instanceof Element && (e.target.closest("input, textarea, select, [contenteditable]") !== null);
+
+function wireShortcuts() {
+  let pendingG = 0;
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
+      if ($("app").hidden) return;
+      e.preventDefault();
+      palette.open();
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey || typing(e) || $("app").hidden || document.querySelector("dialog[open]")) return;
+
+    if (pendingG && Date.now() - pendingG < 1200) {
+      pendingG = 0;
+      const view = { o: "overview", p: "profiles", a: "logs", l: "logs", e: "explain", s: "security", t: "tenants" }[e.key];
+      if (view) { e.preventDefault(); go(view); }
+      return;
+    }
+    switch (e.key) {
+      case "g": pendingG = Date.now(); break;
+      case "?": e.preventDefault(); $("shortcuts").showModal(); break;
+      case "t": e.preventDefault(); cycleTheme(); break;
+      case "/":
+        e.preventDefault();
+        if (state.view === "logs") $("f-q").focus();
+        else palette.open();
+        break;
+    }
+  });
+}
+
 // ---------- wiring ----------
 
 function wire() {
@@ -1990,9 +2250,14 @@ function wire() {
   $("secret-saved").addEventListener("change", (e) => { $("secret-done").disabled = !e.target.checked; });
   $("signin-passkey").addEventListener("click", signInWithPasskey);
   $("signout").addEventListener("click", signOut);
-  $("passkey-banner-go").addEventListener("click", () => show("security"));
+  $("signout-mobile").addEventListener("click", () => { $("account-menu").hidePopover?.(); signOut(); });
   $("add-passkey").addEventListener("submit", addPasskey);
-  for (const b of document.querySelectorAll(".nav")) b.addEventListener("click", () => show(b.dataset.view));
+  wireTheme();
+  wirePalette();
+  wireShortcuts();
+  // The top bar gains a border once the page scrolls under it.
+  const bar = document.querySelector(".mobilebar");
+  addEventListener("scroll", () => bar.classList.toggle("scrolled", scrollY > 4), { passive: true });
   $("new-profile").addEventListener("click", openCreate);
   $("new-tenant").addEventListener("click", openCreateTenant);
   $("tenant-form").addEventListener("submit", createTenant);
@@ -2015,6 +2280,7 @@ function wire() {
   // changes the hash.
   window.addEventListener("hashchange", () => {
     if (/(?:^#|&)signin=/.test(location.hash)) start();
+    else if (!$("app").hidden) applyRoute();
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("drawer").hidden) closeDrawer(); });
 }

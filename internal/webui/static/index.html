@@ -7,9 +7,46 @@
 <title>doh admin</title>
 <link rel="icon" href="/ui/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/ui/app.css">
+<script type="module" src="/ui/theme.js"></script>
 <script type="module" src="/ui/app.js"></script>
 </head>
 <body>
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <!-- doh's mark: the ring, glazed, with a few sprinkles. -->
+  <symbol id="mark" viewBox="0 0 32 32">
+    <circle cx="16" cy="16.6" r="10.6" fill="none" stroke="var(--dough, #e8b46f)" stroke-width="8.4"/>
+    <circle cx="16" cy="15.4" r="10.4" fill="none" stroke="var(--glaze, #d6336c)" stroke-width="7.4"/>
+    <g fill="none" stroke="var(--sprinkle, #fff)" stroke-width="1.5" stroke-linecap="round">
+      <path d="M9.4 10.4l1.2.9M21.4 9.3l.5 1.4M23.6 15.6l-1.4.2M14.8 6.6l1.4.1M8.4 16.8l.2-1.4M19.4 22.6l1.2-.8M11.6 22l.9 1.1"/>
+    </g>
+  </symbol>
+  <!-- The mark at small sizes: no sprinkles, a wider hole. -->
+  <symbol id="mark-small" viewBox="0 0 32 32">
+    <circle cx="16" cy="16.8" r="10" fill="none" stroke="var(--dough, #e8b46f)" stroke-width="9"/>
+    <circle cx="16" cy="15.4" r="10" fill="none" stroke="var(--glaze, #d6336c)" stroke-width="8"/>
+  </symbol>
+  <symbol id="i-overview" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.5"/></symbol>
+  <symbol id="i-profiles" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></symbol>
+  <symbol id="i-log" viewBox="0 0 24 24"><path d="M3 12h3.5l2.5-6 4 12 2.5-6H21"/></symbol>
+  <symbol id="i-explain" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.9-3.9M9.2 9.2a1.9 1.9 0 1 1 2.6 1.8c-.5.2-.8.7-.8 1.2v.3M11 14.6v.1"/></symbol>
+  <symbol id="i-security" viewBox="0 0 24 24"><path d="M12 3.5l7 2.6v5.6c0 4.4-3 7.6-7 8.8-4-1.2-7-4.4-7-8.8V6.1z"/><path d="M9 12.2l2.1 2.1L15.2 10"/></symbol>
+  <symbol id="i-tenants" viewBox="0 0 24 24"><path d="M3.5 11L9 6.5l5.5 4.5V19h-11z"/><path d="M14.5 9.5l3-2.5 3.5 3V19h-6.5"/><path d="M7.5 19v-3.5h3V19"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></symbol>
+  <symbol id="i-signout" viewBox="0 0 24 24"><path d="M10 4.5H6.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2H10M15 16.5l4.5-4.5L15 7.5M19.5 12H9"/></symbol>
+  <symbol id="i-system" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.75"/><path d="M12 3v1.8M12 19.2V21M3 12h1.8M19.2 12H21M5.6 5.6l1.3 1.3M17.1 17.1l1.3 1.3M5.6 18.4l1.3-1.3M17.1 6.9l1.3-1.3"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.6A7.8 7.8 0 1 1 9.4 4.5a6.3 6.3 0 0 0 10.1 10.1z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4l9 15.5H3z"/><path d="M12 10v4M12 17v.1"/></symbol>
+  <symbol id="i-block" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M6.4 17.6L17.6 6.4"/></symbol>
+  <symbol id="i-allow" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M8.5 12.3l2.3 2.3 4.7-4.8"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5L19 4M16 7l2.5 2.5M14 9l2 2"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></symbol>
+  <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="3" y="6.5" width="18" height="11" rx="2"/><path d="M7 10.5h.1M10.3 10.5h.1M13.6 10.5h.1M17 10.5h.1M8 14h8"/></symbol>
+</svg>
 <a class="skip" href="#main">Skip to content</a>
 
 <section id="signin" class="signin" hidden aria-labelledby="signin-title">
@@ -24,26 +61,53 @@
   </div>
 </section>
 
-<div id="app" hidden>
-  <header class="topbar">
-    <div class="brand"><img src="/ui/icon.svg" alt="" width="24" height="24"><span>doh</span></div>
-    <nav aria-label="Views">
-      <button type="button" class="nav" data-view="overview" aria-current="page">Overview</button>
-      <button type="button" class="nav" data-view="profiles">Profiles</button>
-      <button type="button" class="nav" data-view="logs">Query log</button>
-      <button type="button" class="nav" data-view="explain">Explain</button>
-      <button type="button" class="nav" data-view="security">Security</button>
-      <button type="button" class="nav" data-view="tenants" id="nav-tenants" hidden>Tenants</button>
+<div id="app" class="shell" hidden>
+  <aside class="sidebar" aria-label="doh">
+    <a class="brand" href="#/overview" aria-label="doh, overview">
+      <svg class="mark" aria-hidden="true"><use href="#mark"/></svg>
+      <span class="brand-name">doh</span>
+    </a>
+    <button type="button" class="search-trigger" data-palette aria-keyshortcuts="Meta+K Control+K">
+      <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+      <span class="search-label">Search…</span>
+      <kbd class="search-kbd" data-mod-key>⌘K</kbd>
+    </button>
+    <nav class="tabs" aria-label="Views">
+      <a class="nav" href="#/overview" data-view="overview"><svg class="icon" aria-hidden="true"><use href="#i-overview"/></svg><span class="nav-label">Overview</span></a>
+      <a class="nav" href="#/profiles" data-view="profiles"><svg class="icon" aria-hidden="true"><use href="#i-profiles"/></svg><span class="nav-label">Profiles</span></a>
+      <a class="nav" href="#/logs" data-view="logs"><svg class="icon" aria-hidden="true"><use href="#i-log"/></svg><span class="nav-label">Activity</span></a>
+      <a class="nav" href="#/explain" data-view="explain"><svg class="icon" aria-hidden="true"><use href="#i-explain"/></svg><span class="nav-label">Explain</span></a>
+      <a class="nav" href="#/security" data-view="security"><svg class="icon" aria-hidden="true"><use href="#i-security"/></svg><span class="nav-label">Security</span></a>
+      <a class="nav" href="#/tenants" data-view="tenants" id="nav-tenants" hidden><svg class="icon" aria-hidden="true"><use href="#i-tenants"/></svg><span class="nav-label">Tenants</span></a>
     </nav>
-    <div class="account">
-      <span id="who" class="who"></span>
-      <button type="button" id="signout" class="ghost">Sign out</button>
+    <div class="sidebar-foot">
+      <div id="who" class="who"></div>
+      <div class="foot-actions">
+        <button type="button" class="ghost icon-button" data-theme-toggle aria-label="Theme: system"><svg class="icon" aria-hidden="true"><use href="#i-system"/></svg></button>
+        <button type="button" id="signout" class="ghost icon-button" aria-label="Sign out" title="Sign out"><svg class="icon" aria-hidden="true"><use href="#i-signout"/></svg></button>
+      </div>
     </div>
-  </header>
+  </aside>
 
-  <div id="passkey-banner" class="banner notice" role="status" hidden>
-    <span>You signed in with a link. Add a passkey to sign in without one, and to require a passkey to finish every sign-in link.</span>
-    <button type="button" id="passkey-banner-go" class="primary">Add a passkey</button>
+  <div class="content">
+    <header class="mobilebar">
+      <a class="brand" href="#/overview" aria-label="doh, overview">
+        <svg class="mark" aria-hidden="true"><use href="#mark"/></svg>
+        <span class="brand-name">doh</span>
+      </a>
+      <button type="button" class="ghost icon-button" data-palette aria-label="Search or jump to"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg></button>
+      <button type="button" class="ghost icon-button avatar-button" popovertarget="account-menu" aria-label="Account"><span id="avatar" class="avatar" aria-hidden="true"></span></button>
+      <div id="account-menu" class="menu" popover>
+        <div id="who-mobile" class="who"></div>
+        <button type="button" class="menu-item" data-theme-toggle><svg class="icon" aria-hidden="true"><use href="#i-system"/></svg><span data-theme-label>Theme: system</span></button>
+        <button type="button" class="menu-item" id="signout-mobile"><svg class="icon" aria-hidden="true"><use href="#i-signout"/></svg><span>Sign out</span></button>
+      </div>
+    </header>
+
+  <div id="passkey-banner" class="callout" role="status" hidden>
+    <svg class="icon" aria-hidden="true"><use href="#i-key"/></svg>
+    <span>You signed in with a link. <span class="callout-more">A passkey signs you in faster, and stops links from signing anyone in on their own.</span></span>
+    <a href="#/security" id="passkey-banner-go">Add a passkey<svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></a>
   </div>
   <div id="readonly" class="banner" role="status" hidden></div>
 
@@ -77,7 +141,7 @@
 
     <section id="view-logs" class="view" hidden aria-labelledby="logs-title">
       <div class="heading-row">
-        <h2 id="logs-title">Query log</h2>
+        <h2 id="logs-title">Activity</h2>
         <label class="switch"><input type="checkbox" id="live" role="switch"><span>Live</span></label>
       </div>
       <form id="log-filters" class="filters">
@@ -141,6 +205,8 @@
       <div id="service-accounts" class="people" aria-live="polite" aria-labelledby="sa-title"></div>
     </section>
   </main>
+
+  </div>
 
   <aside id="drawer" class="drawer" hidden aria-labelledby="drawer-title">
     <div class="drawer-head"><h3 id="drawer-title">Query</h3><button type="button" id="drawer-close" class="ghost" aria-label="Close">✕</button></div>
@@ -229,6 +295,36 @@
     <p id="secret-meta" class="muted hint"></p>
     <label class="check"><input type="checkbox" id="secret-saved"> I've saved it somewhere safe</label>
     <div class="actions"><button value="done" class="primary" id="secret-done" disabled>Done</button></div>
+  </form>
+</dialog>
+
+<dialog id="palette" class="palette" aria-label="Search or jump to">
+  <div class="palette-field">
+    <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+    <input id="palette-input" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" placeholder="Search, jump to, or type a domain…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go">
+    <kbd class="palette-esc">esc</kbd>
+  </div>
+  <ul id="palette-list" class="palette-list" role="listbox" aria-label="Results"></ul>
+  <p class="palette-empty muted" data-palette-empty hidden>Nothing matches. Type a domain, such as <code>example.com</code>, to explain, find, block, or allow it.</p>
+  <div class="palette-foot muted"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> run</span><span><kbd>?</kbd> shortcuts</span></div>
+</dialog>
+
+<dialog id="shortcuts" class="shortcuts" aria-labelledby="shortcuts-title">
+  <form method="dialog">
+    <div class="heading-row"><h3 id="shortcuts-title">Keyboard shortcuts</h3><button class="ghost icon-button" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+    <dl class="keys">
+      <dt><kbd data-mod-key>⌘K</kbd></dt><dd>Search, jump to, or act on a domain</dd>
+      <dt><kbd>g</kbd> <kbd>o</kbd></dt><dd>Overview</dd>
+      <dt><kbd>g</kbd> <kbd>p</kbd></dt><dd>Profiles</dd>
+      <dt><kbd>g</kbd> <kbd>a</kbd></dt><dd>Activity</dd>
+      <dt><kbd>g</kbd> <kbd>e</kbd></dt><dd>Explain</dd>
+      <dt><kbd>g</kbd> <kbd>s</kbd></dt><dd>Security</dd>
+      <dt><kbd>g</kbd> <kbd>t</kbd></dt><dd>Tenants</dd>
+      <dt><kbd>/</kbd></dt><dd>Search the activity</dd>
+      <dt><kbd>t</kbd></dt><dd>Change the theme</dd>
+      <dt><kbd>?</kbd></dt><dd>These shortcuts</dd>
+      <dt><kbd>esc</kbd></dt><dd>Close what's open</dd>
+    </dl>
   </form>
 </dialog>
 
