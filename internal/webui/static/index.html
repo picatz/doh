@@ -13,15 +13,15 @@
 <a class="skip" href="#main">Skip to content</a>
 
 <section id="signin" class="signin" hidden aria-labelledby="signin-title">
-  <form id="signin-form" class="card signin-card">
+  <div class="card signin-card">
     <img src="/ui/icon.svg" alt="" width="40" height="40">
     <h1 id="signin-title">Sign in to doh</h1>
-    <p class="muted">Paste an admin or reader token. On the server, <code>doh ui</code> prints a sign-in link that fills this in for you.</p>
-    <label for="signin-token">API token</label>
-    <input id="signin-token" name="token" type="password" autocomplete="off" spellcheck="false" required>
+    <p id="signin-lede" class="muted"></p>
     <p id="signin-error" class="error" role="alert" hidden></p>
-    <button type="submit" class="primary">Sign in</button>
-  </form>
+    <button type="button" id="signin-passkey" class="primary">Sign in with a passkey</button>
+    <p id="signin-host" class="hint" hidden></p>
+    <p id="signin-link-hint" class="muted hint">No passkey yet? On the server, run <code>doh ui</code> for a single-use sign-in link.</p>
+  </div>
 </section>
 
 <div id="app" hidden>
@@ -32,10 +32,18 @@
       <button type="button" class="nav" data-view="profiles">Profiles</button>
       <button type="button" class="nav" data-view="logs">Query log</button>
       <button type="button" class="nav" data-view="explain">Explain</button>
+      <button type="button" class="nav" data-view="security">Security</button>
     </nav>
-    <button type="button" id="signout" class="ghost">Sign out</button>
+    <div class="account">
+      <span id="who" class="who"></span>
+      <button type="button" id="signout" class="ghost">Sign out</button>
+    </div>
   </header>
 
+  <div id="passkey-banner" class="banner notice" role="status" hidden>
+    <span>You signed in with a link. Add a passkey to sign in without one, and to require a passkey to finish every sign-in link.</span>
+    <button type="button" id="passkey-banner-go" class="primary">Add a passkey</button>
+  </div>
   <div id="readonly" class="banner" role="status" hidden></div>
 
   <main id="main" tabindex="-1">
@@ -98,6 +106,21 @@
         <button type="submit" class="primary">Explain</button>
       </form>
       <div id="explain-result"></div>
+    </section>
+
+    <section id="view-security" class="view" hidden aria-labelledby="security-title">
+      <h2 id="security-title">Security</h2>
+      <p class="muted lede">Passkeys sign you in with Face ID, Touch ID, Windows Hello, or a security key. Once anyone has one, sign-in links from <code>doh ui</code> need a passkey to finish.</p>
+      <form id="add-passkey" class="card add-passkey">
+        <h3>Add a passkey</h3>
+        <p id="security-host" class="hint" role="note" hidden></p>
+        <div class="fields">
+          <label id="add-passkey-person" hidden>Your name <input id="ap-person" autocomplete="name" maxlength="64" placeholder="Alex"></label>
+          <label>Passkey name <input id="ap-name" required maxlength="64" placeholder="MacBook" spellcheck="false"></label>
+          <button type="submit" id="ap-submit" class="primary">Add a passkey</button>
+        </div>
+      </form>
+      <div id="people" class="people" aria-live="polite"></div>
     </section>
   </main>
 

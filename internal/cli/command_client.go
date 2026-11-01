@@ -200,54 +200,75 @@ func newUICommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ui",
 		Short: "Print a sign-in link to a doh server's web UI",
-		Long: `Print a link that opens a doh server's web UI, signed in with the API token.
+		Long: `Print a single-use link that signs a browser in to a doh server's web UI.
 
-The token is carried in the link's fragment (#token=...), which browsers never
-send to the server, so it doesn't appear in access logs. The UI moves it into
-the browser tab's session storage and removes it from the address bar. Treat
-the link like the token itself.
+The link expires in five minutes, and works once. Its code is in the URL's
+fragment, which browsers never send to servers, so it stays out of logs; the
+browser trades it for a session cookie, and never holds the API token.
+
+Once anyone has added a passkey in the UI, a link only starts signing in:
+finish with a passkey. Passkeys also sign in on their own, without a link.
+
+Creating a link needs the admin token. --reader makes a link for a
+read-only session.
 
 Examples:
   doh ui
-  doh ui --open`,
+  doh ui --open
+  doh ui --reader`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 	}
 	f := addClientFlags(cmd)
 	open := cmd.Flags().Bool("open", false, "open the link in a browser")
+	reader := cmd.Flags().Bool("reader", false, "sign in read-only")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		c, err := f.client()
 		if err != nil {
 			return err
 		}
-		link, err := uiLink(c.Addr, c.Token)
+		role := "admin"
+		if *reader {
+			role = "reader"
+		}
+		link, err := c.SigninLink(cmd.Context(), role)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), link)
+		if f.json {
+			return printJSON(cmd.OutOrStdout(), link)
+		}
+
+		w := cmd.OutOrStdout()
+		fmt.Fprintln(w, link.URL)
+		note := "Single-use; expires in " + humanDuration(time.Until(link.Expires)) + "."
+		if link.PasskeyRequired {
+			note += " Finish signing in with your passkey."
+		}
+		fmt.Fprintln(cmd.ErrOrStderr(), note)
+
 		if *open {
-			return openBrowser(link)
+			return openBrowser(link.URL)
 		}
 		return nil
 	}
 	return cmd
 }
 
-// uiLink returns the web UI's URL at addr, signed in with token.
-func uiLink(addr, token string) (string, error) {
-	if !strings.Contains(addr, "://") {
-		addr = "http://" + addr
+// humanDuration rounds d to whole minutes, or seconds under a minute.
+func humanDuration(d time.Duration) string {
+	switch {
+	case d >= time.Minute:
+		m := int(d.Round(time.Minute) / time.Minute)
+		if m == 1 {
+			return "1 minute"
+		}
+		return strconv.Itoa(m) + " minutes"
+	case d > 0:
+		return strconv.Itoa(int(d.Round(time.Second)/time.Second)) + " seconds"
+	default:
+		return "0 seconds"
 	}
-	u, err := url.Parse(addr)
-	if err != nil {
-		return "", fmt.Errorf("invalid address %q: %w", addr, err)
-	}
-	if u.Scheme == "http" && !client.IsLoopback(u.Hostname()) {
-		return "", fmt.Errorf("refusing to put the API token in a plain HTTP link to %s; use https:// or a loopback address", u.Host)
-	}
-	u.Path, u.RawQuery = "/", ""
-	u.Fragment, u.RawFragment = "token="+token, "token="+url.QueryEscape(token)
-	return u.String(), nil
 }
 
 // openBrowser opens link with the platform's URL opener.
@@ -866,5 +887,6 @@ func clientCommands() []*cobra.Command {
 		newLogCommand(),
 		newExplainCommand(),
 		newSetupCommand(),
+		newPeopleCommand(),
 	}
 }

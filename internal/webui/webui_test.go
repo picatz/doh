@@ -171,8 +171,8 @@ func TestScript_NoUnsafeDOMOrDynamicCode(t *testing.T) {
 		t.Error("app.js fetches an absolute URL")
 	}
 
-	// Tokens live in sessionStorage only, never in localStorage or cookies.
-	for _, bad := range []string{"localStorage", "document.cookie"} {
+	// Session cookies are HttpOnly, and nothing else is stored.
+	for _, bad := range []string{"localStorage", "sessionStorage", "indexedDB", "document.cookie"} {
 		if strings.Contains(js, bad) {
 			t.Errorf("app.js uses %s", bad)
 		}
@@ -197,28 +197,49 @@ func TestIcon_NoScript(t *testing.T) {
 	}
 }
 
-// TestScript_TokenOnlyInAuthorizationHeader checks that the API token is
-// only ever sent in the Authorization header, never in a URL, where it
-// would end up in logs, history, and Referer headers. Downloads, such as
-// configuration profiles, are fetched with the header and saved through
-// object URLs instead.
-func TestScript_TokenOnlyInAuthorizationHeader(t *testing.T) {
+// TestScript_HoldsNoToken checks that the UI never handles an API token:
+// it relies on the server's HttpOnly session cookie, so a script injected
+// into the page couldn't steal a long-lived credential, and sign-in link
+// codes are removed from the address bar as soon as the page loads.
+func TestScript_HoldsNoToken(t *testing.T) {
 	js := readStatic(t, "app.js")
+	html := readStatic(t, "index.html")
 
+	for _, bad := range []string{"Authorization", "Bearer", "state.token", "#token=", `type="password"`} {
+		if strings.Contains(js, bad) || strings.Contains(html, bad) {
+			t.Errorf("the UI still handles API tokens: it contains %q", bad)
+		}
+	}
 	for _, re := range []*regexp.Regexp{
 		regexp.MustCompile(`[?&](access_)?token=`),
-		regexp.MustCompile(`(href|src|location(\.href)?)\s*[:=][^;\n]*state\.token`),
 		regexp.MustCompile(`window\.open\(`),
 	} {
 		if loc := re.FindStringIndex(js); loc != nil {
-			t.Errorf("app.js may put the token in a URL: %q", js[loc[0]:min(loc[1]+40, len(js))])
+			t.Errorf("app.js may put a credential in a URL: %q", js[loc[0]:min(loc[1]+40, len(js))])
 		}
 	}
 
-	if got := strings.Count(js, "state.token"); got == 0 || !strings.Contains(js, "Authorization: `Bearer ${state.token}`") {
-		t.Error("app.js doesn't send the token as a bearer token")
+	if got := strings.Count(js, `credentials: "same-origin"`); got < 2 {
+		t.Errorf("app.js sets same-origin credentials on %d fetches, want the API and sign-in calls", got)
+	}
+	if !regexp.MustCompile(`signin=[^\n]*\n[^\n]*\n[^\n]*history\.replaceState`).MatchString(js) {
+		t.Error("app.js doesn't remove sign-in link codes from the address bar right away")
 	}
 	if !strings.Contains(js, "URL.revokeObjectURL") {
 		t.Error("object URLs for downloads aren't revoked")
+	}
+}
+
+// TestScript_PasskeyFallbacks checks that passkeys work in browsers without
+// the WebAuthn Level 3 JSON helpers, through one isolated converter.
+func TestScript_PasskeyFallbacks(t *testing.T) {
+	js := readStatic(t, "app.js")
+	for _, want := range []string{"parseCreationOptionsFromJSON", "parseRequestOptionsFromJSON", "toJSON", "getClientExtensionResults"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %s", want)
+		}
+	}
+	if n := strings.Count(js, "PublicKeyCredential"); n != 1 {
+		t.Errorf("PublicKeyCredential is used %d times, want once, inside the converter", n)
 	}
 }
