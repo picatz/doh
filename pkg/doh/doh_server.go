@@ -95,28 +95,51 @@ func NewServerMux(handler Handler, opts ...ServerOption) *http.ServeMux {
 	}
 
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET "+config.path, func(w http.ResponseWriter, r *http.Request) {
-		dnsReq, status := parseGet(r)
-		if status != http.StatusOK {
-			http.Error(w, http.StatusText(status), status)
-			return
-		}
-
-		serveDNS(w, r, handler, dnsReq, config.logger)
-	})
-
-	mux.HandleFunc("POST "+config.path, func(w http.ResponseWriter, r *http.Request) {
-		dnsReq, status := parsePost(w, r)
-		if status != http.StatusOK {
-			http.Error(w, http.StatusText(status), status)
-			return
-		}
-
-		serveDNS(w, r, handler, dnsReq, config.logger)
-	})
+	h := newHandler(handler, config)
+	mux.Handle("GET "+config.path, h)
+	mux.Handle("POST "+config.path, h)
 
 	return mux
+}
+
+// NewHandler returns an HTTP handler serving DNS-over-HTTPS on whatever
+// path it's mounted at, as [NewServerMux] does at its endpoint: GET and
+// POST requests are answered, and other methods get 405 Method Not
+// Allowed. It's for mounting the endpoint on several paths, such as one
+// per client, with an [http.ServeMux] pattern like "/dns-query/{client}"
+// whose values the handler reads with [http.Request.PathValue].
+//
+// [WithPath] has no effect on it.
+func NewHandler(handler Handler, opts ...ServerOption) http.Handler {
+	config := &serverConfig{logger: slog.New(slog.DiscardHandler)}
+	for _, opt := range opts {
+		opt(config)
+	}
+	return newHandler(handler, config)
+}
+
+func newHandler(handler Handler, config *serverConfig) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var (
+			dnsReq *dns.Msg
+			status int
+		)
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+			dnsReq, status = parseGet(r)
+		case http.MethodPost:
+			dnsReq, status = parsePost(w, r)
+		default:
+			w.Header().Set("Allow", "GET, HEAD, POST")
+			status = http.StatusMethodNotAllowed
+		}
+		if status != http.StatusOK {
+			http.Error(w, http.StatusText(status), status)
+			return
+		}
+
+		serveDNS(w, r, handler, dnsReq, config.logger)
+	})
 }
 
 // parseGet extracts the DNS query from the "dns" query parameter of a GET

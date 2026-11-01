@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/picatz/doh/internal/blocklist"
+	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/pkg/doh"
 )
@@ -60,6 +63,83 @@ type Config struct {
 
 	// Cache caches upstream answers for as long as their records live.
 	Cache CacheConfig `json:"cache,omitzero"`
+
+	// DataDir holds the server's state: its policy, admin API tokens,
+	// query log, and domain registration cache. Without it (and without a
+	// policy source), only the Blocklist settings apply, the query log is
+	// kept in memory, and the admin API is unavailable unless an admin
+	// token file is configured.
+	DataDir string `json:"data_dir,omitempty"`
+
+	// Policy configures where profiles come from.
+	Policy PolicyConfig `json:"policy,omitzero"`
+
+	// QueryLog configures the query log.
+	QueryLog QueryLogConfig `json:"query_log,omitzero"`
+
+	// Forward sends queries for names under each domain to its own
+	// upstreams, such as "lan" to the router that knows the network's
+	// hostnames, rather than to Upstreams. Names under these domains are
+	// treated as local: their answers may point to private addresses.
+	Forward map[string][]string `json:"forward,omitempty"`
+
+	// TrustedProxies are the addresses or prefixes of reverse proxies whose
+	// X-Forwarded-For headers are trusted to name DoH clients' addresses.
+	TrustedProxies []string `json:"trusted_proxies,omitempty"`
+
+	// RDAP configures domain registration lookups, for newly registered
+	// domain protection.
+	RDAP RDAPConfig `json:"rdap,omitzero"`
+}
+
+// PolicySourceOff, as a policy source, turns profiles off, so only the
+// Blocklist settings apply.
+const PolicySourceOff = "off"
+
+// PolicyFile is the name, within the data directory, of the policy file.
+const PolicyFile = "policy.json"
+
+// PolicyConfig configures where the policy comes from.
+type PolicyConfig struct {
+	// Source is the policy file, which defaults to PolicyFile in DataDir,
+	// and is created with secure defaults if it doesn't exist. It can
+	// instead be the URL of another doh server's policy endpoint, such as
+	// "https://doh.example.com:9090/api/v1/policy", to follow that
+	// server's policy read-only, or PolicySourceOff.
+	Source string `json:"source,omitempty"`
+
+	// TokenFile holds the bearer token for a URL Source, such as the other
+	// server's reader token.
+	TokenFile string `json:"token_file,omitempty"`
+
+	// Refresh is how often a URL Source is checked for changes. It
+	// defaults to a minute. Policy files are checked every few seconds.
+	Refresh Duration `json:"refresh,omitempty"`
+}
+
+// DefaultPolicyRefresh is how often a remote policy is checked by default.
+const DefaultPolicyRefresh = time.Minute
+
+// QueryLogConfig configures the query log, which records each query's
+// client, name, and outcome, so blocks can be traced and undone.
+type QueryLogConfig struct {
+	// Disabled turns the query log off for every profile.
+	Disabled bool `json:"disabled,omitempty"`
+
+	// Memory is how many entries are kept in memory to search. It
+	// defaults to querylog.DefaultMemory.
+	Memory int `json:"memory,omitempty"`
+
+	// Retention is how long daily log files in DataDir are kept. It
+	// defaults to querylog.DefaultRetention.
+	Retention Duration `json:"retention,omitempty"`
+}
+
+// RDAPConfig configures domain registration lookups over RDAP.
+type RDAPConfig struct {
+	// BootstrapURL is the RDAP bootstrap registry for DNS (RFC 9224). It
+	// defaults to IANA's.
+	BootstrapURL string `json:"bootstrap_url,omitempty"`
 }
 
 // CacheConfig configures the response cache, which is on by default.
@@ -108,7 +188,8 @@ type BlocklistConfig struct {
 	Refresh Duration `json:"refresh,omitempty"`
 
 	// CacheDir stores downloaded lists, so restarts work offline. It
-	// defaults to "doh/blocklists" in the user's cache directory.
+	// defaults to "blocklists" in $CACHE_DIRECTORY (systemd's
+	// CacheDirectory=), or "doh/blocklists" in the user's cache directory.
 	CacheDir string `json:"cache_dir,omitempty"`
 }
 
@@ -140,6 +221,11 @@ type AdminConfig struct {
 
 	// TraceDir is where slow query snapshots are saved.
 	TraceDir string `json:"trace_dir,omitempty"`
+
+	// TokenFile holds the admin API's admin token. It defaults to
+	// AdminTokenFile in the data directory, generated if missing, along
+	// with a reader token in ReaderTokenFile for read-only access.
+	TokenFile string `json:"token_file,omitempty"`
 }
 
 // flightRecorder reports whether the flight recorder is enabled.
@@ -264,18 +350,26 @@ func (c Config) withDefaults() Config {
 		c.Cache.Size = DefaultCacheSize
 	}
 
-	if c.Blocklist.enabled() {
-		if c.Blocklist.Response == "" {
-			c.Blocklist.Response = BlockNXDomain
+	if c.Blocklist.enabled() && c.Blocklist.Response == "" {
+		c.Blocklist.Response = BlockNXDomain
+	}
+	// Profiles' lists use the refresh interval and cache too.
+	if c.Blocklist.Refresh == 0 {
+		c.Blocklist.Refresh = Duration(DefaultBlocklistRefresh)
+	}
+	if c.Blocklist.CacheDir == "" {
+		if dir, _, _ := strings.Cut(os.Getenv("CACHE_DIRECTORY"), ":"); dir != "" {
+			// systemd's CacheDirectory=.
+			c.Blocklist.CacheDir = filepath.Join(dir, "blocklists")
+		} else if dir, err := os.UserCacheDir(); err == nil {
+			c.Blocklist.CacheDir = filepath.Join(dir, "doh", "blocklists")
+		} else if c.DataDir != "" {
+			c.Blocklist.CacheDir = filepath.Join(c.DataDir, "blocklists")
 		}
-		if c.Blocklist.Refresh == 0 {
-			c.Blocklist.Refresh = Duration(DefaultBlocklistRefresh)
-		}
-		if c.Blocklist.CacheDir == "" {
-			if dir, err := os.UserCacheDir(); err == nil {
-				c.Blocklist.CacheDir = filepath.Join(dir, "doh", "blocklists")
-			}
-		}
+	}
+
+	if c.policyRemote() && c.Policy.Refresh == 0 {
+		c.Policy.Refresh = Duration(DefaultPolicyRefresh)
 	}
 
 	if len(c.TLS.ACME.Domains) > 0 && c.TLS.ACME.CacheDir == "" {
@@ -285,6 +379,32 @@ func (c Config) withDefaults() Config {
 	}
 
 	return c
+}
+
+// policyEnabled reports whether profiles are on: with a data directory
+// or a policy source, unless the source is PolicySourceOff.
+func (c Config) policyEnabled() bool {
+	return c.Policy.Source != PolicySourceOff && (c.Policy.Source != "" || c.DataDir != "")
+}
+
+// policyRemote reports whether the policy is followed from a URL.
+func (c Config) policyRemote() bool {
+	return strings.HasPrefix(c.Policy.Source, "https://") || strings.HasPrefix(c.Policy.Source, "http://")
+}
+
+// policyPath returns the policy file, or for a remote policy, where its
+// cached copy is kept.
+func (c Config) policyPath() string {
+	switch {
+	case c.policyRemote() && c.DataDir != "":
+		return filepath.Join(c.DataDir, "policy.remote.json")
+	case c.policyRemote():
+		return ""
+	case c.Policy.Source != "":
+		return c.Policy.Source
+	default:
+		return filepath.Join(c.DataDir, PolicyFile)
+	}
 }
 
 // servesDoH reports whether c configures the DoH listener: with TLS, or
@@ -372,6 +492,44 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("cache size must not be negative"))
 	}
 
+	if c.policyRemote() {
+		if err := validateRemote(c.Policy.Source); err != nil {
+			errs = append(errs, fmt.Errorf("policy source: %w", err))
+		}
+	} else if c.Policy.TokenFile != "" {
+		errs = append(errs, errors.New("policy token_file is only used with a URL policy source"))
+	}
+	if r := c.Policy.Refresh; r != 0 && r < Duration(10*time.Second) {
+		errs = append(errs, errors.New("policy refresh must be at least 10s"))
+	}
+
+	if c.QueryLog.Memory < 0 {
+		errs = append(errs, errors.New("query_log memory must not be negative"))
+	}
+	if c.QueryLog.Retention < 0 {
+		errs = append(errs, errors.New("query_log retention must not be negative"))
+	}
+
+	for domain, upstreams := range c.Forward {
+		if _, ok := policy.NormalizeDomain(domain); !ok {
+			errs = append(errs, fmt.Errorf("forward: invalid domain %q", domain))
+		}
+		if len(upstreams) == 0 {
+			errs = append(errs, fmt.Errorf("forward %q: needs at least one upstream", domain))
+		}
+		for _, u := range upstreams {
+			if _, err := upstream.Parse(u, upstream.Options{}); err != nil {
+				errs = append(errs, fmt.Errorf("forward %q: %w", domain, err))
+			}
+		}
+	}
+
+	for _, p := range c.TrustedProxies {
+		if _, err := policy.ParsePrefix(p); err != nil {
+			errs = append(errs, fmt.Errorf("trusted_proxies: %w", err))
+		}
+	}
+
 	if c.Admin.Listen != "" {
 		if _, _, err := net.SplitHostPort(c.Admin.Listen); err != nil {
 			errs = append(errs, fmt.Errorf("admin listen: %w", err))
@@ -394,6 +552,22 @@ func (c Config) Validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// validateRemote reports whether a remote policy URL is safe to send a
+// bearer token to: HTTPS, or HTTP to a loopback address.
+func validateRemote(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("invalid URL %q", raw)
+	}
+	if u.Scheme == "http" {
+		host := u.Hostname()
+		if a, err := netip.ParseAddr(host); !(host == "localhost" || err == nil && a.IsLoopback()) {
+			return fmt.Errorf("%q must use https, since the token would be sent in the clear", raw)
+		}
+	}
+	return nil
 }
 
 // validatePath reports whether p can serve the DoH endpoint: a clean,
@@ -463,4 +637,25 @@ func (d *Duration) UnmarshalText(b []byte) error {
 
 	*d = Duration(v)
 	return nil
+}
+
+// AdminTokenFile and ReaderTokenFile are the names, within the data
+// directory, of the admin API's generated tokens.
+const (
+	AdminTokenFile  = "admin.token"
+	ReaderTokenFile = "reader.token"
+)
+
+// DefaultDataDir returns where the server keeps its state by default: the
+// directory systemd provides with StateDirectory= ($STATE_DIRECTORY), or
+// "doh" in the user's configuration directory. It returns "" if neither is
+// available.
+func DefaultDataDir() string {
+	if dir, _, _ := strings.Cut(os.Getenv("STATE_DIRECTORY"), ":"); dir != "" {
+		return dir
+	}
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "doh")
+	}
+	return ""
 }

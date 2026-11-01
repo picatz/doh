@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>doh admin</title>
+<link rel="icon" href="/ui/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/ui/app.css">
+<script type="module" src="/ui/app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<section id="signin" class="signin" hidden aria-labelledby="signin-title">
+  <form id="signin-form" class="card signin-card">
+    <img src="/ui/icon.svg" alt="" width="40" height="40">
+    <h1 id="signin-title">Sign in to doh</h1>
+    <p class="muted">Paste an admin or reader token. On the server, <code>doh ui</code> prints a sign-in link that fills this in for you.</p>
+    <label for="signin-token">API token</label>
+    <input id="signin-token" name="token" type="password" autocomplete="off" spellcheck="false" required>
+    <p id="signin-error" class="error" role="alert" hidden></p>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+</section>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand"><img src="/ui/icon.svg" alt="" width="24" height="24"><span>doh</span></div>
+    <nav aria-label="Views">
+      <button type="button" class="nav" data-view="overview" aria-current="page">Overview</button>
+      <button type="button" class="nav" data-view="profiles">Profiles</button>
+      <button type="button" class="nav" data-view="logs">Query log</button>
+      <button type="button" class="nav" data-view="explain">Explain</button>
+    </nav>
+    <button type="button" id="signout" class="ghost">Sign out</button>
+  </header>
+
+  <div id="readonly" class="banner" role="status" hidden></div>
+
+  <main id="main" tabindex="-1">
+    <section id="view-overview" class="view" aria-labelledby="overview-title">
+      <h2 id="overview-title">Overview</h2>
+      <div id="stat-cards" class="cards"></div>
+      <div class="grid2">
+        <div class="card"><h3>Blocked by reason</h3><div id="by-reason" class="bars"></div></div>
+        <div class="card"><h3>Server</h3><dl id="server-info" class="kv"></dl></div>
+        <div class="card"><h3>Top blocked</h3><ol id="top-blocked" class="toplist"></ol></div>
+        <div class="card"><h3>Top clients</h3><ol id="top-clients" class="toplist"></ol></div>
+      </div>
+      <div class="card">
+        <h3>Blocklists</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th scope="col">List</th><th scope="col">Rules</th><th scope="col">Loaded</th><th scope="col">State</th></tr></thead>
+          <tbody id="list-health"></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <section id="view-profiles" class="view" hidden aria-labelledby="profiles-title">
+      <div class="heading-row">
+        <h2 id="profiles-title">Profiles</h2>
+        <button type="button" id="new-profile" class="primary edit">New profile</button>
+      </div>
+      <div id="profile-cards" class="cards profiles"></div>
+      <div id="profile-editor" hidden></div>
+    </section>
+
+    <section id="view-logs" class="view" hidden aria-labelledby="logs-title">
+      <div class="heading-row">
+        <h2 id="logs-title">Query log</h2>
+        <label class="switch"><input type="checkbox" id="live" role="switch"><span>Live</span></label>
+      </div>
+      <form id="log-filters" class="filters">
+        <label>Profile <select id="f-profile"><option value="">All</option></select></label>
+        <label>Status <select id="f-status">
+          <option value="">All</option><option value="allowed">Allowed</option><option value="blocked">Blocked</option>
+          <option value="rewritten">Rewritten</option><option value="error">Error</option></select></label>
+        <label>Name <input id="f-q" type="search" placeholder="contains…" spellcheck="false"></label>
+        <label>Client <input id="f-client" type="search" placeholder="192.168.1.20" spellcheck="false"></label>
+        <button type="submit">Apply</button>
+      </form>
+      <div class="table-wrap"><table class="log">
+        <thead><tr><th scope="col">Time</th><th scope="col">Client</th><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Status</th><th scope="col">Reason</th><th scope="col" class="num">ms</th></tr></thead>
+        <tbody id="log-rows"></tbody>
+      </table></div>
+      <p id="log-empty" class="muted center" hidden>No queries match.</p>
+      <div class="center"><button type="button" id="load-more" hidden>Load more</button></div>
+    </section>
+
+    <section id="view-explain" class="view" hidden aria-labelledby="explain-title">
+      <h2 id="explain-title">Explain a query</h2>
+      <form id="explain-form" class="filters">
+        <label>Name <input id="x-name" required placeholder="ads.example.com" spellcheck="false"></label>
+        <label>Type <input id="x-type" value="A" size="6" spellcheck="false"></label>
+        <label>Profile <select id="x-profile"><option value="">By client</option></select></label>
+        <label>Client <input id="x-client" placeholder="optional address" spellcheck="false"></label>
+        <button type="submit" class="primary">Explain</button>
+      </form>
+      <div id="explain-result"></div>
+    </section>
+  </main>
+
+  <aside id="drawer" class="drawer" hidden aria-labelledby="drawer-title">
+    <div class="drawer-head"><h3 id="drawer-title">Query</h3><button type="button" id="drawer-close" class="ghost" aria-label="Close">✕</button></div>
+    <dl id="drawer-body" class="kv"></dl>
+    <div id="drawer-actions" class="actions"></div>
+  </aside>
+</div>
+
+<dialog id="create-dialog">
+  <form id="create-form" method="dialog">
+    <h3>New profile</h3>
+    <label for="c-id">ID <span class="muted">(used in DoH paths)</span></label>
+    <input id="c-id" required pattern="[a-z0-9][a-z0-9\-]{0,62}" placeholder="streaming" spellcheck="false">
+    <label for="c-name">Name</label>
+    <input id="c-name" placeholder="Streaming sticks">
+    <div class="actions"><button type="button" id="create-cancel">Cancel</button><button type="submit" class="primary">Create</button></div>
+  </form>
+</dialog>
+
+<dialog id="confirm-dialog">
+  <form method="dialog">
+    <h3 id="confirm-title">Are you sure?</h3>
+    <p id="confirm-text" class="muted"></p>
+    <div class="actions"><button value="cancel">Cancel</button><button value="ok" class="danger">Delete</button></div>
+  </form>
+</dialog>
+
+<div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+</body>
+</html>

@@ -9,13 +9,22 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/cache"
+	"github.com/picatz/doh/internal/filter"
+	"github.com/picatz/doh/internal/policy"
+	"github.com/picatz/doh/internal/querylog"
+	"github.com/picatz/doh/internal/rdap"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/pkg/doh"
 	"golang.org/x/crypto/acme"
@@ -31,21 +40,51 @@ const HealthPath = "/healthz"
 const shutdownTimeout = 10 * time.Second
 
 // Server is a DNS-over-HTTPS server that forwards queries to upstream
-// resolvers.
+// resolvers, applying a policy of profiles to its clients.
 type Server struct {
-	config Config
-	logger *slog.Logger
+	config  Config
+	logger  *slog.Logger
+	started time.Time
 
-	// exchanger forwards queries to the configured upstreams.
-	exchanger upstream.Exchanger
+	// exchanger forwards queries to the configured upstreams, and
+	// forwardZones to the upstreams of particular domains.
+	exchanger    upstream.Exchanger
+	forwardZones map[string]*forwardZone
 
 	telemetry *telemetry
 
-	// blocker answers queries for blocked names, if configured.
-	blocker *blocker
+	// engine applies the current policy. It's replaced whenever the
+	// policy changes.
+	engine atomic.Pointer[filter.Engine]
+
+	// policyMu serializes policy changes.
+	policyMu sync.Mutex
+
+	// store loads and saves the policy, if profiles are enabled.
+	store *policyStore
+
+	// lists holds the blocklists the policy uses, baseline holds those
+	// from the Blocklist settings, and state outlives policy changes.
+	lists    *blocklist.Registry
+	baseline filter.Baseline
+	state    *filter.State
+	ages     *rdap.Ages
+	exempt   []string
 
 	// cache holds upstream answers, unless disabled.
 	cache *cache.Cache
+
+	// qlog is the query log, unless disabled.
+	qlog *querylog.Log
+
+	// tokens authorize admin API requests.
+	tokens tokens
+
+	trustedProxies []netip.Prefix
+
+	// listeners records the addresses served on, by kind, for status.
+	listenersMu sync.Mutex
+	listeners   map[string]string
 
 	handler   http.Handler
 	tlsConfig *tls.Config
@@ -58,13 +97,24 @@ type Server struct {
 }
 
 // New returns a server for config, logging to logger.
+//
+// Blocklists named by the Blocklist settings are loaded before New
+// returns, failing if none can be; lists named only by profiles load in
+// the background, so a slow download doesn't hold up serving.
 func New(config Config, logger *slog.Logger) (*Server, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	config = config.withDefaults()
 
-	s := &Server{config: config, logger: logger, telemetry: newTelemetry()}
+	s := &Server{
+		config:    config,
+		logger:    logger,
+		started:   time.Now(),
+		telemetry: newTelemetry(),
+		state:     filter.NewState(),
+		listeners: make(map[string]string),
+	}
 
 	if config.Admin.flightRecorder() {
 		recorder, err := newFlightRecorder(config.Admin, logger)
@@ -74,29 +124,53 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		s.telemetry.recorder = recorder
 	}
 
-	exchanger, err := s.upstreams()
-	if err != nil {
+	if err := s.configureUpstreams(); err != nil {
 		return nil, err
 	}
-	s.exchanger = exchanger
+
+	for _, p := range config.TrustedProxies {
+		prefix, _ := policy.ParsePrefix(p) // validated
+		s.trustedProxies = append(s.trustedProxies, prefix)
+	}
 
 	if !config.Cache.Disabled {
 		s.cache = cache.New(config.Cache.Size)
 	}
 
-	if config.Blocklist.enabled() {
-		blocker, err := newBlocker(context.Background(), config.Blocklist, logger)
-		if err != nil {
-			return nil, err
-		}
-		s.blocker = blocker
+	if err := s.configurePolicy(context.Background()); err != nil {
+		s.lists.Close()
+		return nil, err
+	}
+
+	if err := s.configureQueryLog(); err != nil {
+		s.lists.Close()
+		return nil, err
+	}
+
+	if err := s.configureTokens(); err != nil {
+		s.Close()
+		return nil, err
 	}
 
 	handler := func(w http.ResponseWriter, r *http.Request, query *dns.Msg) (*dns.Msg, error) {
-		return s.resolve(r.Context(), "doh", query)
+		return s.resolve(r.Context(), request{
+			transport: "doh",
+			query:     query,
+			client:    s.clientAddr(r),
+			profile:   r.PathValue("profile"),
+			device:    r.PathValue("device"),
+		})
 	}
 
-	mux := doh.NewServerMux(handler, doh.WithPath(config.Path), doh.WithLogger(logger))
+	dohHandler := doh.NewHandler(handler, doh.WithLogger(logger))
+	mux := http.NewServeMux()
+	mux.Handle("GET "+config.Path, dohHandler)
+	mux.Handle("POST "+config.Path, dohHandler)
+	base := strings.TrimSuffix(config.Path, "/")
+	for _, pattern := range []string{base + "/{profile}", base + "/{profile}/{device}"} {
+		mux.Handle("GET "+pattern, s.profilePath(dohHandler))
+		mux.Handle("POST "+pattern, s.profilePath(dohHandler))
+	}
 	mux.HandleFunc("GET "+HealthPath, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
@@ -104,49 +178,48 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	s.handler = logRequests(logger, mux)
 
 	if err := s.configureTLS(); err != nil {
+		s.Close()
 		return nil, err
 	}
 
 	return s, nil
 }
 
-// resolve answers query, received over transport, using the upstreams
-// within the configured timeout.
-func (s *Server) resolve(ctx context.Context, transport string, query *dns.Msg) (*dns.Msg, error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.config.Timeout))
-	defer cancel()
-
-	start := time.Now()
-
-	if s.blocker != nil {
-		if resp, v := s.blocker.answer(query); resp != nil {
-			s.telemetry.blocked.Add(v.Source, 1)
-			s.telemetry.observe(ctx, transport, time.Since(start), resp, nil)
-			return resp, nil
+// profilePath serves DoH requests whose path names a profile, and
+// optionally a device, rejecting unknown profiles and malformed device
+// names with 404 Not Found, so they can't pollute the query log.
+func (s *Server) profilePath(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.engine.Load().Profile(r.PathValue("profile")) == nil {
+			http.Error(w, "unknown profile", http.StatusNotFound)
+			return
 		}
-	}
-
-	if s.cache != nil {
-		if resp := s.cache.Get(query); resp != nil {
-			s.telemetry.cacheHits.Add(1)
-			s.telemetry.observe(ctx, transport, time.Since(start), resp, nil)
-			return resp, nil
+		if device := r.PathValue("device"); device != "" && !policy.ValidID(device) {
+			http.Error(w, "invalid device name: use lower-case letters, digits, and hyphens", http.StatusNotFound)
+			return
 		}
-		s.telemetry.cacheMisses.Add(1)
-	}
-
-	resp, err := s.exchanger.Exchange(ctx, query)
-	if err == nil && s.cache != nil {
-		s.cache.Put(query, resp)
-	}
-	s.telemetry.observe(ctx, transport, time.Since(start), resp, err)
-
-	return resp, err
+		next.ServeHTTP(w, r)
+	})
 }
 
-// upstreams returns an exchanger that fails over across the configured
-// upstreams.
-func (s *Server) upstreams() (upstream.Exchanger, error) {
+// Close releases the server's resources: background list loads, and the
+// query log. ListenAndServe closes the server when it returns.
+func (s *Server) Close() error {
+	s.lists.Close()
+	if s.ages != nil {
+		if err := s.ages.Save(); err != nil {
+			s.logger.Warn("saving registration cache", slog.Any("error", err))
+		}
+	}
+	if s.qlog != nil {
+		return s.qlog.Close()
+	}
+	return nil
+}
+
+// configureUpstreams sets up exchangers that fail over across the
+// configured upstreams, and those of each forward zone.
+func (s *Server) configureUpstreams() error {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ForceAttemptHTTP2 = true
 
@@ -155,16 +228,56 @@ func (s *Server) upstreams() (upstream.Exchanger, error) {
 		Timeout:    time.Duration(s.config.Timeout),
 	}
 
-	var failover upstream.Failover
-	for _, u := range s.config.Upstreams {
-		e, err := upstream.Parse(u, opts)
-		if err != nil {
-			return nil, err
+	failover := func(urls []string) (upstream.Failover, error) {
+		var f upstream.Failover
+		for _, u := range urls {
+			e, err := upstream.Parse(u, opts)
+			if err != nil {
+				return nil, err
+			}
+			f = append(f, s.telemetry.instrument(fmt.Sprint(e), e))
+
+			// Never filter the upstreams' own names, in case this server
+			// is the resolver that resolves them.
+			if host := upstreamHost(u); host != "" {
+				s.exempt = append(s.exempt, host)
+			}
 		}
-		failover = append(failover, s.telemetry.instrument(fmt.Sprint(e), e))
+		return f, nil
 	}
 
-	return failover, nil
+	var err error
+	if s.exchanger, err = failover(s.config.Upstreams); err != nil {
+		return err
+	}
+
+	s.forwardZones = make(map[string]*forwardZone, len(s.config.Forward))
+	for domain, urls := range s.config.Forward {
+		domain, _ = policy.NormalizeDomain(domain) // validated
+		e, err := failover(urls)
+		if err != nil {
+			return err
+		}
+		s.forwardZones[domain] = &forwardZone{domain: domain, exchanger: e}
+	}
+
+	return nil
+}
+
+// upstreamHost returns the host name of an upstream URL, or "" if it's an
+// address.
+func upstreamHost(raw string) string {
+	if !strings.Contains(raw, "://") {
+		raw = "udp://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if _, err := netip.ParseAddr(u.Hostname()); err == nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // configureTLS sets up certificates from files or ACME, unless the server
@@ -225,6 +338,8 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // is done, then shuts down gracefully. If any listener fails, all of them
 // are shut down.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	defer s.Close()
+
 	var (
 		ln     net.Listener
 		pc     net.PacketConn
@@ -287,14 +402,22 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if pc != nil {
 		g.Go(func() error { return s.ServeDNS(ctx, pc, dnsLn) })
 	}
-	if s.blocker != nil {
-		g.Go(func() error { return s.blocker.refresh(ctx, time.Duration(s.config.Blocklist.Refresh)) })
+	g.Go(func() error { return s.lists.Refresh(ctx, time.Duration(s.config.Blocklist.Refresh)) })
+	if s.store != nil {
+		g.Go(func() error { return s.store.watch(ctx, s.applyPolicy) })
 	}
 	if adminLn != nil {
 		g.Go(func() error { return s.ServeAdmin(ctx, adminLn) })
 	}
 
 	return g.Wait()
+}
+
+// setListener records an address served on, for status.
+func (s *Server) setListener(kind string, addr net.Addr) {
+	s.listenersMu.Lock()
+	s.listeners[kind] = addr.String()
+	s.listenersMu.Unlock()
 }
 
 // listenError explains common reasons a listener can't be opened, such as
@@ -337,6 +460,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		servers = append(servers, s.httpServer(s.acmeHTTP))
 		listeners = append(listeners, acmeLn)
 	}
+
+	s.setListener("doh", ln.Addr())
 
 	errc := make(chan error, len(servers))
 	for i, srv := range servers {

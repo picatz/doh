@@ -28,7 +28,7 @@ func (s *Server) ServeDNS(ctx context.Context, pc net.PacketConn, ln net.Listene
 	queryCtx := context.WithoutCancel(ctx)
 
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
-		resp := s.answerDNS(queryCtx, w.LocalAddr().Network(), req)
+		resp := s.answerDNS(queryCtx, w.LocalAddr().Network(), addrOf(w.RemoteAddr()), req)
 
 		if _, ok := w.LocalAddr().(*net.UDPAddr); ok {
 			resp.Truncate(udpSize(req))
@@ -60,6 +60,7 @@ func (s *Server) ServeDNS(ctx context.Context, pc net.PacketConn, ln net.Listene
 		}
 	}
 
+	s.setListener("dns", pc.LocalAddr())
 	s.logger.Info("serving dns",
 		slog.String("udp", pc.LocalAddr().String()),
 		slog.String("tcp", ln.Addr().String()),
@@ -107,7 +108,7 @@ func shutdownDNS(servers []*dns.Server) error {
 // transport ("udp" or "tcp"), replying with an
 // error code rather than forwarding anything that isn't a single-question
 // standard query.
-func (s *Server) answerDNS(ctx context.Context, transport string, req *dns.Msg) *dns.Msg {
+func (s *Server) answerDNS(ctx context.Context, transport string, client netip.Addr, req *dns.Msg) *dns.Msg {
 	var rejected *dns.Msg
 	switch {
 	case req.Response:
@@ -123,7 +124,7 @@ func (s *Server) answerDNS(ctx context.Context, transport string, req *dns.Msg) 
 		return rejected
 	}
 
-	resp, err := s.resolve(ctx, transport, req)
+	resp, err := s.resolve(ctx, request{transport: transport, query: req, client: client})
 	if err != nil {
 		s.logger.WarnContext(ctx, "dns: resolving failed",
 			slog.String("name", req.Question[0].Name),

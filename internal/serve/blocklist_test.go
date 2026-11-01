@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/picatz/doh/internal/filter"
 	"github.com/picatz/doh/pkg/doh"
 )
 
@@ -65,8 +66,8 @@ func TestServer_Blocklist(t *testing.T) {
 		if len(resp.Ns) != 1 {
 			t.Fatalf("got authority %v, want a synthetic SOA", resp.Ns)
 		}
-		if soa, ok := resp.Ns[0].(*dns.SOA); !ok || soa.Minttl != blockedTTL || soa.Hdr.Ttl != blockedTTL || soa.Hdr.Name != "ads.example.com." {
-			t.Errorf("got authority %v, want an SOA for ads.example.com. with TTL and MINIMUM %d", resp.Ns[0], blockedTTL)
+		if soa, ok := resp.Ns[0].(*dns.SOA); !ok || soa.Minttl != filter.BlockedTTL || soa.Hdr.Ttl != filter.BlockedTTL || soa.Hdr.Name != "ads.example.com." {
+			t.Errorf("got authority %v, want an SOA for ads.example.com. with TTL and MINIMUM %d", resp.Ns[0], filter.BlockedTTL)
 		}
 
 		ede := edeOf(resp)
@@ -132,8 +133,8 @@ func TestServer_Blocklist(t *testing.T) {
 				t.Errorf("%s: got %v, want no records", dns.TypeToString[test.qtype], resp.Answer)
 			case test.want != "" && (len(resp.Answer) != 1 || !strings.HasSuffix(resp.Answer[0].String(), test.want)):
 				t.Errorf("%s: got %v, want %s", dns.TypeToString[test.qtype], resp.Answer, test.want)
-			case test.want != "" && resp.Answer[0].Header().Ttl != blockedTTL:
-				t.Errorf("%s: got TTL %d, want %d", dns.TypeToString[test.qtype], resp.Answer[0].Header().Ttl, blockedTTL)
+			case test.want != "" && resp.Answer[0].Header().Ttl != filter.BlockedTTL:
+				t.Errorf("%s: got TTL %d, want %d", dns.TypeToString[test.qtype], resp.Answer[0].Header().Ttl, filter.BlockedTTL)
 			}
 		}
 
@@ -150,14 +151,18 @@ func TestServer_Blocklist(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = os.WriteFile(list, []byte("||ads.example.com^\n0.0.0.0 tracker.example.net\n"), 0o600) })
 
-		if err := s.blocker.load(t.Context()); err != nil {
+		if err := s.lists.Reload(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 
-		if resp, _ := s.blocker.answer(new(dns.Msg).SetQuestion("new.example.", dns.TypeA)); resp == nil {
+		blocked := func(name string) bool {
+			resp, err := s.resolve(t.Context(), request{transport: "udp", query: new(dns.Msg).SetQuestion(name, dns.TypeA)})
+			return err == nil && resp.Rcode == dns.RcodeNameError
+		}
+		if !blocked("new.example.") {
 			t.Error("reloaded list doesn't block new.example")
 		}
-		if resp, _ := s.blocker.answer(new(dns.Msg).SetQuestion("ads.example.com.", dns.TypeA)); resp != nil {
+		if blocked("ads.example.com.") {
 			t.Error("reloaded list still blocks a removed rule")
 		}
 	})

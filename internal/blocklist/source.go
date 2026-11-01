@@ -21,20 +21,88 @@ import (
 	"time"
 )
 
-// Presets are well-known DNS blocklists, by name. DefaultPreset is used
-// when a blocklist is enabled without naming one.
-var Presets = map[string]string{
-	"hagezi-light":  "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/light.txt",
-	"hagezi-normal": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/multi.txt",
-	"hagezi-pro":    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt",
-	"oisd-small":    "https://small.oisd.nl",
-	"oisd-big":      "https://big.oisd.nl",
-	"stevenblack":   "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+// Preset categories, which group presets by what they protect against.
+const (
+	CategoryPrivacy  = "privacy"  // ads and trackers
+	CategorySecurity = "security" // malware, phishing, scams, and abuse
+	CategoryParental = "parental" // content some households restrict
+)
 
-	// The lists cube uses by default. Only their domain rules apply to DNS.
-	"easylist":    "https://easylist-downloads.adblockplus.org/easylist.txt",
-	"easyprivacy": "https://easylist-downloads.adblockplus.org/easyprivacy.txt",
+// Preset is a well-known blocklist that can be named instead of a URL.
+type Preset struct {
+	// Name identifies the preset, such as "hagezi-pro".
+	Name string `json:"name"`
+
+	// Title and Description explain the preset to people choosing lists.
+	Title       string `json:"title"`
+	Description string `json:"description"`
+
+	// Category is CategoryPrivacy, CategorySecurity, or CategoryParental.
+	Category string `json:"category"`
+
+	// URL is where the list is downloaded from.
+	URL string `json:"url"`
 }
+
+// hagezi returns the URL of one of HaGeZi's Adblock Plus format lists.
+func hagezi(name string) string {
+	return "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/" + name + ".txt"
+}
+
+// Catalog is every preset, in the order they're presented.
+var Catalog = []Preset{
+	{Name: "hagezi-light", Category: CategoryPrivacy, URL: hagezi("light"),
+		Title: "Ads and trackers (light)", Description: "HaGeZi's Light list: the most common ads, trackers, and malware, with almost no breakage."},
+	{Name: "hagezi-normal", Category: CategoryPrivacy, URL: hagezi("multi"),
+		Title: "Ads and trackers", Description: "HaGeZi's Multi NORMAL list: ads, trackers, and malware, rarely breaking sites. The \"default\" preset."},
+	{Name: "hagezi-pro", Category: CategoryPrivacy, URL: hagezi("pro"),
+		Title: "Ads and trackers (pro)", Description: "HaGeZi's Multi PRO list: stricter blocking, which occasionally breaks sites."},
+	{Name: "oisd-small", Category: CategoryPrivacy, URL: "https://small.oisd.nl",
+		Title: "OISD small", Description: "OISD's small list of ads, trackers, and malware."},
+	{Name: "oisd-big", Category: CategoryPrivacy, URL: "https://big.oisd.nl",
+		Title: "OISD big", Description: "OISD's big list of ads, trackers, and malware."},
+	{Name: "stevenblack", Category: CategoryPrivacy, URL: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+		Title: "StevenBlack hosts", Description: "StevenBlack's unified hosts file of ads and malware."},
+	// The lists cube uses by default. Only their domain rules apply to DNS.
+	{Name: "easylist", Category: CategoryPrivacy, URL: "https://easylist-downloads.adblockplus.org/easylist.txt",
+		Title: "EasyList", Description: "EasyList's domain rules, for ads."},
+	{Name: "easyprivacy", Category: CategoryPrivacy, URL: "https://easylist-downloads.adblockplus.org/easyprivacy.txt",
+		Title: "EasyPrivacy", Description: "EasyPrivacy's domain rules, for trackers."},
+
+	{Name: ThreatIntelPreset, Category: CategorySecurity, URL: hagezi("tif.medium"),
+		Title: "Threat intelligence", Description: "Malware, phishing, scam, and command-and-control domains aggregated from dozens of threat intelligence feeds, without the noisiest sources. On by default."},
+	{Name: "threat-intel-full", Category: CategorySecurity, URL: hagezi("tif"),
+		Title: "Threat intelligence (full)", Description: "Every feed in the threat intelligence aggregate. Catches more, but is large (about 40 MB) and needs more memory."},
+	{Name: "scams", Category: CategorySecurity, URL: hagezi("fake"),
+		Title: "Scams and fake shops", Description: "Fake shops, fake streaming sites, and other fraud."},
+	{Name: "abused-tlds", Category: CategorySecurity, URL: hagezi("spam-tlds-adblock"),
+		Title: "Most abused TLDs", Description: "Whole top-level domains that are mostly used for spam and abuse."},
+	{Name: "dynamic-dns", Category: CategorySecurity, URL: hagezi("dyndns"),
+		Title: "Dynamic DNS", Description: "Dynamic DNS services, which malware uses to move its servers around."},
+	{Name: "bypass-services", Category: CategorySecurity, URL: hagezi("doh-vpn-proxy-bypass"),
+		Title: "Encrypted DNS, VPN, and proxy services", Description: "Services devices can use to route around this resolver's filtering."},
+
+	{Name: "gambling", Category: CategoryParental, URL: hagezi("gambling"),
+		Title: "Gambling", Description: "Gambling and betting sites."},
+	{Name: "adult", Category: CategoryParental, URL: hagezi("nsfw"),
+		Title: "Adult content", Description: "Pornography and other adult content."},
+	{Name: "social", Category: CategoryParental, URL: hagezi("social"),
+		Title: "Social networks", Description: "Social networks and their apps."},
+}
+
+// ThreatIntelPreset names the threat intelligence preset, which new
+// policies use by default.
+const ThreatIntelPreset = "threat-intel"
+
+// Presets maps each preset's name to its URL. DefaultPreset is used when a
+// blocklist is enabled without naming one.
+var Presets = func() map[string]string {
+	m := make(map[string]string, len(Catalog))
+	for _, p := range Catalog {
+		m[p.Name] = p.URL
+	}
+	return m
+}()
 
 // DefaultPreset is the preset named "default": HaGeZi's Multi NORMAL, which
 // blocks ads, trackers, and malware while rarely breaking sites.
@@ -157,6 +225,17 @@ func (l *Loader) Load(ctx context.Context, sources []Source, block, allow []stri
 	b.Block("config", block...)
 	b.Allow("config", allow...)
 
+	return b.List(), nil
+}
+
+// LoadSource loads one source into its own list.
+func (l *Loader) LoadSource(ctx context.Context, src Source) (*List, error) {
+	var b Builder
+	if _, err := l.loadSource(ctx, &b, src); err != nil {
+		return nil, err
+	}
+	// Name the source even if it has no rules, so verdicts can cite it.
+	b.source(src.Name)
 	return b.List(), nil
 }
 
