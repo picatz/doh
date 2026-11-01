@@ -447,28 +447,56 @@ func cmpSlice[T any](s []T) []T {
 
 // newServicesCommand returns "doh services".
 func newServicesCommand() *cobra.Command {
-	var asJSON bool
+	var (
+		asJSON   bool
+		category string
+	)
 	cmd := &cobra.Command{
-		Use:   "services",
+		Use:   "services [search]",
 		Short: "List the apps and sites profiles can block by name",
-		Long: `List the apps and sites profiles and schedules can block by name.
+		Long: `List the apps and sites profiles and schedules can block by name, optionally
+only those whose ID, name, or category contains search, or in one --category.
 
 Block one always with "doh profile set <profile> services=tiktok,roblox", or
 during a schedule with "doh schedule add --service".`,
-		Args: cobra.NoArgs,
+		Example: `  doh services
+  doh services chat
+  doh services --category gaming`,
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: cobra.NoFileCompletions,
+		SilenceUsage:      true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if category != "" && !slices.Contains(services.Categories, category) {
+				return fmt.Errorf("unknown --category %q (want one of %s)", category, strings.Join(services.Categories, ", "))
+			}
+			search := ""
+			if len(args) == 1 {
+				search = strings.ToLower(strings.TrimSpace(args[0]))
+			}
+			matches := slices.DeleteFunc(slices.Clone(services.Catalog), func(s services.Service) bool {
+				if category != "" && s.Category != category {
+					return true
+				}
+				return search != "" && !strings.Contains(strings.ToLower(s.ID+" "+s.Name+" "+s.Category), search)
+			})
+
 			if asJSON {
-				return printJSON(cmd.OutOrStdout(), services.Catalog)
+				return printJSON(cmd.OutOrStdout(), cmpSlice(matches))
+			}
+			if len(matches) == 0 {
+				return fmt.Errorf("no services match")
 			}
 			tw := newTable(cmd.OutOrStdout())
 			fmt.Fprintln(tw, "ID\tNAME\tCATEGORY\tDOMAINS")
-			for _, s := range services.Catalog {
+			for _, s := range matches {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%d\n", s.ID, s.Name, s.Category, len(s.Domains))
 			}
 			return tw.Flush()
 		},
 	}
+	cmd.Flags().StringVar(&category, "category", "", "only services in this category: "+strings.Join(services.Categories, ", "))
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON instead of text")
+	_ = cmd.RegisterFlagCompletionFunc("category", cobra.FixedCompletions(services.Categories, cobra.ShellCompDirectiveNoFileComp))
 	return cmd
 }
 
