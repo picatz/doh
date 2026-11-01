@@ -53,7 +53,8 @@ type Config struct {
 	// [doh.DefaultPath].
 	Path string `json:"path,omitempty"`
 
-	// Upstreams are the resolvers queries are forwarded to, tried in order.
+	// Upstreams are the resolvers queries are forwarded to, in order of
+	// preference. See [upstream.Pool] for how they're chosen.
 	// See package [upstream] for the supported URL forms.
 	Upstreams []string `json:"upstreams,omitempty"`
 

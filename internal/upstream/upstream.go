@@ -320,7 +320,8 @@ func tlsObserver(ctx context.Context) func(tls.ConnectionState) {
 var ErrAllFailed = errors.New("upstream: all upstreams failed")
 
 // Failover is an [Exchanger] that tries each upstream in order, returning
-// the first successful response.
+// the first successful response. [Pool] answers sooner when an upstream is
+// slow or down, by hedging and remembering upstreams' health.
 //
 // When the context has a deadline, each upstream gets an equal share of the
 // time remaining when it's tried, so a slow or unresponsive upstream still

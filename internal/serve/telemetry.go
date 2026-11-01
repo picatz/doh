@@ -137,6 +137,9 @@ type instrumented struct {
 	metrics *upstreamMetrics
 }
 
+// String names the upstream.
+func (i *instrumented) String() string { return i.name }
+
 func (i *instrumented) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, error) {
 	start := time.Now()
 	resp, err := i.Exchanger.Exchange(ctx, query)

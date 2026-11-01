@@ -55,7 +55,7 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v string) { c.Hostname = v }),
 	option((*pflag.FlagSet).String, "path", doh.DefaultPath, "URI path of the DoH endpoint",
 		func(c *serve.Config, v string) { c.Path = v }),
-	option((*pflag.FlagSet).StringSlice, "upstream", serve.DefaultUpstreams, "upstream resolvers, tried in order",
+	option((*pflag.FlagSet).StringSlice, "upstream", serve.DefaultUpstreams, "upstream resolvers, in order of preference",
 		func(c *serve.Config, v []string) { c.Upstreams = v }),
 	option((*pflag.FlagSet).Duration, "timeout", serve.DefaultTimeout, "maximum time to answer each query",
 		func(c *serve.Config, v time.Duration) { c.Timeout = serve.Duration(v) }),
@@ -155,7 +155,9 @@ func newServeCommand() *cobra.Command {
 		Short: "Serve DNS-over-HTTPS, forwarding queries to upstream resolvers",
 		Long: `Serve DNS-over-HTTPS (RFC 8484), forwarding queries to upstream resolvers.
 
-Upstreams are tried in order until one answers, and may use DNS-over-HTTPS
+Upstreams are asked in order of preference: if one is slow to answer, or
+fails, the next is asked too, and the first answer wins. Upstreams that keep
+failing are asked last until they recover. They may use DNS-over-HTTPS
 (https://), DNS-over-TLS (tls://host[:853]), or plain DNS (udp://host[:53],
 tcp://host[:53], or just host).
 

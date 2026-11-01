@@ -53,6 +53,7 @@ import (
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/signin"
+	"github.com/picatz/doh/internal/upstream"
 )
 
 // Prefix is the path prefix of every API endpoint.
@@ -88,6 +89,10 @@ type Status struct {
 
 	// Upstreams are the resolvers queries are forwarded to.
 	Upstreams []string `json:"upstreams"`
+
+	// UpstreamHealth describes each upstream's health, in configured
+	// order. Unhealthy upstreams are asked last until they recover.
+	UpstreamHealth []upstream.Health `json:"upstream_health"`
 
 	// Hostname is the server's public host name, under which each profile
 	// is reachable by name, if configured.

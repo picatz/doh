@@ -151,8 +151,10 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 		Version:   version(),
 		Started:   s.started,
 		Upstreams: s.config.Upstreams,
-		Lists:     s.lists.Status(),
-		Queries:   s.telemetry.totals(),
+
+		UpstreamHealth: s.upstreams.Health(),
+		Lists:          s.lists.Status(),
+		Queries:        s.telemetry.totals(),
 	}
 	s.listenersMu.Lock()
 	status.Listeners = maps.Clone(s.listeners)
