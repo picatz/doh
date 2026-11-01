@@ -323,7 +323,9 @@ Flags:
 $ doh serve --help
 Serve DNS-over-HTTPS (RFC 8484), forwarding queries to upstream resolvers.
 
-Upstreams are tried in order until one answers, and may use DNS-over-HTTPS
+Upstreams are asked in order of preference: if one is slow to answer, or
+fails, the next is asked too, and the first answer wins. Upstreams that keep
+failing are asked last until they recover. They may use DNS-over-HTTPS
 (https://), DNS-over-TLS (tls://host[:853]), or plain DNS (udp://host[:53],
 tcp://host[:53], or just host).
 
@@ -382,6 +384,7 @@ Flags:
       --acme-email string              contact email for the ACME account
       --acme-http-listen string        address to answer ACME HTTP-01 challenges on, such as :80
       --admin-listen string            serve metrics, pprof, and flight recorder snapshots on this address, such as localhost:9090
+      --admin-origin strings           origins the web UI is opened at, such as https://admin.dns.example.com, for browser sign-in and passkeys (default http://localhost:{port} on a loopback --admin-listen)
       --admin-token-file string        file holding the admin API token (default admin.token in --data-dir, generated)
       --allow-domain strings           never block these domains and their subdomains
       --block-domain strings           also block these domains and their subdomains
@@ -413,7 +416,7 @@ Flags:
       --tls-min-version string         oldest TLS version to accept: 1.2 or 1.3 (TLS 1.3 is preferred either way) (default "1.2")
       --trace-dir string               directory for slow query flight recorder snapshots
       --trusted-proxy strings          addresses or prefixes of reverse proxies whose X-Forwarded-For names DoH clients
-      --upstream strings               upstream resolvers, tried in order (default [https://cloudflare-dns.com/dns-query,https://dns.google/dns-query])
+      --upstream strings               upstream resolvers, in order of preference (default [https://cloudflare-dns.com/dns-query,https://dns.google/dns-query])
 ```
 
 </details>

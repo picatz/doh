@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/ratelimit"
@@ -79,13 +80,25 @@ func (s *Server) signinHandler() http.Handler {
 			writeError(w, http.StatusNotFound, "browser sign-in is off; set --admin-origin to the URL the web UI is opened at")
 			return
 		}
-		if r.Method == http.MethodPost && !s.signinLimiter.Allow(s.clientAddr(r).String()) {
+		if isSigninAttempt(r) && !s.signinLimiter.Allow(s.clientAddr(r).String()) {
 			w.Header().Set("Retry-After", "2")
 			writeError(w, http.StatusTooManyRequests, "too many sign-in attempts; wait a moment")
 			return
 		}
 		svc.Handler().ServeHTTP(w, r)
 	})
+}
+
+// isSigninAttempt reports whether r tries to sign in: using a link, or
+// beginning or finishing a passkey sign-in. Only these are rate limited, so
+// people who are signed in, perhaps sharing an address behind NAT, never
+// use up others' attempts.
+func isSigninAttempt(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	p := strings.TrimPrefix(r.URL.Path, signin.Prefix)
+	return p == "/link" || p == "/passkey/login" || strings.HasPrefix(p, "/passkey/login/")
 }
 
 // sessionRole returns the role of r's signed-in browser session, if any.

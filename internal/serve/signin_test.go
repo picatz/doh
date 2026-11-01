@@ -241,8 +241,12 @@ func TestAdmin_SigninRateLimited(t *testing.T) {
 	if !limited {
 		t.Error("100 guessed sign-in links in a row weren't rate limited")
 	}
-	// Reading the session isn't an attempt, so it isn't limited.
+	// Reading the session, or signing out, isn't an attempt, so isn't
+	// limited.
 	if status := b.do(http.MethodGet, "/auth/session", "", nil); status != http.StatusOK {
 		t.Errorf("session status while limited = %d", status)
+	}
+	if status := b.do(http.MethodPost, "/auth/signout", "", nil); status != http.StatusNoContent {
+		t.Errorf("sign out while limited = %d", status)
 	}
 }
