@@ -80,8 +80,11 @@ func (s *Service) startSession(w http.ResponseWriter, r *http.Request, sess Sess
 		delete(s.sessions, sha256.Sum256([]byte(c.Value)))
 	}
 	s.sweep(now)
-	if len(s.sessions) >= maxSessions {
-		s.evictOldest()
+	// Pending sessions can be started by anyone, so they have their own
+	// budget, and only ever displace each other: a flood of them can't sign
+	// out the people who finished signing in.
+	if n, limit := s.count(sess.Pending), sessionLimit(sess.Pending); n >= limit {
+		s.evictOldest(sess.Pending)
 	}
 	s.sessions[sha256.Sum256([]byte(token))] = &sess
 	s.mu.Unlock()
@@ -138,16 +141,40 @@ func (s *Service) sweep(now time.Time) {
 	}
 }
 
-// evictOldest removes the least recently used session. s.mu must be held.
-func (s *Service) evictOldest() {
+// sessionLimit returns how many pending, or complete, sessions may exist.
+func sessionLimit(pending bool) int {
+	if pending {
+		return maxPendingSessions
+	}
+	return maxSessions
+}
+
+// count returns the number of pending, or complete, sessions. s.mu must be
+// held.
+func (s *Service) count(pending bool) int {
+	n := 0
+	for _, sess := range s.sessions {
+		if sess.Pending == pending {
+			n++
+		}
+	}
+	return n
+}
+
+// evictOldest removes the least recently used pending, or complete,
+// session. s.mu must be held.
+func (s *Service) evictOldest(pending bool) {
 	var (
 		oldest [sha256.Size]byte
 		seen   time.Time
+		found  bool
 	)
 	for k, sess := range s.sessions {
-		if seen.IsZero() || sess.lastSeen.Before(seen) {
-			oldest, seen = k, sess.lastSeen
+		if sess.Pending == pending && (!found || sess.lastSeen.Before(seen)) {
+			oldest, seen, found = k, sess.lastSeen, true
 		}
 	}
-	delete(s.sessions, oldest)
+	if found {
+		delete(s.sessions, oldest)
+	}
 }

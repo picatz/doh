@@ -63,10 +63,11 @@ const (
 	DefaultLifetime    = 12 * time.Hour
 	DefaultLinkTTL     = 5 * time.Minute
 
-	maxSessions = 1_000
-	maxLinks    = 100
-	maxPeople   = 100
-	maxPasskeys = 20 // per person
+	maxSessions        = 1_000 // complete sessions
+	maxPendingSessions = 200   // sessions still signing in
+	maxLinks           = 100
+	maxPeople          = 100
+	maxPasskeys        = 20 // per person
 )
 
 // Config configures a [Service].

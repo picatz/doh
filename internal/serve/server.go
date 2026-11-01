@@ -24,6 +24,7 @@ import (
 	"github.com/picatz/doh/internal/filter"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
+	"github.com/picatz/doh/internal/ratelimit"
 	"github.com/picatz/doh/internal/rdap"
 	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
@@ -80,8 +81,9 @@ type Server struct {
 
 	// tokens authorize admin API requests, and signin signs browsers in
 	// to the web UI, once the admin listener knows its address.
-	tokens tokens
-	signin atomic.Pointer[signin.Service]
+	tokens        tokens
+	signin        atomic.Pointer[signin.Service]
+	signinLimiter *ratelimit.Limiter
 
 	trustedProxies []netip.Prefix
 
@@ -117,6 +119,8 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		telemetry: newTelemetry(),
 		state:     filter.NewState(),
 		listeners: make(map[string]string),
+
+		signinLimiter: newSigninLimiter(),
 	}
 
 	if config.Admin.flightRecorder() {

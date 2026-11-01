@@ -516,3 +516,27 @@ func mustURL(t *testing.T, raw string) *url.URL {
 	}
 	return u
 }
+
+func TestSessions_PendingFloodDoesNotEvictSignedIn(t *testing.T) {
+	f := newFixture(t, "")
+	admin := f.browser()
+	admin.useLink(f.link(RoleAdmin))
+
+	// Anyone can start passkey sign-ins, each with a pending session.
+	for range maxPendingSessions * 2 {
+		var options webauthn.LoginOptions
+		if status := f.browser().post(Prefix+"/passkey/login", nil, &options); status != http.StatusOK {
+			t.Fatalf("begin login = %d", status)
+		}
+	}
+
+	if !admin.status().SignedIn {
+		t.Error("a flood of pending sign-ins signed out a complete session")
+	}
+	f.service.mu.Lock()
+	pending := f.service.count(true)
+	f.service.mu.Unlock()
+	if pending > maxPendingSessions {
+		t.Errorf("%d pending sessions, want at most %d", pending, maxPendingSessions)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/ratelimit"
 	"github.com/picatz/doh/internal/signin"
 )
 
@@ -62,12 +63,25 @@ func portOf(addr string) string {
 	return port
 }
 
-// signinHandler serves the sign-in endpoints, if browser sign-in is on.
+// newSigninLimiter bounds sign-in attempts per client: a burst of a few dozen,
+// then one every two seconds. That's far more than people need, and keeps
+// anyone from filling the server's pending ceremonies or guessing at scale.
+func newSigninLimiter() *ratelimit.Limiter {
+	return &ratelimit.Limiter{Rate: 0.5, Burst: 30}
+}
+
+// signinHandler serves the sign-in endpoints, if browser sign-in is on,
+// limiting how often each client may try to sign in.
 func (s *Server) signinHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		svc := s.signin.Load()
 		if svc == nil {
 			writeError(w, http.StatusNotFound, "browser sign-in is off; set --admin-origin to the URL the web UI is opened at")
+			return
+		}
+		if r.Method == http.MethodPost && !s.signinLimiter.Allow(s.clientAddr(r).String()) {
+			w.Header().Set("Retry-After", "2")
+			writeError(w, http.StatusTooManyRequests, "too many sign-in attempts; wait a moment")
 			return
 		}
 		svc.Handler().ServeHTTP(w, r)

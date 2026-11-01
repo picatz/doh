@@ -225,3 +225,24 @@ func TestAdmin_SigninOffWithoutOrigin(t *testing.T) {
 		t.Error("browser sign-in on without an origin")
 	}
 }
+
+func TestAdmin_SigninRateLimited(t *testing.T) {
+	up, _ := startZone(t, nil)
+	s, _ := newPolicyServer(t, up, nil)
+	b := newUIBrowser(t, startAdmin(t, s))
+
+	limited := false
+	for range 100 {
+		if status := b.do(http.MethodPost, "/auth/link", `{"code":"guess"}`, nil); status == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Error("100 guessed sign-in links in a row weren't rate limited")
+	}
+	// Reading the session isn't an attempt, so it isn't limited.
+	if status := b.do(http.MethodGet, "/auth/session", "", nil); status != http.StatusOK {
+		t.Errorf("session status while limited = %d", status)
+	}
+}
