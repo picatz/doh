@@ -224,6 +224,8 @@ $ doh log --json -q google | jq .   # JSON lines
 
 With `--admin-listen`, the admin listener serves a web UI at `/` and a JSON API at `/api/v1`, alongside metrics and profiling. The UI toggles every protection and list, edits allow and deny lists, devices, and rewrites, connects devices, searches and follows the query log (its **Activity** view), allows or blocks a name from any log entry in one click, and explains any decision.
 
+Its Overview shows today as a ring: a 24-hour clock with midnight at the top, each hour's glaze as thick as its traffic, and a sprinkle for blocked queries. Point at an hour for its numbers, or open it for its queries; every number on the page links to the queries behind it, and what needs attention, such as failed queries or a list that didn't load, comes first, with what to do about it.
+
 It works the same by mouse, touch, and keyboard, on phones, tablets, and desktops, in light and dark themes. Every view has a URL. Press <kbd>⌘K</kbd> (<kbd>Ctrl K</kbd>) to jump anywhere, or type a domain to explain, find, block, or allow it; changes made this way can be undone from the notice that confirms them. Press <kbd>?</kbd> for every shortcut. [docs/design.md](design.md) describes the principles behind it.
 
 ### Signing in

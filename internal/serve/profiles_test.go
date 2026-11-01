@@ -574,8 +574,21 @@ func TestAdminAPI_LogsStatsExplain(t *testing.T) {
 
 	_, body = c.do(http.MethodGet, "/api/v1/stats", "")
 	var stats querylog.Stats
-	if err := json.Unmarshal(body, &stats); err != nil || stats.Total != 2 || stats.ByStatus[querylog.StatusBlocked] != 1 {
+	if err := json.Unmarshal(body, &stats); err != nil || stats.Total != 2 || stats.ByStatus[querylog.StatusBlocked] != 1 || stats.Clients != 1 || stats.Timeline != nil {
 		t.Errorf("stats = %s", body)
+	}
+
+	// A timeline, by the hour, as the Overview asks: half an hour ago is
+	// one interval, whatever the second it's asked in.
+	since := url.QueryEscape(time.Now().Add(-30 * time.Minute).Format(time.RFC3339))
+	_, body = c.do(http.MethodGet, "/api/v1/stats?interval=1h&since="+since, "")
+	if err := json.Unmarshal(body, &stats); err != nil || len(stats.Timeline) != 1 || stats.Timeline[0].Allowed != 1 || stats.Timeline[0].Blocked != 1 {
+		t.Errorf("stats with a timeline = %s", body)
+	}
+	for _, q := range []string{"interval=1h", "interval=10s&since=" + since, "interval=soon&since=" + since, "interval=1m&since=2020-01-01T00:00:00Z"} {
+		if resp, _ := c.do(http.MethodGet, "/api/v1/stats?"+q, ""); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("stats?%s = %d, want 400", q, resp.StatusCode)
+		}
 	}
 
 	_, body = c.do(http.MethodGet, "/api/v1/explain?name=x.ads.example&type=AAAA", "")

@@ -782,10 +782,35 @@ type Stats struct {
 	TopAllowed []Count `json:"top_allowed"`
 
 	// TopClients are the most active clients, by device name or hostname
-	// if known,
-	// otherwise by address.
+	// if known, otherwise by address.
 	TopClients []Count `json:"top_clients"`
+
+	// Clients is how many distinct clients there were, counted as
+	// TopClients counts them.
+	Clients int `json:"clients"`
+
+	// Timeline counts entries in equal intervals, oldest first, when
+	// asked for with [Log.Timeline].
+	Timeline []Bucket `json:"timeline,omitempty"`
 }
+
+// Bucket counts the entries in one interval of a timeline, by status.
+type Bucket struct {
+	// Start is when the interval starts. It ends when the next starts.
+	Start time.Time `json:"start"`
+
+	Allowed   int `json:"allowed"`
+	Blocked   int `json:"blocked"`
+	Rewritten int `json:"rewritten"`
+	Errors    int `json:"errors"`
+}
+
+// MaxBuckets bounds a timeline's intervals.
+const MaxBuckets = 1000
+
+// ErrTimeline reports a timeline that can't be made: one without a start,
+// with an interval that isn't positive, or with too many intervals.
+var ErrTimeline = errors.New("querylog: a timeline needs a since time and a positive interval, with at most 1000 intervals")
 
 // Count is how often a name appears.
 type Count struct {
@@ -842,11 +867,11 @@ func (l *Log) Stats(f Filter, top int) Stats {
 	stats.TopBlocked = topCounts(blocked, top)
 	stats.TopAllowed = topCounts(allowed, top)
 	stats.TopClients = topCounts(relabel(clients, labels), top)
+	stats.Clients = len(clients)
 
 	return stats
 }
 
-// topCounts returns the top n counts, by count descending, then name.
 // relabel returns counts keyed by their labels, keeping keys distinct when
 // labels collide, as when two devices call themselves "iphone".
 func relabel(counts map[string]int, labels map[string]string) map[string]int {
@@ -864,6 +889,51 @@ func relabel(counts map[string]int, labels map[string]string) map[string]int {
 	return out
 }
 
+// Timeline counts the entries in memory matching f in intervals of
+// interval from f.Since until f.Until, or now, ignoring f's Limit and
+// PageToken. Intervals are aligned to f.Since, so a timeline of a day
+// from local midnight has an interval for each hour of the clock.
+func (l *Log) Timeline(f Filter, interval time.Duration) ([]Bucket, error) {
+	end := f.Until
+	if end.IsZero() {
+		end = time.Now()
+	}
+	if f.Since.IsZero() || interval <= 0 || !end.After(f.Since) {
+		return nil, ErrTimeline
+	}
+	n := int((end.Sub(f.Since) + interval - 1) / interval)
+	if n > MaxBuckets {
+		return nil, ErrTimeline
+	}
+
+	buckets := make([]Bucket, n)
+	for i := range buckets {
+		buckets[i].Start = f.Since.Add(time.Duration(i) * interval)
+	}
+
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for i := range l.n {
+		e := l.at(i)
+		if !f.match(e) || !e.Time.Before(end) {
+			continue
+		}
+		b := &buckets[e.Time.Sub(f.Since)/interval]
+		switch e.Status {
+		case StatusAllowed:
+			b.Allowed++
+		case StatusBlocked:
+			b.Blocked++
+		case StatusRewritten:
+			b.Rewritten++
+		case StatusError:
+			b.Errors++
+		}
+	}
+	return buckets, nil
+}
+
+// topCounts returns the top n counts, by count descending, then name.
 func topCounts(m map[string]int, n int) []Count {
 	counts := make([]Count, 0, len(m))
 	for name, c := range m {

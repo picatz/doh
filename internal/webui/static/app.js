@@ -6,6 +6,7 @@
 
 import { fromNow, formatDate } from "./format.js";
 import { Palette, looksLikeDomain } from "./palette.js";
+import { drawRing, totalOf } from "./ring.js";
 import { currentTheme, applyTheme, nextTheme, themeLabel } from "./theme.js";
 import { WEEKDAYS, DAY_NAMES, DAY_PRESETS, clockMinutes, overnight, scheduleActive, formatDays, describeBlocks, formatPeriod } from "./schedule.js";
 
@@ -30,6 +31,7 @@ const state = {
   connect: { device: "", platform: "" }, // the "Connect a device" choices
   draft: null, // the schedule being added or edited, kept across renders
   appQuery: "", // the Apps search, kept across renders
+  logScope: { since: "", until: "", reason: "" }, // what a link narrowed Activity to
 };
 
 // ---------- DOM helpers ----------
@@ -468,33 +470,39 @@ const VIEWS = ["overview", "profiles", "logs", "explain", "security", "tenants"]
 // parseRoute reads the view and its argument, such as a profile ID, from
 // a URL hash.
 function parseRoute(hash = location.hash) {
-  const m = /^#\/([a-z]+)(?:\/([^?]*))?/.exec(hash);
-  if (!m || !VIEWS.includes(m[1])) return { view: "overview", arg: "" };
+  const m = /^#\/([a-z]+)(?:\/([^?]*))?(?:\?(.*))?$/.exec(hash);
+  if (!m || !VIEWS.includes(m[1])) return { view: "overview", arg: "", query: new URLSearchParams() };
   let arg = "";
   try { arg = decodeURIComponent(m[2] || ""); } catch { /* a malformed link: ignore its argument */ }
-  return { view: m[1], arg };
+  return { view: m[1], arg, query: new URLSearchParams(m[3] || "") };
 }
 
-const routeHash = (view, arg = "") => `#/${view}${arg ? "/" + encodeURIComponent(arg) : ""}`;
+// routeHash returns the URL hash of a view, its argument, and its query,
+// leaving out empty query values.
+function routeHash(view, arg = "", query = {}) {
+  const q = new URLSearchParams(Object.entries(query).filter(([, v]) => v !== undefined && v !== ""));
+  return `#/${view}${arg ? "/" + encodeURIComponent(arg) : ""}${q.size ? "?" + q : ""}`;
+}
 
 // go navigates to a view, adding to history.
-function go(view, arg = "") {
-  const hash = routeHash(view, arg);
+function go(view, arg = "", query = {}) {
+  const hash = routeHash(view, arg, query);
   if (location.hash === hash) applyRoute();
   else location.hash = hash;
 }
 
 // setRoute records where the page is without rendering again, such as
 // after creating a profile that's already shown.
-function setRoute(view, arg = "") {
-  history.replaceState(null, "", routeHash(view, arg));
+function setRoute(view, arg = "", query = {}) {
+  history.replaceState(null, "", routeHash(view, arg, query));
 }
 
 // applyRoute shows what the URL names.
 function applyRoute() {
-  const { view, arg } = parseRoute();
+  const { view, arg, query } = parseRoute();
   if (!location.hash) setRoute(view, arg);
   if (view === "profiles") state.selected = arg;
+  if (view === "logs") setLogFilter(query);
   show(view);
 }
 
@@ -534,74 +542,215 @@ function fillProfileSelects() {
 
 // ---------- overview ----------
 
+// SECURITY_REASONS are the checks that stop attacks rather than apply
+// someone's preferences, so the Overview can count threats apart.
+const SECURITY_REASONS = new Set(["homograph", "tunneling", "rebinding", "newly-registered", "bypass"]);
+
+// startOfToday returns local midnight.
+function startOfToday(now = new Date()) {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+// hourRange describes an hour of the clock, such as "7–8 PM".
+function hourRange(h) {
+  const fmt = new Intl.DateTimeFormat(undefined, { hour: "numeric" });
+  const at = (x) => fmt.format(new Date(2000, 0, 1, x));
+  return `${at(h)}–${at((h + 1) % 24)}`;
+}
+
+const plural = (n, one, many = one + "s") => `${fmtNum(n)} ${n === 1 ? one : many}`;
+
+// renderOverview shows today: the day as a ring, a plain verdict, what
+// needs someone, and where queries went. Every number opens the queries
+// behind it.
 async function renderOverview() {
-  const [status, stats] = await Promise.all([api("GET", "/status"), api("GET", "/stats", { query: { top: 10 } })]);
+  const midnight = startOfToday();
+  const since = midnight.toISOString();
+  const [status, stats] = await Promise.all([
+    api("GET", "/status"),
+    api("GET", "/stats", { query: { top: 6, since, interval: "1h" } }),
+  ]);
   state.status = status;
   setReadOnly(status.policy);
 
-  const total = stats.total || 0;
-  const blocked = stats.by_status?.blocked || 0;
-  const pct = total ? ((blocked / total) * 100).toFixed(1) + "%" : "—";
-  const card = (label, value, sub) =>
-    h("div", { class: "card stat" }, h("div", { class: "value", text: value }), h("div", { class: "label", text: label }), sub && h("div", { class: "label", text: sub }));
-  clear($("stat-cards")).append(
-    card("Queries", fmtNum(total), stats.since ? `since ${fmtTime(stats.since, true)}` : "in the log"),
-    card("Blocked", fmtNum(blocked), pct),
-    card("Rewritten", fmtNum(stats.by_status?.rewritten)),
-    card("Errors", fmtNum(stats.by_status?.error)),
-    status.queries && card("Since start", fmtNum(status.queries.total), `${fmtNum(status.queries.cached)} from cache`),
-  );
+  $("overview-date").textContent = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" }).format(midnight);
 
-  const reasons = Object.entries(stats.by_reason || {}).sort((a, b) => b[1] - a[1]);
-  const maxR = Math.max(1, ...reasons.map((r) => r[1]));
-  const bars = clear($("by-reason"));
-  if (!reasons.length) bars.append(h("p", { class: "muted", text: "Nothing blocked yet." }));
-  for (const [reason, n] of reasons) {
-    const fill = h("span");
-    fill.style.width = `${(n / maxR) * 100}%`;
-    bars.append(h("div", { class: "bar-row" }, h("span", { text: reason }), h("div", { class: "bar" }, fill), h("span", { class: "num", text: fmtNum(n) })));
+  const total = stats.total || 0;
+  const by = stats.by_status || {};
+  const blocked = by.blocked || 0, errors = by.error || 0;
+  const threats = Object.entries(stats.by_reason || {}).reduce((n, [r, c]) => n + (SECURITY_REASONS.has(r) ? c : 0), 0);
+  const today = (extra = {}) => ["logs", "", { since, ...extra }];
+  const link = (text, route, cls = "") => h("a", { class: cls, href: routeHash(...route), text });
+
+  // The ring, and its center, which follows the hour pointed at.
+  const figure = $("ring-figure"), caption = $("ring-caption");
+  const resting = () => { figure.textContent = fmtNum(total); caption.textContent = total === 1 ? "query today" : "queries today"; };
+  const describe = (b, hr, future) => {
+    if (future) return `${hourRange(hr)}: later today`;
+    if (!b || !totalOf(b)) return `${hourRange(hr)}: no queries`;
+    return `${hourRange(hr)}: ${plural(totalOf(b), "query", "queries")}${b.blocked ? `, ${fmtNum(b.blocked)} blocked` : ""}. Open them.`;
+  };
+  const ring = drawRing(stats.timeline || [], {
+    label: `Today, hour by hour: ${plural(total, "query", "queries")}, ${fmtNum(blocked)} blocked. Use the arrow keys to move between hours.`,
+    describe,
+    open: (b, hr) => {
+      const start = new Date(b.start), end = new Date(start.getTime() + 36e5);
+      go("logs", "", { since: start.toISOString(), until: end.toISOString(), status: b.blocked ? "blocked" : "" });
+    },
+  });
+  ring.addEventListener("pointerover", (e) => showHour(e.target.closest(".ring-hour")));
+  ring.addEventListener("focusin", (e) => showHour(e.target.closest(".ring-hour")));
+  ring.addEventListener("pointerleave", resting);
+  ring.addEventListener("focusout", resting);
+  function showHour(g) {
+    if (!g) return;
+    const hr = Number(g.style.getPropertyValue("--i"));
+    const b = (stats.timeline || []).find((x) => new Date(x.start).getHours() === hr);
+    const n = b ? totalOf(b) : 0;
+    figure.textContent = g.classList.contains("future") ? "—" : fmtNum(n);
+    caption.textContent = `${hourRange(hr)}${b?.blocked ? ` · ${fmtNum(b.blocked)} blocked` : ""}`;
+  }
+  clear($("ring")).append(ring);
+  resting();
+
+  // The verdict, in plain words, and what it rests on.
+  const problems = attentionItems(status, stats, since);
+  const verdict = clear($("verdict"));
+  const summary = clear($("summary"));
+  if (problems.length) {
+    verdict.className = "verdict warn";
+    verdict.append(icon("warn"), `${plural(problems.length, "thing needs", "things need")} you`);
+  } else if (!total) {
+    verdict.className = "verdict quiet";
+    verdict.append(icon("overview"), "Waiting for the first query");
+  } else {
+    verdict.className = "verdict ok";
+    verdict.append(icon("security"), "Protected");
+  }
+  if (total) {
+    summary.append(
+      link(plural(total, "query", "queries"), today()), ` so far today from ${plural(stats.clients || 0, "device")}. `,
+      blocked ? `${fmtNum(blocked)} blocked (${((blocked / total) * 100).toFixed(blocked / total < 0.1 ? 1 : 0)}%)` : "Nothing blocked",
+      threats ? `, ${fmtNum(threats)} of them by security protections.` : ".",
+    );
+  } else {
+    summary.append("Nothing has asked this server for a name since midnight. ",
+      link("Connect a device", ["profiles", state.profiles[0]?.id || ""]), " to start.");
   }
 
-  const listing = (el, items) => {
-    clear(el);
-    if (!items?.length) el.append(h("li", { class: "muted", text: "None yet." }));
-    for (const c of items || []) el.append(h("li", {}, h("span", { class: "count", text: fmtNum(c.count) }), h("span", { class: "mono", text: c.name })));
-  };
-  listing($("top-blocked"), stats.top_blocked);
-  listing($("top-clients"), stats.top_clients);
+  const metric = (label, value, route, cls = "") => h("a", { class: "metric " + cls, href: routeHash(...route) },
+    h("span", { class: "metric-value", text: fmtNum(value) }), h("span", { class: "metric-label", text: label }));
+  clear($("metrics")).append(...[
+    metric("blocked", blocked, today({ status: "blocked" }), blocked ? "glaze" : ""),
+    threats ? metric("threats stopped", threats, today({ status: "blocked" }), "glaze") : null,
+    metric(stats.clients === 1 ? "device" : "devices", stats.clients || 0, today()),
+    errors ? metric("failed", errors, today({ status: "error" }), "warn") : null,
+  ].filter(Boolean));
 
+  // What needs someone, or a calm word that nothing does.
+  const attention = clear($("attention"));
+  if (problems.length) {
+    attention.append(h("div", { class: "card attention-list" },
+      h("div", { class: "attention-head" }, buddy("alert"), h("h3", { text: "Needs your attention" })),
+      h("ul", {}, problems.map((p) => h("li", {}, icon("warn"), h("div", {}, h("strong", { text: p.title }), h("p", { class: "muted", text: p.detail })), p.action ? link(p.action[0], p.action[1], "button small") : null)))));
+  } else if (total) {
+    attention.append(h("div", { class: "all-good" }, buddy("calm"), h("span", {}, h("strong", { text: "Nothing needs you." }), " doh is quietly doing its job.")));
+  }
+
+  // Where things went.
+  const rank = (el, items, route, unit, empty) => {
+    clear(el);
+    if (!items.length) { el.append(h("li", { class: "muted rank-empty", text: empty })); return; }
+    const max = Math.max(...items.map((c) => c.count));
+    for (const c of items) {
+      const bar = h("span", { class: "rank-bar" });
+      bar.style.setProperty("--share", (c.count / max).toFixed(3));
+      const body = [h("span", { class: "rank-name", text: c.label || c.name, title: c.name }), h("span", { class: "rank-count", text: fmtNum(c.count), "aria-label": plural(c.count, unit) }), bar];
+      el.append(h("li", {}, route ? h("a", { class: "rank-row", href: routeHash(...route(c)) }, ...body) : h("div", { class: "rank-row" }, ...body)));
+    }
+  };
+  rank($("top-blocked"), stats.top_blocked || [], (c) => today({ status: "blocked", q: c.name }), "time", "Nothing blocked today.");
+  const reasons = Object.entries(stats.by_reason || {}).filter(([r]) => r !== "rewrite").sort((x, y) => y[1] - x[1]).slice(0, 6).map(([name, count]) => ({ name, label: checkName(name), count }));
+  rank($("by-reason"), reasons, (c) => today({ status: "blocked", reason: c.name }), "query", "Nothing blocked today.");
+  rank($("top-clients"), stats.top_clients || [], null, "query", "No devices yet today.");
+
+  renderServer(status);
+}
+
+// buddy returns the character in a mood: "calm" or "alert".
+function buddy(mood) {
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("class", "buddy");
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS(SVG, "use");
+  use.setAttribute("href", "#buddy-" + mood);
+  svg.append(use);
+  return svg;
+}
+
+// attentionItems lists what needs someone today, each with what to do.
+function attentionItems(status, stats, since) {
+  const items = [];
+  const operator = isOperator();
+  if (status.policy?.error) {
+    items.push({ title: "The policy file has a problem", detail: status.policy.error });
+  }
+  for (const l of status.lists || []) {
+    if (l.error) items.push({ title: `The ${l.name} list didn't load`, detail: `${l.error}. Its domains aren't blocked until it does.` });
+  }
+  const errors = stats.by_status?.error || 0;
+  if (errors) {
+    const where = operator && status.upstreams?.length ? ` (${status.upstreams.join(", ")})` : "";
+    items.push({
+      title: `${plural(errors, "query", "queries")} failed today`,
+      detail: operator
+        ? `doh couldn't get answers from its upstream resolvers${where}. Check this server can reach them.`
+        : "The server couldn't get answers for them. If it keeps happening, tell the server's operator.",
+      action: ["See them", ["logs", "", { since, status: "error" }]],
+    });
+  }
+  return items;
+}
+
+// renderServer fills in the details of how the server runs: everything
+// for the operator, and a tenant's own corner for a tenant.
+function renderServer(status) {
   const info = clear($("server-info"));
   const kv = (k, v) => info.append(h("dt", { text: k }), h("dd", {}, v));
   if (!isOperator()) {
-    // Tenants see their own corner of the server.
     $("server-title").textContent = "Your tenant";
+    $("server-summary").textContent = tenantName(status.tenant);
     kv("Tenant", tenantName(status.tenant));
     kv("Profiles", fmtNum(status.policy?.profiles));
-    kv("Query log", status.query_log?.enabled ? "on" : "off");
+    kv("Activity", status.query_log?.enabled ? "kept" : "off");
     kv("Version", status.version || "—");
     return;
   }
+  const up = status.started ? fmtDuration(Date.now() - new Date(status.started)) : "";
+  const failed = (status.lists || []).filter((l) => l.error).length;
+  $("server-summary").textContent = [status.version, up && `up ${up}`, `${plural((status.lists || []).length, "list")}${failed ? `, ${failed} failed` : ""}`].filter(Boolean).join(" · ");
   kv("Version", status.version || "—");
-  kv("Uptime", status.started ? fmtDuration(Date.now() - new Date(status.started)) : "—");
-  for (const [k, v] of Object.entries(status.listeners || {})) kv(`Listener (${k})`, h("span", { class: "mono", text: v }));
+  kv("Up for", up || "—");
+  for (const [k, v] of Object.entries(status.listeners || {})) kv(`Listening (${k})`, h("span", { class: "mono", text: v }));
   kv("Upstreams", h("span", { class: "mono", text: (status.upstreams || []).join(", ") || "—" }));
   kv("Policy", status.policy?.source || "flags");
   if (status.policy?.error) kv("Policy error", h("span", { class: "error", text: status.policy.error }));
   const ql = status.query_log || {};
-  kv("Query log", ql.enabled ? `${fmtNum(ql.entries)} entries in memory${ql.dir ? `, kept ${ql.retention} on disk` : ""}` : "off");
+  kv("Activity", ql.enabled ? `${fmtNum(ql.entries)} queries in memory${ql.dir ? `, kept ${ql.retention} on disk` : ""}` : "off");
+  if (status.queries) kv("Since start", `${plural(status.queries.total, "query", "queries")}, ${fmtNum(status.queries.cached)} from cache`);
 
   const rows = clear($("list-health"));
   if (!status.lists?.length) rows.append(h("tr", {}, h("td", { colspan: 4, class: "muted", text: "No blocklists in use." })));
   for (const l of status.lists || []) {
-    const st = l.error ? h("span", { class: "pill blocked", title: l.error, text: "failed" }) : l.loading ? h("span", { class: "pill rewritten", text: "loading" }) : h("span", { class: "pill allowed", text: "ok" });
-    rows.append(
-      h("tr", {},
-        h("td", {}, h("div", { text: l.name }), h("div", { class: "muted mono", text: l.location })),
-        h("td", { class: "num", text: fmtNum(l.rules) }),
-        h("td", { text: fmtTime(l.loaded, true) }),
-        h("td", {}, st, l.error && h("div", { class: "muted", text: l.error })),
-      ),
-    );
+    const st = l.error ? h("span", { class: "pill blocked", title: l.error }, icon("x"), "failed")
+      : l.loading ? h("span", { class: "pill rewritten" }, "loading")
+      : h("span", { class: "pill allowed" }, icon("check"), "loaded");
+    rows.append(h("tr", {},
+      h("td", {}, h("div", { text: l.name }), h("div", { class: "muted mono small", text: l.location })),
+      h("td", { class: "num", text: fmtNum(l.rules) }),
+      h("td", { text: l.loaded ? fromNow(l.loaded) : "—", title: fmtTime(l.loaded, true) }),
+      h("td", {}, st, l.error && h("div", { class: "muted", text: l.error })),
+    ));
   }
 }
 
@@ -1434,13 +1583,55 @@ async function createProfile(e) {
 
 // ---------- query log ----------
 
+// logFilter returns the Activity view's filter: what its form says, and
+// the time window and reason a link narrowed it to.
 function logFilter() {
   return {
     profile: $("f-profile").value,
     status: $("f-status").value,
     q: $("f-q").value.trim(),
     client: $("f-client").value.trim(),
+    since: state.logScope.since,
+    until: state.logScope.until,
+    reason: state.logScope.reason,
   };
+}
+
+// setLogFilter fills the Activity view's filter from a URL's query.
+function setLogFilter(q) {
+  $("f-profile").value = q.get("profile") || "";
+  $("f-status").value = q.get("status") || "";
+  $("f-q").value = q.get("q") || "";
+  $("f-client").value = q.get("client") || "";
+  const valid = (t) => (t && !Number.isNaN(Date.parse(t)) ? t : "");
+  state.logScope = { since: valid(q.get("since")), until: valid(q.get("until")), reason: q.get("reason") || "" };
+  renderLogScope();
+}
+
+// renderLogScope shows what a link narrowed the Activity view to, each
+// with a way to widen it again.
+function renderLogScope() {
+  const { since, until, reason } = state.logScope;
+  const chips = [];
+  if (since || until) {
+    const fmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+    const day = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" });
+    const text = since && until ? `${day.format(new Date(since))}, ${fmt.format(new Date(since))}–${fmt.format(new Date(until))}`
+      : since ? `Since ${day.format(new Date(since))}, ${fmt.format(new Date(since))}` : `Until ${fmt.format(new Date(until))}`;
+    chips.push(["time", text, () => { state.logScope.since = state.logScope.until = ""; }]);
+  }
+  if (reason) chips.push(["reason", `Why: ${checkName(reason)}`, () => { state.logScope.reason = ""; }]);
+  clear($("log-scope")).append(...chips.map(([, text, drop]) => h("span", { class: "scope-chip" }, text,
+    h("button", { type: "button", class: "ghost", "aria-label": `Remove “${text}”`, onClick: () => { drop(); applyLogFilter(); } }, icon("x")))));
+  $("log-scope").hidden = !chips.length;
+}
+
+// applyLogFilter records the Activity filter in the URL and loads it.
+function applyLogFilter() {
+  setRoute("logs", "", logFilter());
+  renderLogScope();
+  if (state.live) startLive();
+  else loadLogs(true).catch(report);
 }
 
 // CHECKS are the names, for people, of the policy checks that decisions'
@@ -1456,9 +1647,10 @@ const checkName = (id) => CHECKS[id] || id;
 // reasonText says briefly why a query was decided as it was, naming the
 // app or schedule that blocked it.
 function reasonText(e) {
-  if (e.reason === "service" && e.source) return `app: ${serviceName(e.source)}`;
-  if (e.reason === "schedule" && e.source) return `schedule: ${e.source}`;
-  return e.reason || "";
+  if (e.reason === "service" && e.source) return `App: ${serviceName(e.source)}`;
+  if (e.reason === "schedule" && e.source) return `Schedule: ${e.source}`;
+  if (e.reason === "list" && e.source) return `Blocklist: ${listTitle(e.source)}`;
+  return e.reason ? checkName(e.reason) : "";
 }
 
 function logRow(e) {
@@ -2178,9 +2370,7 @@ async function explainDomain(d) {
 }
 
 function findInActivity(d) {
-  $("f-q").value = d;
-  $("f-status").value = "";
-  go("logs");
+  go("logs", "", { q: d });
 }
 
 // changeDomain allows or blocks d in profile p at once, offering to undo.
@@ -2264,11 +2454,7 @@ function wire() {
   $("tenant-cancel").addEventListener("click", () => $("tenant-dialog").close());
   $("create-form").addEventListener("submit", createProfile);
   $("create-cancel").addEventListener("click", () => $("create-dialog").close());
-  $("log-filters").addEventListener("submit", (e) => {
-    e.preventDefault();
-    if (state.live) startLive();
-    else loadLogs(true).catch(report);
-  });
+  $("log-filters").addEventListener("submit", (e) => { e.preventDefault(); applyLogFilter(); });
   $("load-more").addEventListener("click", () => loadLogs(false).catch(report));
   $("live").addEventListener("change", (e) => {
     if (e.target.checked) { clear($("log-rows")); $("load-more").hidden = true; startLive(); }

@@ -25,6 +25,19 @@
     <circle cx="16" cy="16.8" r="10" fill="none" stroke="var(--dough, #e8b46f)" stroke-width="9"/>
     <circle cx="16" cy="15.4" r="10" fill="none" stroke="var(--glaze, #d6336c)" stroke-width="8"/>
   </symbol>
+  <!-- The character: the ring with a face, eyes on the glaze, a little
+       blush. Calm: closed, smiling eyes. Alert: open, round eyes. -->
+  <symbol id="buddy-calm" viewBox="0 0 32 32">
+    <use href="#mark-small"/>
+    <g fill="var(--blush, #ff9fbf)" opacity=".75"><ellipse cx="7.3" cy="12.6" rx="1.5" ry="1"/><ellipse cx="24.7" cy="12.6" rx="1.5" ry="1"/></g>
+    <g fill="none" stroke="var(--face, #2a0a17)" stroke-width="1.35" stroke-linecap="round"><path d="M9.3 8.4q1.1-1.3 2.2 0M20.5 8.4q1.1-1.3 2.2 0"/></g>
+  </symbol>
+  <symbol id="buddy-alert" viewBox="0 0 32 32">
+    <use href="#mark-small"/>
+    <g fill="var(--blush, #ff9fbf)" opacity=".75"><ellipse cx="7.3" cy="12.6" rx="1.5" ry="1"/><ellipse cx="24.7" cy="12.6" rx="1.5" ry="1"/></g>
+    <g fill="var(--face, #2a0a17)"><circle cx="10.4" cy="8" r="1.25"/><circle cx="21.6" cy="8" r="1.25"/></g>
+    <g fill="#fff"><circle cx="10.8" cy="7.6" r=".4"/><circle cx="22" cy="7.6" r=".4"/></g>
+  </symbol>
   <symbol id="i-overview" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.5"/></symbol>
   <symbol id="i-profiles" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></symbol>
   <symbol id="i-log" viewBox="0 0 24 24"><path d="M3 12h3.5l2.5-6 4 12 2.5-6H21"/></symbol>
@@ -113,21 +126,47 @@
 
   <main id="main" tabindex="-1">
     <section id="view-overview" class="view" aria-labelledby="overview-title">
-      <h2 id="overview-title">Overview</h2>
-      <div id="stat-cards" class="cards"></div>
-      <div class="grid2">
-        <div class="card"><h3>Blocked by reason</h3><div id="by-reason" class="bars"></div></div>
-        <div class="card"><h3 id="server-title">Server</h3><dl id="server-info" class="kv"></dl></div>
-        <div class="card"><h3>Top blocked</h3><ol id="top-blocked" class="toplist"></ol></div>
-        <div class="card"><h3>Top clients</h3><ol id="top-clients" class="toplist"></ol></div>
+      <div class="heading-row">
+        <div>
+          <h2 id="overview-title">Today</h2>
+          <p id="overview-date" class="muted overview-date"></p>
+        </div>
       </div>
-      <div class="card" id="list-health-card">
-        <h3>Blocklists</h3>
-        <div class="table-wrap"><table>
-          <thead><tr><th scope="col">List</th><th scope="col">Rules</th><th scope="col">Loaded</th><th scope="col">State</th></tr></thead>
-          <tbody id="list-health"></tbody>
-        </table></div>
+
+      <div class="hero card">
+        <div class="ring-wrap" id="ring-wrap">
+          <div id="ring"></div>
+          <div class="ring-center" aria-hidden="true">
+            <div id="ring-figure" class="ring-figure">—</div>
+            <div id="ring-caption" class="ring-caption">queries</div>
+          </div>
+        </div>
+        <div class="hero-text">
+          <p id="verdict" class="verdict"></p>
+          <p id="summary" class="summary"></p>
+          <div id="metrics" class="metrics"></div>
+        </div>
       </div>
+
+      <div id="attention" class="attention" aria-live="polite"></div>
+
+      <div class="grid3">
+        <section class="card panel" aria-labelledby="top-blocked-title"><h3 id="top-blocked-title">Most blocked</h3><ol id="top-blocked" class="rank"></ol></section>
+        <section class="card panel" aria-labelledby="by-reason-title"><h3 id="by-reason-title">Why things were blocked</h3><div id="by-reason" class="rank"></div></section>
+        <section class="card panel" aria-labelledby="top-clients-title"><h3 id="top-clients-title">Busiest devices</h3><ol id="top-clients" class="rank"></ol></section>
+      </div>
+
+      <details class="card details" id="server-card">
+        <summary><span id="server-title">Server</span><span id="server-summary" class="muted"></span></summary>
+        <dl id="server-info" class="kv"></dl>
+        <div id="list-health-card">
+          <h4>Blocklists</h4>
+          <div class="table-wrap"><table>
+            <thead><tr><th scope="col">List</th><th scope="col" class="num">Rules</th><th scope="col">Loaded</th><th scope="col">State</th></tr></thead>
+            <tbody id="list-health"></tbody>
+          </table></div>
+        </div>
+      </details>
     </section>
 
     <section id="view-profiles" class="view" hidden aria-labelledby="profiles-title">
@@ -153,6 +192,7 @@
         <label>Client <input id="f-client" type="search" placeholder="192.168.1.20" spellcheck="false"></label>
         <button type="submit">Apply</button>
       </form>
+      <div id="log-scope" class="scope" hidden></div>
       <div class="table-wrap"><table class="log">
         <thead><tr><th scope="col">Time</th><th scope="col">Client</th><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Status</th><th scope="col">Reason</th><th scope="col" class="num">ms</th></tr></thead>
         <tbody id="log-rows"></tbody>

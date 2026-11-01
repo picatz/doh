@@ -2,6 +2,7 @@ package querylog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -645,6 +646,10 @@ func TestStats_TopClientsCountDevicesOnce(t *testing.T) {
 		l.Append(e)
 	}
 
+	stats := l.Stats(Filter{}, 2)
+	if stats.Clients != 5 || len(stats.TopClients) != 2 {
+		t.Errorf("Clients = %d with %d top clients, want 5 distinct and the top 2", stats.Clients, len(stats.TopClients))
+	}
 	got := map[string]int{}
 	for _, c := range l.Stats(Filter{}, -1).TopClients {
 		got[c.Name] = c.Count
@@ -652,5 +657,74 @@ func TestStats_TopClientsCountDevicesOnce(t *testing.T) {
 	want := map[string]int{"living-room-tv": 3, "iphone": 1, "iphone (2)": 1, "tablet": 1, "laptop": 1}
 	if !maps.Equal(got, want) {
 		t.Errorf("top clients = %v, want %v", got, want)
+	}
+}
+
+func TestTimeline(t *testing.T) {
+	l, err := Open(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	// A day in New York, from local midnight: each bucket is an hour of
+	// that clock.
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("no time zone database:", err)
+	}
+	midnight := time.Date(2026, 11, 2, 0, 0, 0, 0, ny)
+	at := func(h, m int) time.Time {
+		return midnight.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute)
+	}
+	for _, e := range []Entry{
+		{Time: midnight.Add(-time.Minute), Status: StatusBlocked}, // yesterday
+		{Time: at(0, 0), Status: StatusAllowed},
+		{Time: at(0, 59), Status: StatusBlocked},
+		{Time: at(7, 30), Status: StatusAllowed},
+		{Time: at(7, 31), Status: StatusRewritten},
+		{Time: at(23, 59), Status: StatusError},
+		{Time: at(24, 0), Status: StatusAllowed}, // tomorrow
+	} {
+		l.Append(e)
+	}
+
+	buckets, err := l.Timeline(Filter{Since: midnight, Until: at(24, 0)}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 24 || !buckets[0].Start.Equal(midnight) || !buckets[23].Start.Equal(at(23, 0)) {
+		t.Fatalf("%d buckets from %v to %v, want 24 hourly from midnight", len(buckets), buckets[0].Start, buckets[len(buckets)-1].Start)
+	}
+	for i, want := range map[int]Bucket{
+		0:  {Allowed: 1, Blocked: 1},
+		7:  {Allowed: 1, Rewritten: 1},
+		23: {Errors: 1},
+		12: {},
+	} {
+		got := buckets[i]
+		got.Start = time.Time{}
+		if got != want {
+			t.Errorf("hour %d = %+v, want %+v", i, got, want)
+		}
+	}
+
+	// Filters apply, and a partial last interval is counted.
+	buckets, _ = l.Timeline(Filter{Since: midnight, Until: at(7, 45), Status: StatusAllowed}, time.Hour)
+	if len(buckets) != 8 || buckets[7].Allowed != 1 || buckets[0].Blocked != 0 {
+		t.Errorf("filtered timeline = %+v", buckets)
+	}
+
+	for name, f := range map[string]Filter{
+		"no start":   {},
+		"end before": {Since: midnight, Until: midnight.Add(-time.Hour)},
+		"too many":   {Since: midnight.Add(-2000 * time.Hour), Until: midnight},
+	} {
+		if _, err := l.Timeline(f, time.Hour); !errors.Is(err, ErrTimeline) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := l.Timeline(Filter{Since: midnight}, 0); !errors.Is(err, ErrTimeline) {
+		t.Errorf("zero interval: %v", err)
 	}
 }
