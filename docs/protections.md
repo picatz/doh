@@ -11,6 +11,7 @@
 - [Query log](#query-log)
 - [Admin API and web UI](#admin-api-and-web-ui)
 - [Reliability](#reliability)
+- [Sharing a server](#sharing-a-server)
 - [Following another server's policy](#following-another-servers-policy)
 - [Troubleshooting](#troubleshooting)
 - [Limits](#limits)
@@ -216,7 +217,7 @@ The API is documented in [`internal/api`](../internal/api/api.go). Policy change
 The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `setup`, `people`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), and `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory). They refuse to send a token over plain HTTP to anything but a loopback address.
 
 > [!WARNING]
-> The admin listener also serves profiles and process details. Keep it on a loopback or private address, or behind a TLS-terminating proxy you control, and treat both tokens as secrets.
+> The admin listener also serves metrics and profiling. On a loopback listener that isn't published with `--admin-origin`, profiling stays open to the machine's own users, so `go tool pprof` works; once published, `/debug` needs the operator's credentials. Metrics stay open for scrapers. Treat both tokens as secrets.
 
 ## Reliability
 
@@ -225,6 +226,30 @@ DNS failing is the network failing, so the server tries hard not to:
 - **Upstreams answer in a race, not a queue.** They're asked in order of preference, but if one hasn't answered after 300 milliseconds, or fails, the next is asked too, and the first answer wins ([RFC 8305](https://www.rfc-editor.org/rfc/rfc8305.html) style). An upstream that fails twice in a row is asked last, with a backoff from five seconds to five minutes, until it answers again. `doh status` shows each upstream's health.
 - **Stale answers beat no answers.** If every upstream fails, names resolved in the last day are answered from the cache ([RFC 8767](https://www.rfc-editor.org/rfc/rfc8767.html)), with a 30-second TTL so clients come back soon, and an [Extended DNS Error](https://www.rfc-editor.org/rfc/rfc8914.html#section-4.4) saying so. They're logged with reason `stale`, and counted in `doh_stale_answers_total`.
 - **Lists and policies keep working offline.** Blocklists are cached on disk and kept if a refresh fails; a policy followed from another server is cached too.
+
+## Sharing a server
+
+One server can serve several households, each managing its own profiles, devices, query log, and people, without seeing or affecting anyone else's. Each household is a **tenant**; profiles without a tenant belong to the server's **operator**.
+
+```console
+$ doh tenant create smiths --name "The Smiths" --network 192.168.10.0/24
+$ doh tenant invite smiths
+https://admin.dns.example.com/#signin=…
+```
+
+The invitation signs in the tenant's first admin. They add a passkey, create profiles, connect devices, and invite others in their household, with `doh ui` style links of their own. What they can't do is bounded by the operator, since their profiles run on someone else's server:
+
+| A tenant's profiles… | Because |
+| --- | --- |
+| select clients by address only within the tenant's `networks`, which can't overlap other tenants' | Otherwise one tenant could claim `0.0.0.0/0` and capture everyone's plain-DNS clients. Without networks, devices select profiles by DoH path or host name only. |
+| use preset blocklists only, unless the operator sets `custom_lists`, which allows HTTPS URLs, never files or plain HTTP | The server downloads lists, so arbitrary locations would let a tenant read the server's files or reach its private network. |
+| number at most `max_profiles` (20 by default) | Bounds what one tenant can make the server do. |
+
+Tenants see only their own profiles, query log entries, stats, people, and setup instructions. Everything else, including other tenants' profiles, looks like it doesn't exist. The raw policy, tenant management, server status details (traffic, lists, listeners), and profiling are the operator's alone. API tokens are operator credentials; tenants sign in with links and passkeys. Each tenant's passkey requirement is its own, so a newly invited household can sign in with its first link even when the operator uses passkeys.
+
+Profile IDs and device names share one namespace, since they appear in DoH paths and host names, so a tenant can learn that an ID is taken, though not whose it is.
+
+Removing a tenant (`doh tenant delete`) requires removing or moving its profiles first, and removes its people.
 
 ## Following another server's policy
 
