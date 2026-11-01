@@ -93,15 +93,20 @@ Examples:
 var commandBlocklistPresets = &cobra.Command{
 	Use:   "presets",
 	Short: "List the preset blocklists",
-	Args:  cobra.NoArgs,
+	Long: `List the preset blocklists, by category: security lists block malware,
+phishing, scams, and abuse; privacy lists block ads and trackers; parental
+lists block content some households restrict. Name them with doh serve
+--blocklist, in a profile's lists, or with "doh profile set".`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-		for _, name := range blocklist.PresetNames() {
-			marker := ""
+		fmt.Fprintln(w, "NAME\tCATEGORY\tLIST\tURL")
+		for _, p := range blocklist.Catalog {
+			name := p.Name
 			if name == blocklist.DefaultPreset {
-				marker = " (default)"
+				name += " (default)"
 			}
-			fmt.Fprintf(w, "%s%s\t%s\n", name, marker, blocklist.Presets[name])
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, p.Category, p.Title, p.URL)
 		}
 		return w.Flush()
 	},

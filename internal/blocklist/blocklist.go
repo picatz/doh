@@ -244,6 +244,26 @@ func (l *List) Lookup(name string) Verdict {
 	return Verdict{}
 }
 
+// Exception returns the exception that keeps name from being blocked, if
+// the list has one.
+func (l *List) Exception(name string) (Verdict, bool) {
+	if l == nil {
+		return Verdict{}, false
+	}
+	rule, source, ok := l.match(l.allow, strings.ToLower(strings.TrimSuffix(name, ".")), true)
+	return Verdict{Rule: rule, Source: source}, ok
+}
+
+// Block returns the rule that blocks name, ignoring exceptions, if the list
+// has one.
+func (l *List) Block(name string) (Verdict, bool) {
+	if l == nil {
+		return Verdict{}, false
+	}
+	rule, source, ok := l.match(l.block, strings.ToLower(strings.TrimSuffix(name, ".")), false)
+	return Verdict{Blocked: ok, Rule: rule, Source: source}, ok
+}
+
 // match finds the most specific rule in rules that applies to name: an
 // exact match, or a rule covering subdomains of one of its parents. allow
 // reports whether rules are exceptions.

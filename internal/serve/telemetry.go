@@ -21,7 +21,9 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/upstream"
+	"github.com/picatz/doh/internal/webui"
 )
 
 // Admin endpoint paths, served only on the admin listener.
@@ -42,13 +44,14 @@ const slowQuerySnapshotInterval = time.Minute
 // as in tests) don't collide, and so the admin listener exposes only what
 // the server chooses.
 type telemetry struct {
-	queries     expvar.Map // by transport: https, udp, tcp
-	responses   expvar.Map // by response code, such as NOERROR
-	upstreams   expvar.Map // by upstream: *upstreamMetrics
-	slowQueries expvar.Int
-	blocked     expvar.Map // by blocklist source
-	cacheHits   expvar.Int
-	cacheMisses expvar.Int
+	queries        expvar.Map // by transport: https, udp, tcp
+	responses      expvar.Map // by response code, such as NOERROR
+	upstreams      expvar.Map // by upstream: *upstreamMetrics
+	slowQueries    expvar.Int
+	blocked        expvar.Map // by blocklist source
+	blockedReasons expvar.Map // by the check that blocked: list, rebinding, ...
+	cacheHits      expvar.Int
+	cacheMisses    expvar.Int
 
 	recorder *flightRecorder
 }
@@ -71,6 +74,7 @@ func newTelemetry() *telemetry {
 	t.responses.Init()
 	t.upstreams.Init()
 	t.blocked.Init()
+	t.blockedReasons.Init()
 	return t
 }
 
@@ -90,6 +94,30 @@ func (t *telemetry) observe(ctx context.Context, transport string, d time.Durati
 	}
 }
 
+// totals sums the counters into the totals the status endpoint reports.
+func (t *telemetry) totals() map[string]int64 {
+	sum := func(m *expvar.Map) (n int64) {
+		m.Do(func(kv expvar.KeyValue) {
+			if v, ok := kv.Value.(*expvar.Int); ok {
+				n += v.Value()
+			}
+		})
+		return n
+	}
+
+	var servfail int64
+	if v, ok := t.responses.Get(dns.RcodeToString[dns.RcodeServerFailure]).(*expvar.Int); ok {
+		servfail = v.Value()
+	}
+
+	return map[string]int64{
+		"total":   sum(&t.queries),
+		"blocked": sum(&t.blockedReasons),
+		"cached":  t.cacheHits.Value(),
+		"errors":  servfail,
+	}
+}
+
 // instrument wraps e to record its queries under name. Upstreams with the
 // same name, such as "1.1.1.1" and "udp://1.1.1.1:53", share counters.
 func (t *telemetry) instrument(name string, e upstream.Exchanger) upstream.Exchanger {
@@ -98,12 +126,13 @@ func (t *telemetry) instrument(name string, e upstream.Exchanger) upstream.Excha
 		m = &upstreamMetrics{}
 		t.upstreams.Set(name, m)
 	}
-	return &instrumented{Exchanger: e, metrics: m}
+	return &instrumented{Exchanger: e, name: name, metrics: m}
 }
 
 // instrumented is an [upstream.Exchanger] that records its queries.
 type instrumented struct {
 	upstream.Exchanger
+	name    string
 	metrics *upstreamMetrics
 }
 
@@ -115,6 +144,8 @@ func (i *instrumented) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, 
 	i.metrics.seconds.Add(time.Since(start).Seconds())
 	if err != nil {
 		i.metrics.errors.Add(1)
+	} else if answered, ok := ctx.Value(upstreamKey{}).(*string); ok {
+		*answered = i.name
 	}
 
 	return resp, err
@@ -128,6 +159,10 @@ func (s *Server) adminHandler() http.Handler {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "ok\n")
 	})
+
+	mux.Handle(api.Prefix+"/", s.apiHandler())
+	mux.Handle("GET /{$}", webui.Handler())
+	mux.Handle("GET "+webui.AssetPrefix, webui.Handler())
 
 	mux.HandleFunc("GET "+MetricsPath, s.serveMetrics)
 	mux.HandleFunc("GET "+VarsPath, s.serveVars)
@@ -176,8 +211,8 @@ func (s *Server) serveVars(w http.ResponseWriter, r *http.Request) {
 
 	t := s.telemetry
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `{"doh": {"queries": %s, "responses": %s, "blocked": %s, "cache": {"hits": %s, "misses": %s}, "upstreams": %s, "slow_queries": %s}, "runtime": %s, "build": %s}`+"\n",
-		t.queries.String(), t.responses.String(), t.blocked.String(), t.cacheHits.String(), t.cacheMisses.String(), t.upstreams.String(), t.slowQueries.String(), runtimeJSON, buildJSON)
+	fmt.Fprintf(w, `{"doh": {"queries": %s, "responses": %s, "blocked": %s, "blocked_reasons": %s, "cache": {"hits": %s, "misses": %s}, "upstreams": %s, "slow_queries": %s}, "runtime": %s, "build": %s}`+"\n",
+		t.queries.String(), t.responses.String(), t.blocked.String(), t.blockedReasons.String(), t.cacheHits.String(), t.cacheMisses.String(), t.upstreams.String(), t.slowQueries.String(), runtimeJSON, buildJSON)
 }
 
 // serveMetrics writes the server's counters in the Prometheus text
@@ -196,6 +231,7 @@ func (s *Server) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	counter("doh_queries_total", "Queries received, by transport.", &t.queries, "transport")
 	counter("doh_responses_total", "Responses sent, by DNS response code.", &t.responses, "rcode")
 	counter("doh_blocked_total", "Queries blocked, by blocklist source.", &t.blocked, "source")
+	counter("doh_blocked_reasons_total", "Queries blocked, by the check that blocked them.", &t.blockedReasons, "reason")
 
 	upstreamCounter := func(name, help string, value func(*upstreamMetrics) string) {
 		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
@@ -325,7 +361,9 @@ func (s *Server) ServeAdmin(ctx context.Context, ln net.Listener) error {
 	// Profiles and traces take a while to collect, so don't cut them off.
 	srv.WriteTimeout = 0
 
+	s.setListener("admin", ln.Addr())
 	s.logger.Info("serving admin",
+		slog.String("ui", "http://"+ln.Addr().String()+"/"),
 		slog.String("metrics", "http://"+ln.Addr().String()+MetricsPath),
 		slog.String("vars", "http://"+ln.Addr().String()+VarsPath),
 		slog.String("pprof", "http://"+ln.Addr().String()+PprofPath),

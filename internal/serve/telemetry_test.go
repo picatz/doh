@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -179,7 +180,7 @@ func TestTelemetry_CountsRejectedDNSQueries(t *testing.T) {
 
 	notify := new(dns.Msg).SetQuestion("example.com.", dns.TypeSOA)
 	notify.Opcode = dns.OpcodeNotify
-	s.answerDNS(t.Context(), "udp", notify)
+	s.answerDNS(t.Context(), "udp", netip.Addr{}, notify)
 
 	if got := s.telemetry.queries.Get("udp"); got == nil || got.String() != "1" {
 		t.Errorf("got %v UDP queries, want the rejected query counted", got)
@@ -198,7 +199,7 @@ func TestTelemetry_SharesCountersForEquivalentUpstreams(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s.answerDNS(t.Context(), "udp", new(dns.Msg).SetQuestion("example.com.", dns.TypeA))
+	s.answerDNS(t.Context(), "udp", netip.Addr{}, new(dns.Msg).SetQuestion("example.com.", dns.TypeA))
 
 	m, ok := s.telemetry.upstreams.Get("udp://" + resolver).(*upstreamMetrics)
 	if !ok {
@@ -216,7 +217,7 @@ func TestServer_CacheDisabled(t *testing.T) {
 	}
 
 	for range 2 {
-		s.answerDNS(t.Context(), "udp", new(dns.Msg).SetQuestion("example.com.", dns.TypeA))
+		s.answerDNS(t.Context(), "udp", netip.Addr{}, new(dns.Msg).SetQuestion("example.com.", dns.TypeA))
 	}
 
 	var queries int64

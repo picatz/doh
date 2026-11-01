@@ -85,6 +85,28 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v time.Duration) { c.Blocklist.Refresh = serve.Duration(v) }),
 	option((*pflag.FlagSet).Int, "cache-size", serve.DefaultCacheSize, "most upstream answers to cache, for as long as their records live; 0 disables the cache",
 		func(c *serve.Config, v int) { c.Cache.Size, c.Cache.Disabled = v, v == 0 }),
+	option((*pflag.FlagSet).String, "data-dir", "", "directory for the policy, admin API tokens, query log, and registration cache (default $STATE_DIRECTORY, or doh in the user config dir)",
+		func(c *serve.Config, v string) { c.DataDir = v }),
+	option((*pflag.FlagSet).String, "policy", "", `policy file (default policy.json in --data-dir), URL of another doh server's /api/v1/policy to follow read-only, or "off"`,
+		func(c *serve.Config, v string) { c.Policy.Source = v }),
+	option((*pflag.FlagSet).String, "policy-token-file", "", "file holding the bearer token for a --policy URL",
+		func(c *serve.Config, v string) { c.Policy.TokenFile = v }),
+	option((*pflag.FlagSet).StringSlice, "forward", nil, "send names under a domain to other upstreams, as domain=upstream, such as lan=192.168.1.1",
+		func(c *serve.Config, v []string) {
+			c.Forward = make(map[string][]string, len(v))
+			for _, f := range v {
+				domain, up, _ := strings.Cut(f, "=")
+				c.Forward[domain] = append(c.Forward[domain], up)
+			}
+		}),
+	option((*pflag.FlagSet).StringSlice, "trusted-proxy", nil, "addresses or prefixes of reverse proxies whose X-Forwarded-For names DoH clients",
+		func(c *serve.Config, v []string) { c.TrustedProxies = v }),
+	option((*pflag.FlagSet).Bool, "no-query-log", false, "don't log queries",
+		func(c *serve.Config, v bool) { c.QueryLog.Disabled = v }),
+	option((*pflag.FlagSet).Duration, "query-log-retention", 0, "how long to keep daily query log files (default 168h)",
+		func(c *serve.Config, v time.Duration) { c.QueryLog.Retention = serve.Duration(v) }),
+	option((*pflag.FlagSet).String, "admin-token-file", "", "file holding the admin API token (default admin.token in --data-dir, generated)",
+		func(c *serve.Config, v string) { c.Admin.TokenFile = v }),
 	option((*pflag.FlagSet).String, "admin-listen", "", "serve metrics, pprof, and flight recorder snapshots on this address, such as localhost:9090",
 		func(c *serve.Config, v string) { c.Admin.Listen = v }),
 	option((*pflag.FlagSet).Bool, "flight-recorder", false, "keep recent execution traces in memory, to snapshot from the admin listener",
@@ -136,6 +158,15 @@ With --dns-listen, plain DNS is also served over UDP and TCP, so any device can
 use the server as its resolver. With --dns-listen and no TLS or --plaintext
 setting, only plain DNS is served.
 
+Profiles group devices under their own policy: protections (DNS rebinding,
+look-alike domains, newly registered domains, tunneling, bypass methods),
+blocklists, allowed and denied domains, safe search, and local rewrites. They
+live in a policy file in --data-dir, created with secure defaults on first run,
+and can be changed by hand, through the admin API and web UI on --admin-listen,
+or with "doh profile", "doh allow", and "doh deny". Devices choose a profile by
+address, or over DoH by path: /dns-query/{profile}/{device}. A server can follow
+another server's policy with --policy https://.../api/v1/policy.
+
 Settings are read from, in increasing order of precedence: a JSON --config
 file, DOH_* environment variables (e.g. DOH_TLS_CERT for --tls-cert, with
 commas separating lists), and flags.
@@ -151,13 +182,22 @@ Examples:
   doh serve --tls-cert cert.pem --tls-key key.pem --upstream 192.168.1.1
 
   # Local network resolver: plain DNS in, encrypted DNS out
-  doh serve --dns-listen :53`,
+  doh serve --dns-listen :53
+
+  # ...with the web UI and admin API, and the router answering for .lan
+  doh serve --dns-listen :53 --admin-listen localhost:9090 --forward lan=192.168.1.1
+
+  # A home resolver following the policy of a server in the cloud
+  doh serve --dns-listen :53 --policy https://doh.example.com:9090/api/v1/policy --policy-token-file reader.token`,
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		config, err := commandServeFlags.load()
 		if err != nil {
 			return err
+		}
+		if config.DataDir == "" {
+			config.DataDir = serve.DefaultDataDir()
 		}
 
 		logger, err := config.Log.Logger()

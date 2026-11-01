@@ -8,7 +8,8 @@
 `doh` is a single binary for [DNS over HTTPS](https://www.rfc-editor.org/rfc/rfc8484.html) (DoH):
 
 - **`doh query`** looks up records from several DoH servers at once ([Cloudflare](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/), [Google](https://developers.google.com/speed/public-dns/docs/doh), and [Quad9](https://quad9.net/news/blog/doh-with-quad9-dns-servers/) by default, or your own), streaming the results as JSON.
-- **`doh serve`** runs a DoH server that forwards queries to upstream resolvers over DoH, DNS-over-TLS, or plain DNS, with TLS from your own certificates or [Let's Encrypt](https://letsencrypt.org/).
+- **`doh serve`** runs a DoH and plain DNS server that forwards queries to upstream resolvers over DoH, DNS-over-TLS, or plain DNS, with TLS from your own certificates or [Let's Encrypt](https://letsencrypt.org/). It protects every device that uses it: threat intelligence, DNS rebinding and look-alike domain protection, newly registered domain checks, profiles for groups of devices, a query log you can trace and undo blocks from, and a web UI.
+- **`doh status`**, **`profile`**, **`allow`**, **`log`**, **`explain`**, and **`doctor`** manage a running server, and check that a device's DNS actually goes through it.
 
 It's also a Go library: [`pkg/doh`](https://pkg.go.dev/github.com/picatz/doh/pkg/doh) provides the client and server building blocks.
 
@@ -100,9 +101,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/doh serve --dns-listen :53
+ExecStart=/usr/local/bin/doh serve --dns-listen :53 --admin-listen localhost:9090
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 DynamicUser=yes
+# Keeps the policy, tokens, and query log in /var/lib/doh, and lists in /var/cache/doh.
+StateDirectory=doh
+CacheDirectory=doh
 Restart=on-failure
 
 [Install]
@@ -138,9 +142,54 @@ $ doh blocklist check www.google-analytics.com
 > [!TIP]
 > `doh` pairs with [CUBE](https://github.com/picatz/cube), which blocks in Chrome using the same list formats. CUBE sees full URLs and pages, so it can block paths and hide page elements; `doh` sees only names, but covers every app and device on the network.
 
+### Protections and profiles
+
+Out of the box, `doh serve` blocks known malware, phishing, and scam domains, DNS rebinding attacks, and look-alike internationalized domains such as `аpple.com` (with a Cyrillic `а`), for every device that uses it. More protections are a toggle away: newly registered domains, DNS tunneling, bypass methods, safe search, and lists of ads, trackers, and content households restrict.
+
+Protections belong to **profiles**, so a group of devices gets the rules it needs. Streaming sticks running sketchy apps can get stricter rules and closer logging, and the kids' tablets safe search, without affecting anyone else. Devices join a profile by address, or over DoH by path, as `https://doh.example.com/dns-query/kids/tablet`:
+
+```console
+$ sudo doh serve --dns-listen :53 --admin-listen localhost:9090
+$ doh profile create streaming --name "Streaming sticks"
+$ doh profile set streaming clients=192.168.1.40/29 security.newly_registered=true lists=threat-intel,hagezi-pro
+```
+
+When something is blocked, find it in the log, see exactly why, and allow it, for one profile or all of them:
+
+```console
+$ doh log --blocked --profile streaming -n 1
+TIME      CLIENT        STATUS   TYPE  NAME                    REASON
+21:04:11  192.168.1.42  blocked  A     fresh-cdn.example.com   newly-registered
+$ doh explain fresh-cdn.example.com --profile streaming
+$ doh allow example.com --profile streaming
+```
+
+Or do all of it in the web UI: `doh ui` prints a sign-in link.
+
+Profiles live in `policy.json` in the data directory, created with the secure defaults on first run, so they can be kept in version control and edited by hand as well as through the UI and API. A home server can also follow the policy of a server in the cloud, so one place manages a family's devices. See **[Profiles and protections](docs/protections.md)** for every protection, how each works, and its limits.
+
+### Your network's own names
+
+Special-use and private names, such as `localhost`, `home.arpa`, and reverse lookups of private addresses, are answered locally rather than leaked upstream. To resolve your network's hostnames, forward their domain to the router, or give names fixed answers with a profile's rewrites:
+
+```console
+$ sudo doh serve --dns-listen :53 --forward lan=192.168.1.1 --forward 168.192.in-addr.arpa=192.168.1.1
+```
+
+### Checking a device
+
+`doh doctor` checks that a device's DNS goes through doh, and finds what routes around it, such as Tailscale's MagicDNS or Firefox's own DNS over HTTPS:
+
+```console
+$ doh doctor
+✓ system nameservers: 192.168.1.10
+✓ 192.168.1.10:53 is answered by doh (profile=default, device=laptop, client=192.168.1.23)
+✓ Firefox will use this network's resolver
+```
+
 ### Observability
 
-Add `--admin-listen` to serve metrics and profiling on a separate, operator-only address:
+Add `--admin-listen` to serve the web UI, the [admin API](docs/protections.md#admin-api-and-web-ui), metrics, and profiling on a separate, operator-only address:
 
 ```console
 $ doh serve --dns-listen :53 --admin-listen localhost:9090
@@ -149,7 +198,9 @@ level=INFO msg="serving admin" metrics=http://127.0.0.1:9090/metrics vars=http:/
 
 | Endpoint | What it serves |
 | --- | --- |
-| `/metrics` | [Prometheus](https://prometheus.io/) counters: queries by transport, responses by code, per-upstream queries, errors, and latency, slow queries, and Go runtime gauges |
+| `/` | The web UI, signed in to with a token from `doh ui` |
+| `/api/v1/` | The admin API, with the `admin.token` or `reader.token` from the data directory |
+| `/metrics` | [Prometheus](https://prometheus.io/) counters: queries by transport, responses by code, blocks by list and by reason, per-upstream queries, errors, and latency, slow queries, and Go runtime gauges |
 | `/debug/vars` | The same counters as JSON, with [runtime metrics](https://pkg.go.dev/runtime/metrics) and build information |
 | `/debug/pprof/` | [pprof](https://pkg.go.dev/net/http/pprof) profiles |
 | `/debug/flightrecorder` | With `--flight-recorder`, a [flight recorder](https://go.dev/blog/flight-recorder) snapshot of the last few seconds of execution, for `go tool trace` |
@@ -205,7 +256,7 @@ The server also exposes a `GET /healthz` liveness endpoint, logs every request a
 resp, err := doh.Query(ctx, http.DefaultClient, doh.Cloudflare, new(dns.Msg).SetQuestion("example.com.", dns.TypeA))
 ```
 
-And serving DoH is a handler away:
+And serving DoH is a handler away (or, with `doh.NewHandler`, mounted on any path pattern):
 
 ```go
 mux := doh.NewServerMux(doh.Forwarder(http.DefaultClient, doh.Cloudflare, doh.Google))
@@ -265,6 +316,15 @@ With --dns-listen, plain DNS is also served over UDP and TCP, so any device can
 use the server as its resolver. With --dns-listen and no TLS or --plaintext
 setting, only plain DNS is served.
 
+Profiles group devices under their own policy: protections (DNS rebinding,
+look-alike domains, newly registered domains, tunneling, bypass methods),
+blocklists, allowed and denied domains, safe search, and local rewrites. They
+live in a policy file in --data-dir, created with secure defaults on first run,
+and can be changed by hand, through the admin API and web UI on --admin-listen,
+or with "doh profile", "doh allow", and "doh deny". Devices choose a profile by
+address, or over DoH by path: /dns-query/{profile}/{device}. A server can follow
+another server's policy with --policy https://.../api/v1/policy.
+
 Settings are read from, in increasing order of precedence: a JSON --config
 file, DOH_* environment variables (e.g. DOH_TLS_CERT for --tls-cert, with
 commas separating lists), and flags.
@@ -282,38 +342,52 @@ Examples:
   # Local network resolver: plain DNS in, encrypted DNS out
   doh serve --dns-listen :53
 
+  # ...with the web UI and admin API, and the router answering for .lan
+  doh serve --dns-listen :53 --admin-listen localhost:9090 --forward lan=192.168.1.1
+
+  # A home resolver following the policy of a server in the cloud
+  doh serve --dns-listen :53 --policy https://doh.example.com:9090/api/v1/policy --policy-token-file reader.token
+
 Usage:
   doh serve [flags]
 
 Flags:
-      --acme-cache-dir string        directory for ACME accounts and certificates (default user cache dir)
-      --acme-directory string        ACME directory URL (default Let's Encrypt)
-      --acme-domain strings          domains to obtain ACME certificates for, enabling ACME
-      --acme-email string            contact email for the ACME account
-      --acme-http-listen string      address to answer ACME HTTP-01 challenges on, such as :80
-      --admin-listen string          serve metrics, pprof, and flight recorder snapshots on this address, such as localhost:9090
-      --allow-domain strings         never block these domains and their subdomains
-      --block-domain strings         also block these domains and their subdomains
-      --block-response string        answer blocked names with nxdomain, or null (0.0.0.0 and ::) (default "nxdomain")
-      --blocklist strings            block names on these lists: presets (default, easylist, easyprivacy, hagezi-light, hagezi-normal, hagezi-pro, oisd-big, oisd-small, stevenblack), URLs, or files, as [name=]location
-      --blocklist-refresh duration   how often to reload blocklists (default 24h0m0s)
-      --cache-size int               most upstream answers to cache, for as long as their records live; 0 disables the cache (default 10000)
-      --config string                path to a JSON config file
-      --dns-listen string            also serve plain DNS over UDP and TCP on this address, such as :53
-      --flight-recorder              keep recent execution traces in memory, to snapshot from the admin listener
-  -h, --help                         help for serve
-      --listen string                address to listen on (default ":443", or ":8080" with --plaintext)
-      --log-format string            log format: text or json (default "text")
-      --log-level string             log level: debug, info, warn, or error (default "info")
-      --path string                  URI path of the DoH endpoint (default "/dns-query")
-      --plaintext                    serve unencrypted HTTP, behind a TLS-terminating proxy
-      --slow-query duration          save a flight recorder snapshot to --trace-dir when a query takes this long
-      --timeout duration             maximum time to answer each query (default 5s)
-      --tls-cert string              TLS certificate chain file (PEM)
-      --tls-key string               TLS private key file (PEM)
-      --tls-min-version string       oldest TLS version to accept: 1.2 or 1.3 (TLS 1.3 is preferred either way) (default "1.2")
-      --trace-dir string             directory for slow query flight recorder snapshots
-      --upstream strings             upstream resolvers, tried in order (default [https://cloudflare-dns.com/dns-query,https://dns.google/dns-query])
+      --acme-cache-dir string          directory for ACME accounts and certificates (default user cache dir)
+      --acme-directory string          ACME directory URL (default Let's Encrypt)
+      --acme-domain strings            domains to obtain ACME certificates for, enabling ACME
+      --acme-email string              contact email for the ACME account
+      --acme-http-listen string        address to answer ACME HTTP-01 challenges on, such as :80
+      --admin-listen string            serve metrics, pprof, and flight recorder snapshots on this address, such as localhost:9090
+      --admin-token-file string        file holding the admin API token (default admin.token in --data-dir, generated)
+      --allow-domain strings           never block these domains and their subdomains
+      --block-domain strings           also block these domains and their subdomains
+      --block-response string          answer blocked names with nxdomain, or null (0.0.0.0 and ::) (default "nxdomain")
+      --blocklist strings              block names on these lists: presets (default, abused-tlds, adult, bypass-services, dynamic-dns, easylist, easyprivacy, gambling, hagezi-light, hagezi-normal, hagezi-pro, oisd-big, oisd-small, scams, social, stevenblack, threat-intel, threat-intel-full), URLs, or files, as [name=]location
+      --blocklist-refresh duration     how often to reload blocklists (default 24h0m0s)
+      --cache-size int                 most upstream answers to cache, for as long as their records live; 0 disables the cache (default 10000)
+      --config string                  path to a JSON config file
+      --data-dir string                directory for the policy, admin API tokens, query log, and registration cache (default $STATE_DIRECTORY, or doh in the user config dir)
+      --dns-listen string              also serve plain DNS over UDP and TCP on this address, such as :53
+      --flight-recorder                keep recent execution traces in memory, to snapshot from the admin listener
+      --forward strings                send names under a domain to other upstreams, as domain=upstream, such as lan=192.168.1.1
+  -h, --help                           help for serve
+      --listen string                  address to listen on (default ":443", or ":8080" with --plaintext)
+      --log-format string              log format: text or json (default "text")
+      --log-level string               log level: debug, info, warn, or error (default "info")
+      --no-query-log                   don't log queries
+      --path string                    URI path of the DoH endpoint (default "/dns-query")
+      --plaintext                      serve unencrypted HTTP, behind a TLS-terminating proxy
+      --policy string                  policy file (default policy.json in --data-dir), URL of another doh server's /api/v1/policy to follow read-only, or "off"
+      --policy-token-file string       file holding the bearer token for a --policy URL
+      --query-log-retention duration   how long to keep daily query log files (default 168h)
+      --slow-query duration            save a flight recorder snapshot to --trace-dir when a query takes this long
+      --timeout duration               maximum time to answer each query (default 5s)
+      --tls-cert string                TLS certificate chain file (PEM)
+      --tls-key string                 TLS private key file (PEM)
+      --tls-min-version string         oldest TLS version to accept: 1.2 or 1.3 (TLS 1.3 is preferred either way) (default "1.2")
+      --trace-dir string               directory for slow query flight recorder snapshots
+      --trusted-proxy strings          addresses or prefixes of reverse proxies whose X-Forwarded-For names DoH clients
+      --upstream strings               upstream resolvers, tried in order (default [https://cloudflare-dns.com/dns-query,https://dns.google/dns-query])
 ```
 
 </details>
