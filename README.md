@@ -175,11 +175,14 @@ On a server with a public name, add `--dot-listen :853` so Android's Private DNS
 ```console
 $ doh serve --acme-domain dns.example.com --dot-listen :853 --admin-listen localhost:9090
 $ doh setup kids --device tablet --platform android
-DoT host  tablet--kids.dns.example.com
+Connect a device to profile kids as tablet
+  DNS-over-HTTPS  https://dns.example.com/dns-query/kids/tablet
+  DNS-over-TLS    tablet--kids.dns.example.com
 
 Android
   1. Open Settings, then Network & internet (or Connections), then Private DNS.
-  2. Choose Private DNS provider hostname, enter tablet--kids.dns.example.com, and save.
+  2. Choose Private DNS provider hostname, enter tablet--kids.dns.example.com,
+     and save.
 $ doh setup kids --device ipad --mobileconfig ipad.mobileconfig   # open it on the iPad
 ```
 
