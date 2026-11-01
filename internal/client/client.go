@@ -158,33 +158,43 @@ func (c *Client) httpClient(stream bool) *http.Client {
 	}
 }
 
-// do sends req and decodes a successful JSON response into out, unless
-// out is nil, returning the response headers.
-func (c *Client) do(req *http.Request, out any) (http.Header, error) {
+// send sends req and returns a successful response's headers and body,
+// read up to [MaxResponseSize], or the error the server reported.
+func (c *Client) send(req *http.Request) (http.Header, []byte, error) {
 	resp, err := c.httpClient(false).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseSize+1))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(body) > MaxResponseSize {
-		return nil, fmt.Errorf("doh: response exceeds %d bytes", MaxResponseSize)
+		return nil, nil, fmt.Errorf("doh: response exceeds %d bytes", MaxResponseSize)
 	}
 
 	if resp.StatusCode >= 300 {
-		return resp.Header, decodeError(resp.StatusCode, body)
+		return resp.Header, nil, decodeError(resp.StatusCode, body)
+	}
+	return resp.Header, body, nil
+}
+
+// do sends req and decodes a successful JSON response into out, unless
+// out is nil, returning the response headers.
+func (c *Client) do(req *http.Request, out any) (http.Header, error) {
+	header, body, err := c.send(req)
+	if err != nil {
+		return header, err
 	}
 
-	if out != nil && resp.StatusCode != http.StatusNoContent {
+	if out != nil && len(body) > 0 {
 		if err := json.Unmarshal(body, out); err != nil {
-			return resp.Header, fmt.Errorf("doh: decoding response: %w", err)
+			return header, fmt.Errorf("doh: decoding response: %w", err)
 		}
 	}
-	return resp.Header, nil
+	return header, nil
 }
 
 // decodeError turns an error response into an [*Error], using the body as
@@ -227,6 +237,44 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) (h
 
 // segment escapes s as a single path segment.
 func segment(s string) string { return "/" + url.PathEscape(s) }
+
+// Setup returns how to point a device at profile. device, if set, names
+// the device in the settings, so the server's logs show it.
+func (c *Client) Setup(ctx context.Context, profile, device string) (*api.Setup, error) {
+	var setup api.Setup
+	if _, err := c.get(ctx, "/profiles"+segment(profile)+"/setup", deviceQuery(device), &setup); err != nil {
+		return nil, err
+	}
+	return &setup, nil
+}
+
+// MobileConfig returns an Apple configuration profile that points a device
+// at profile over DNS-over-HTTPS, or with protocol "tls", DNS-over-TLS. An
+// empty protocol lets the server choose, preferring DoH.
+func (c *Client) MobileConfig(ctx context.Context, profile, device, protocol string) ([]byte, error) {
+	q := deviceQuery(device)
+	if protocol != "" {
+		q.Set("protocol", protocol)
+	}
+
+	req, err := c.request(ctx, http.MethodGet, "/profiles"+segment(profile)+"/apple.mobileconfig", q, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", api.MobileConfigType)
+
+	_, body, err := c.send(req)
+	return body, err
+}
+
+// deviceQuery returns the query parameters naming device, if any.
+func deviceQuery(device string) url.Values {
+	q := url.Values{}
+	if device != "" {
+		q.Set("device", device)
+	}
+	return q
+}
 
 // Status returns the server's status.
 func (c *Client) Status(ctx context.Context) (*api.Status, error) {

@@ -196,3 +196,29 @@ func TestIcon_NoScript(t *testing.T) {
 		}
 	}
 }
+
+// TestScript_TokenOnlyInAuthorizationHeader checks that the API token is
+// only ever sent in the Authorization header, never in a URL, where it
+// would end up in logs, history, and Referer headers. Downloads, such as
+// configuration profiles, are fetched with the header and saved through
+// object URLs instead.
+func TestScript_TokenOnlyInAuthorizationHeader(t *testing.T) {
+	js := readStatic(t, "app.js")
+
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`[?&](access_)?token=`),
+		regexp.MustCompile(`(href|src|location(\.href)?)\s*[:=][^;\n]*state\.token`),
+		regexp.MustCompile(`window\.open\(`),
+	} {
+		if loc := re.FindStringIndex(js); loc != nil {
+			t.Errorf("app.js may put the token in a URL: %q", js[loc[0]:min(loc[1]+40, len(js))])
+		}
+	}
+
+	if got := strings.Count(js, "state.token"); got == 0 || !strings.Contains(js, "Authorization: `Bearer ${state.token}`") {
+		t.Error("app.js doesn't send the token as a bearer token")
+	}
+	if !strings.Contains(js, "URL.revokeObjectURL") {
+		t.Error("object URLs for downloads aren't revoked")
+	}
+}
