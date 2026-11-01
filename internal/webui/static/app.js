@@ -32,6 +32,7 @@ const state = {
   draft: null, // the schedule being added or edited, kept across renders
   appQuery: "", // the Apps search, kept across renders
   logScope: { since: "", until: "", reason: "" }, // what a link narrowed Activity to
+  profileTab: "", // the profile editor's tab; empty for the profile's default
 };
 
 // ---------- DOM helpers ----------
@@ -501,7 +502,11 @@ function setRoute(view, arg = "", query = {}) {
 function applyRoute() {
   const { view, arg, query } = parseRoute();
   if (!location.hash) setRoute(view, arg);
-  if (view === "profiles") state.selected = arg;
+  if (view === "profiles") {
+    if (state.selected !== arg) state.profileTab = "";
+    state.selected = arg;
+    state.profileTab = query.get("tab") || state.profileTab;
+  }
   if (view === "logs") setLogFilter(query);
   show(view);
 }
@@ -1031,6 +1036,33 @@ async function downloadMobileConfig(setup, protocol, button) {
   }
 }
 
+// PROFILE_TABS are the profile editor's tabs: what each holds, and how
+// many things it has turned on, for its badge.
+const PROFILE_TABS = [
+  { id: "connect", title: "Connect", icon: "arrow", count: () => 0 },
+  { id: "protection", title: "Protection", icon: "security", count: (p) => Object.values(p.security || {}).filter((v) => v === true).length + (p.lists || []).length + (p.safe_search ? 1 : 0) },
+  { id: "apps", title: "Apps & schedules", icon: "block", count: (p) => (p.services || []).length + (p.schedules || []).length },
+  { id: "rules", title: "Allow & deny", icon: "allow", count: (p) => (p.allow || []).length + (p.deny || []).length + (p.block_tlds || []).length },
+  { id: "devices", title: "Devices", icon: "system", count: (p) => (p.devices || []).length + (p.clients || []).length + (p.rewrites || []).length },
+  { id: "settings", title: "Settings", icon: "profiles", count: () => 0 },
+];
+
+// defaultTab is where a profile opens: how to connect a device, for one
+// no device uses yet, and otherwise its protection.
+const defaultTab = (p) => (!(p.devices || []).length && !(p.clients || []).length && p.id !== "default" ? "connect" : "protection");
+
+// profileSummary says in a line what a profile does.
+function profileSummary(p) {
+  const on = Object.values(p.security || {}).filter((v) => v === true).length + (p.safe_search ? 1 : 0);
+  return [
+    count(on, "protection"),
+    count((p.lists || []).length, "list"),
+    (p.services || []).length ? `${count(p.services.length, "app")} blocked` : null,
+    (p.schedules || []).length ? count(p.schedules.length, "schedule") : null,
+    count((p.devices || []).length, "device"),
+  ].filter(Boolean).join(" · ");
+}
+
 function renderEditor() {
   const box = $("profile-editor");
   const p = profile();
@@ -1038,30 +1070,61 @@ function renderEditor() {
   clear(box);
   if (!p) return;
 
-  const id = p.id;
-  const sec = p.security || {};
-  const card = h("div", { class: "card" });
+  const tab = PROFILE_TABS.some((t) => t.id === state.profileTab) ? state.profileTab : defaultTab(p);
+  const card = h("div", { class: "card editor" });
   box.append(card);
 
-  card.append(
-    h("div", { class: "editor-head" },
-      h("div", {},
-        h("h2", { text: p.name || p.id }),
-        h("div", { class: "muted mono", text: id }),
-        isOperator() && p.tenant ? h("span", { class: "badge tenant", text: `Tenant: ${tenantName(p.tenant)}` }) : null,
-      ),
-      edit(h("button", { type: "button", class: "danger", text: "Delete profile", onClick: () => deleteProfile(p) })),
+  card.append(h("div", { class: "editor-head" },
+    h("div", { class: "editor-title" },
+      h("h2", { text: p.name || p.id }),
+      h("p", { class: "muted editor-sub" },
+        h("span", { class: "mono", text: p.id }),
+        isOperator() && p.tenant ? h("span", { class: "badge tenant", text: tenantName(p.tenant) }) : null,
+        h("span", { text: profileSummary(p) })),
     ),
-    connectSection(p),
-  );
+  ));
 
-  // Name
-  const name = edit(h("input", { value: p.name || "", "aria-label": "Profile name" }));
-  const nameForm = h("form", { class: "chip-form" }, name, edit(h("button", { type: "submit", text: "Rename" })));
-  nameForm.addEventListener("submit", (e) => { e.preventDefault(); patchProfile(id, { name: name.value.trim() }); });
-  card.append(section("Name", "", nameForm));
+  // The tabs: a tablist with arrow keys between tabs, each a URL.
+  const tabs = h("div", { class: "tabs-strip", role: "tablist", "aria-label": `${p.name || p.id} settings` });
+  for (const t of PROFILE_TABS) {
+    const n = t.count(p);
+    const b = h("button", {
+      type: "button", role: "tab", id: `tab-${t.id}`, "aria-selected": String(t.id === tab), "aria-controls": "profile-panel",
+      tabindex: t.id === tab ? 0 : -1, onClick: () => openTab(p.id, t.id),
+    }, icon(t.icon), h("span", { text: t.title }), n ? h("span", { class: "tab-count", text: fmtNum(n), "aria-label": `, ${n} on` }) : null);
+    tabs.append(b);
+  }
+  tabs.addEventListener("keydown", (e) => {
+    const all = [...tabs.querySelectorAll("[role=tab]")];
+    const i = all.indexOf(document.activeElement);
+    const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: all.length - 1 }[e.key];
+    if (next === undefined || i < 0) return;
+    e.preventDefault();
+    const t = all[(next + all.length) % all.length];
+    t.focus();
+    t.click();
+  });
+  const panel = h("div", { class: "tab-panel", id: "profile-panel", role: "tabpanel", "aria-labelledby": `tab-${tab}` });
+  card.append(tabs, panel);
+  panel.append(...{ connect: connectTab, protection: protectionTab, apps: appsTab, rules: rulesTab, devices: devicesTab, settings: settingsTab }[tab](p));
+  requestAnimationFrame(() => tabs.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+}
 
-  // Security features
+// openTab shows one of a profile's tabs, in the URL too.
+function openTab(id, tab) {
+  state.profileTab = tab;
+  setRoute("profiles", id, { tab });
+  renderEditor();
+  document.getElementById(`tab-${tab}`)?.focus({ preventScroll: true });
+}
+
+function connectTab(p) {
+  return [connectSection(p)];
+}
+
+function protectionTab(p) {
+  const id = p.id;
+  const sec = p.security || {};
   const feats = state.catalog.features || [];
   const featToggle = (f) => {
     const isTop = f.id === "safe_search";
@@ -1077,10 +1140,6 @@ function renderEditor() {
     }
     return toggleRow(f.title, f.description, checked, (on) => (isTop ? { safe_search: on } : { security: { [f.id]: on } }), extra);
   };
-  card.append(section("Security", "Built-in protections. Changes apply to new queries at once.",
-    h("div", { class: "toggle-list" }, feats.filter((f) => f.category !== "parental").map(featToggle))));
-
-  // Lists
   const lists = p.lists || [];
   const presets = state.catalog.presets || [];
   const presetNames = new Set(presets.map((x) => x.name));
@@ -1089,19 +1148,25 @@ function renderEditor() {
   }));
   const group = (cat) => h("div", { class: "toggle-list" }, presets.filter((x) => x.category === cat).map(listToggle));
   const custom = lists.filter((l) => !presetNames.has(l) && l !== "default");
-  card.append(
+  return [
+    section("Security", "Built-in protections. Changes apply to new queries at once.",
+      h("div", { class: "toggle-list" }, feats.filter((f) => f.category !== "parental").map(featToggle))),
     section("Threat lists", "Blocklists of known-bad domains.", group("security")),
     section("Privacy", "Ads and trackers.", group("privacy")),
     section("Parental", "Content some households restrict.",
       h("div", { class: "toggle-list" }, feats.filter((f) => f.category === "parental").map(featToggle)), group("parental")),
     customListsSection(p, custom, lists),
-    appsSection(p),
-    schedulesSection(p),
-  );
+  ];
+}
 
-  // Allow and deny
+function appsTab(p) {
+  return [appsSection(p), schedulesSection(p)];
+}
+
+function rulesTab(p) {
+  const id = p.id;
   const refresh = (pp) => { renderProfiles(); return pp; };
-  card.append(
+  return [
     section("Allowed domains", "Never blocked by anything in this profile, with their subdomains.",
       chipEditor(p.allow, "example.com", "Allow domain", (v) => domainAction(id, "allow", v).then(refresh), (v) => domainAction(id, "allow", v, true).then(refresh))),
     section("Denied domains", "Always blocked, with their subdomains.",
@@ -1110,9 +1175,11 @@ function renderEditor() {
       chipEditor(p.block_tlds, "zip", "Block TLD",
         (v) => patchProfile(id, { block_tlds: [...(p.block_tlds || []), v.replace(/^\./, "")] }),
         (v) => patchProfile(id, { block_tlds: (p.block_tlds || []).filter((t) => t !== v) }))),
-  );
+  ];
+}
 
-  // Devices and clients
+function devicesTab(p) {
+  const id = p.id;
   const devices = p.devices || [];
   const devRows = h("div", { class: "rows" });
   for (const d of devices) {
@@ -1133,15 +1200,7 @@ function renderEditor() {
     patchProfile(id, { devices: [...devices, { name: n, addrs }] });
   });
   const bounds = networkHint(p);
-  card.append(
-    section("Devices", "Named clients. Their addresses select this profile, and logs show their names.", bounds, devRows, devForm),
-    section("Networks", "Addresses or prefixes whose queries use this profile. The most specific match wins.", bounds?.cloneNode(true),
-      chipEditor(p.clients, "192.168.1.0/24", "Client prefix",
-        (v) => patchProfile(id, { clients: [...(p.clients || []), v] }),
-        (v) => patchProfile(id, { clients: (p.clients || []).filter((c) => c !== v) }))),
-  );
 
-  // Rewrites
   const rewrites = p.rewrites || [];
   const rwRows = h("div", { class: "rows" });
   for (const rw of rewrites) {
@@ -1160,19 +1219,41 @@ function renderEditor() {
     const addrs = rAddrs.value.split(/[\s,]+/).filter(Boolean);
     if (n && addrs.length) patchProfile(id, { rewrites: [...rewrites, { name: n, addrs }] });
   });
-  card.append(section("Rewrites", "Answer names locally, such as a home server with its LAN address. Use *.domain for subdomains.", rwRows, rwForm));
 
-  // Behavior
+  return [
+    section("Devices", "Named clients. Their addresses select this profile, and logs show their names.", bounds, devRows, devForm),
+    section("Networks", "Addresses or prefixes whose queries use this profile. The most specific match wins.", bounds?.cloneNode(true),
+      chipEditor(p.clients, "192.168.1.0/24", "Client prefix",
+        (v) => patchProfile(id, { clients: [...(p.clients || []), v] }),
+        (v) => patchProfile(id, { clients: (p.clients || []).filter((c) => c !== v) }))),
+    section("Rewrites", "Answer names locally, such as a home server with its LAN address. Use *.domain for subdomains.", rwRows, rwForm),
+  ];
+}
+
+function settingsTab(p) {
+  const id = p.id;
+  const name = edit(h("input", { value: p.name || "", "aria-label": "Profile name" }));
+  const nameForm = h("form", { class: "chip-form" }, name, edit(h("button", { type: "submit", text: "Rename" })));
+  nameForm.addEventListener("submit", (e) => { e.preventDefault(); patchProfile(id, { name: name.value.trim() }); });
+
   const resp = edit(h("select", { "aria-label": "Block response" },
     h("option", { value: "nxdomain", text: "NXDOMAIN (name doesn't exist)" }),
     h("option", { value: "null", text: "Null address (0.0.0.0 and ::)" })));
   resp.value = p.block_response || "nxdomain";
   resp.addEventListener("change", () => patchProfile(id, { block_response: resp.value }));
-  card.append(section("Behavior", "",
-    h("div", { class: "toggle-list" },
-      h("div", { class: "toggle" }, h("div", { class: "title", text: "Block response" }), h("div", { class: "control" }, resp), h("div", { class: "desc", text: "How blocked names are answered." })),
-      toggleRow("Don't log this profile", "Keep its queries out of the query log. They're still counted in metrics.", !!p.logging?.disabled, (on) => ({ logging: { disabled: on } })),
-    )));
+
+  return [
+    section("Name", "", nameForm),
+    section("Behavior", "",
+      h("div", { class: "toggle-list" },
+        h("div", { class: "toggle" }, h("div", { class: "title", text: "Block response" }), h("div", { class: "control" }, resp), h("div", { class: "desc", text: "How blocked names are answered." })),
+        toggleRow("Don't log this profile", "Keep its queries out of Activity. They're still counted in metrics.", !!p.logging?.disabled, (on) => ({ logging: { disabled: on } })),
+      )),
+    section("Delete this profile", p.id === "default"
+      ? "Its devices fall back to other profiles. Without a default profile, clients that match no other profile are refused."
+      : "Its devices fall back to other profiles, such as the default.",
+    edit(h("button", { type: "button", class: "danger", text: `Delete ${p.name || p.id}`, onClick: () => deleteProfile(p) }))),
+  ];
 }
 
 // ---------- apps and schedules ----------
