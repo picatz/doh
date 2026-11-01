@@ -51,7 +51,8 @@
 //
 // The logs, stream, and stats endpoints take the filter parameters that
 // querylog.ParseFilter reads: profile, device, client, status, reason, q,
-// since, until, limit, and page_token. Stats also takes top.
+// since, until, limit, and page_token. Stats also takes top, and interval,
+// such as 1h, for a timeline from since.
 //
 // [RFC 6750, Section 2.1]: https://www.rfc-editor.org/rfc/rfc6750.html#section-2.1
 // [RFC 9110, Section 13.1.1]: https://www.rfc-editor.org/rfc/rfc9110.html#section-13.1.1

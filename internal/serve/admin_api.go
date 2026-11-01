@@ -571,7 +571,21 @@ func (s *Server) apiStats(w http.ResponseWriter, r *http.Request) {
 		}
 		top = n
 	}
-	writeJSON(w, http.StatusOK, s.qlog.Stats(f, top))
+	stats := s.qlog.Stats(f, top)
+	if v := r.URL.Query().Get("interval"); v != "" {
+		interval, err := time.ParseDuration(v)
+		if err != nil || interval < time.Minute {
+			writeError(w, http.StatusBadRequest, "interval must be a duration of a minute or more, such as 1h")
+			return
+		}
+		timeline, err := s.qlog.Timeline(f, interval)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "a timeline needs since, and at most 1000 intervals before until or now")
+			return
+		}
+		stats.Timeline = timeline
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // apiStream streams new log entries as server-sent events.
