@@ -1,10 +1,7 @@
 package serve
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -12,10 +9,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/picatz/doh/internal/atomicfile"
 
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/policy"
@@ -154,7 +152,7 @@ func (st *policyStore) save(p *policy.Policy) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(st.path, b, 0o600); err != nil {
+	if err := atomicfile.WriteFile(st.path, b, 0o600); err != nil {
 		return fmt.Errorf("policy: saving %s: %w", st.path, err)
 	}
 
@@ -299,39 +297,4 @@ func readToken(name string) (string, error) {
 		return "", fmt.Errorf("reading token: %s is empty", name)
 	}
 	return token, nil
-}
-
-// writeFileAtomic writes data to name through a temporary file in the
-// same directory, renamed into place, so readers never see a partial
-// file.
-func writeFileAtomic(name string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(name)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		return err
-	}
-	tmp := filepath.Join(dir, "."+filepath.Base(name)+"."+hex.EncodeToString(suffix[:])+".tmp")
-
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(f, bytes.NewReader(data))
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp, name)
-	}
-	if err != nil {
-		_ = os.Remove(tmp)
-	}
-	return err
 }

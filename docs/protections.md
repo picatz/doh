@@ -249,14 +249,35 @@ Passkeys need the UI opened at a host name: on a loopback admin listener that's 
 
 ### API tokens
 
-On first run the server generates two tokens in the data directory: `admin.token` for everything, and `reader.token` for read-only access (`GET` requests), for the CLI, automation, and following another server's policy. Requests send `Authorization: Bearer <token>`. Browsers' state-changing requests from other origins are refused, whatever they carry.
+On first run the server generates two tokens in the data directory: `admin.token` for everything, and `reader.token` for read-only access (`GET` requests). They're the operator's own credentials, for the CLI on the server and for bootstrapping; they reach every tenant and never expire, so give automation a service account instead. Requests send `Authorization: Bearer <token>`. Browsers' state-changing requests from other origins are refused, whatever they carry. To replace a token, delete its file and restart the server.
+
+### Service accounts
+
+Scripts, home automation, CI jobs, and other servers each get their own identity: a service account. It acts for one tenant, or for the operator, as a `reader` or an `admin`, and sees exactly what a person in that role would.
+
+```sh
+doh service-account create "Home Assistant"                    # a reader, with a key that lasts 90 days
+doh sa create Backups --admin --secret-file backups.key        # writes the key to a new file, readable only by you
+doh sa key rotate "Home Assistant" --grace 1h                  # a new key; the old one works for another hour
+doh sa key revoke "Home Assistant" 3f2a9c0d1e4b5a67            # stops a key at once
+```
+
+The web UI's Security view does the same.
+
+- **Keys always expire**, within a year (90 days by default). A key's secret, `doh_sa_<key ID>_<256 random bits>`, is shown once and kept only as a SHA-256 hash; the prefix makes a leaked key easy to spot and to scan for.
+- **Rotation has no downtime.** Rotating adds a new key and lets the old one keep working for up to a week, so whatever uses it can switch over first.
+- **Revocation is immediate.** Revoking a key, or deleting its account, stops it at once. Deleting a tenant deletes its service accounts, and a key whose tenant no longer exists is refused regardless.
+- **Service accounts can't manage identities.** Even an admin one can't create sign-in links, list or remove people, or create, rotate, or revoke service account keys, its own included. A leaked key can't mint a way back in, or a longer life for itself.
+- **Every change is logged**: who created, rotated, or revoked which key, as `admin: service account ...` lines in the server's log.
+
+Service accounts and their key hashes live in `service-accounts.json` in the data directory. Last-used times are kept to the hour, so authenticating rarely writes to disk.
 
 The API is documented in [`internal/api`](../internal/api/api.go). Policy changes are conditional on the `ETag` with `If-Match`, so two people editing at once can't overwrite each other's changes (`412 Precondition Failed`). Profiles are changed with JSON merge patches.
 
-The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `setup`, `people`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), and `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory). They refuse to send a token over plain HTTP to anything but a loopback address.
+The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `setup`, `people`, `service-account`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), and `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory). They refuse to send a token over plain HTTP to anything but a loopback address.
 
 > [!WARNING]
-> The admin listener also serves metrics and profiling. On a loopback listener that isn't published with `--admin-origin`, profiling stays open to the machine's own users, so `go tool pprof` works; once published, `/debug` needs the operator's credentials. Metrics stay open for scrapers. Treat both tokens as secrets.
+> The admin listener also serves metrics and profiling. On a loopback listener that isn't published with `--admin-origin`, profiling stays open to the machine's own users, so `go tool pprof` works; once published, `/debug` needs the operator's credentials. Metrics stay open for scrapers. Treat both tokens, and service account keys, as secrets.
 
 ## Reliability
 
@@ -284,7 +305,7 @@ The invitation signs in the tenant's first admin. They add a passkey, create pro
 | use preset blocklists only, unless the operator sets `custom_lists`, which allows HTTPS URLs, never files or plain HTTP | The server downloads lists, so arbitrary locations would let a tenant read the server's files or reach its private network. |
 | number at most `max_profiles` (20 by default) | Bounds what one tenant can make the server do. |
 
-Tenants see only their own profiles, query log entries, stats, people, and setup instructions. Everything else, including other tenants' profiles, looks like it doesn't exist. The raw policy, tenant management, server status details (traffic, lists, listeners), and profiling are the operator's alone. API tokens are operator credentials; tenants sign in with links and passkeys. Each tenant's passkey requirement is its own, so a newly invited household can sign in with its first link even when the operator uses passkeys.
+Tenants see only their own profiles, query log entries, stats, people, and setup instructions. Everything else, including other tenants' profiles, looks like it doesn't exist. The raw policy, tenant management, server status details (traffic, lists, listeners), and profiling are the operator's alone. The server's own API tokens are operator credentials; tenants sign in with links and passkeys, and give their automation [service accounts](#service-accounts) of their own. Each tenant's passkey requirement is its own, so a newly invited household can sign in with its first link even when the operator uses passkeys.
 
 Profile IDs and device names share one namespace, since they appear in DoH paths and host names, so a tenant can learn that an ID is taken, though not whose it is.
 
@@ -330,5 +351,6 @@ Common findings:
 - Newly registered domain checks depend on registries' RDAP services. Many country-code TLDs (such as `.io`, `.sh`, `.de`, and `.co`) have none, so their names are never blocked as new. Registries see which domains are looked up, though not who asked, and each domain is looked up at most about once a month.
 - There's no "newly active" signal: a long-registered domain that has just started resolving isn't detected.
 - Blocking works on names. Apps that hard-code IP addresses, or use encrypted DNS services that aren't blocked, aren't filtered; bypass protection and the `bypass-services` list make that harder, not impossible.
+- Service account keys are bearer credentials: whoever holds one can use it until it expires or is revoked. They aren't yet bound to the client that holds them, and short-lived credentials from a workload's own identity provider aren't supported yet.
 - Profile IDs in DoH paths are identifiers, not credentials. To keep strangers off a public server, remove the `default` profile and use unguessable profile IDs, or restrict who can reach it.
 - Client addresses identify devices only as well as the network does. Behind NAT, a whole network shares one address; over DoH, use per-device paths instead. Apps on the same device can't be told apart.

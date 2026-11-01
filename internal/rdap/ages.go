@@ -7,10 +7,11 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/picatz/doh/internal/atomicfile"
 
 	"golang.org/x/sync/singleflight"
 )
@@ -316,36 +317,5 @@ func (a *Ages) Save() error {
 		return err
 	}
 
-	return writeFileAtomic(a.Path, data)
-}
-
-// writeFileAtomic writes data to a temporary file next to name, then
-// renames it into place, so readers never see a partial file.
-func writeFileAtomic(name string, data []byte) error {
-	dir := filepath.Dir(name)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-
-	f, err := os.CreateTemp(dir, filepath.Base(name)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-
-	err = f.Chmod(0o600)
-	if err == nil {
-		_, err = f.Write(data)
-	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		err = os.Rename(tmp, name)
-	}
-	if err != nil {
-		_ = os.Remove(tmp)
-	}
-
-	return err
+	return atomicfile.WriteFile(a.Path, data, 0o600)
 }

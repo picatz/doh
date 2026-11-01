@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/picatz/doh/internal/serviceaccount"
 	"io"
 	"log/slog"
 	"net"
@@ -87,6 +88,7 @@ type Server struct {
 	// tokens authorize admin API requests, and signin signs browsers in
 	// to the web UI, once the admin listener knows its address.
 	tokens        tokens
+	accounts      *serviceaccount.Store
 	signin        atomic.Pointer[signin.Service]
 	signinLimiter *ratelimit.Limiter
 
@@ -165,6 +167,10 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	}
 
 	if err := s.configureTokens(); err != nil {
+		s.Close()
+		return nil, err
+	}
+	if err := s.configureServiceAccounts(); err != nil {
 		s.Close()
 		return nil, err
 	}

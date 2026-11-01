@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"cmp"
 	"context"
 	"net/http"
 	"net/netip"
@@ -13,14 +14,17 @@ import (
 // principal is who's making an admin API request: what they may do, and
 // for whom.
 //
-// API tokens belong to the server's operator. Signed-in browsers act for
-// their person's tenant, or as the operator if the person has none. The
-// operator manages every tenant; a tenant's people see and change only
+// The server's own API tokens belong to its operator. Signed-in browsers
+// act for their person's tenant, or as the operator if the person has
+// none, and service accounts for theirs. The operator manages every
+// tenant; a tenant's people and service accounts see and change only
 // their tenant's profiles, query log, people, and setup, and other
-// tenants' profiles look like they don't exist.
+// tenants' look like they don't exist.
 type principal struct {
-	role   role
-	tenant string // "" for the operator
+	role    role
+	tenant  string // "" for the operator
+	account string // the service account's ID, if it's one
+	by      string // who, for the audit log
 }
 
 // operator reports whether p is the server's operator.
@@ -60,11 +64,25 @@ func (s *Server) sessionPrincipal(r *http.Request) (principal, bool) {
 	if !ok || sess.Pending {
 		return principal{}, false
 	}
-	p := principal{role: roleReader, tenant: sess.Tenant}
+	p := principal{role: roleReader, tenant: sess.Tenant, by: cmp.Or(sess.Person, "sign-in link")}
 	if sess.Role == signin.RoleAdmin {
 		p.role = roleAdmin
 	}
 	return p, true
+}
+
+// peopleOnly refuses requests from service accounts. Managing who can
+// sign in, and service accounts themselves, takes a person or the
+// operator's token, so a leaked key can't mint sign-in links, more keys,
+// or a longer life for itself.
+func peopleOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if principalOf(r).account != "" {
+			writeError(w, http.StatusForbidden, "service accounts can't manage people or service accounts")
+			return
+		}
+		next(w, r)
+	}
 }
 
 // operatorOnly refuses requests from anyone but the operator.

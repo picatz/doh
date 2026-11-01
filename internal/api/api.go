@@ -39,6 +39,13 @@
 //	GET    /api/v1/people                         People
 //	DELETE /api/v1/people/{id}                    204
 //	DELETE /api/v1/people/{id}/passkeys/{passkey} 204
+//	GET    /api/v1/service-accounts               ServiceAccounts
+//	POST   /api/v1/service-accounts               ServiceAccountRequest → 201 serviceaccount.Account
+//	GET    /api/v1/service-accounts/{id}          serviceaccount.Account
+//	DELETE /api/v1/service-accounts/{id}          204
+//	POST   /api/v1/service-accounts/{id}/keys     KeyRequest → 201 NewKey
+//	POST   /api/v1/service-accounts/{id}/keys/{key}/rotate   RotateKeyRequest → 201 NewKey
+//	DELETE /api/v1/service-accounts/{id}/keys/{key}          204
 //	GET    /api/v1/profiles/{id}/setup?device=    Setup
 //	GET    /api/v1/profiles/{id}/apple.mobileconfig?device=&protocol=   Apple configuration profile
 //
@@ -56,6 +63,7 @@ import (
 
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/policy"
+	"github.com/picatz/doh/internal/serviceaccount"
 	"github.com/picatz/doh/internal/services"
 	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
@@ -354,6 +362,49 @@ type SigninLink struct {
 	// PasskeyRequired reports that the link only starts signing in: someone
 	// has a passkey, so one must finish it.
 	PasskeyRequired bool `json:"passkey_required"`
+}
+
+// ServiceAccounts lists service accounts.
+type ServiceAccounts struct {
+	ServiceAccounts []serviceaccount.Account `json:"service_accounts"`
+}
+
+// ServiceAccountRequest creates a service account.
+type ServiceAccountRequest struct {
+	// Name says what it's for, such as "Home Assistant".
+	Name string `json:"name"`
+
+	// Role is "admin" or "reader", the default.
+	Role string `json:"role,omitempty"`
+
+	// Tenant is the tenant it acts for. Only the operator may choose; a
+	// tenant's service accounts are always its own.
+	Tenant string `json:"tenant,omitempty"`
+}
+
+// KeyRequest adds a key to a service account.
+type KeyRequest struct {
+	// Expires is when the key stops working: within a year. It defaults
+	// to 90 days from now.
+	Expires time.Time `json:"expires,omitzero"`
+}
+
+// RotateKeyRequest replaces a key with a new one.
+type RotateKeyRequest struct {
+	// Expires is when the new key stops working, as in [KeyRequest].
+	Expires time.Time `json:"expires,omitzero"`
+
+	// PreviousExpires is when the old key stops working: now, the
+	// default, or within a week, so automation can switch over.
+	PreviousExpires time.Time `json:"previous_expires,omitzero"`
+}
+
+// NewKey is a service account's new key, with its secret. The secret is
+// shown only this once; send it as a bearer token.
+type NewKey struct {
+	Account string             `json:"account"`
+	Key     serviceaccount.Key `json:"key"`
+	Secret  string             `json:"secret"`
 }
 
 // People lists who can sign in with passkeys.

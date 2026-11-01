@@ -265,28 +265,38 @@ func TestScript_PasskeyFallbacks(t *testing.T) {
 // script learns who they are.
 func TestIndex_OperatorOnlyStartsHidden(t *testing.T) {
 	index := readStatic(t, "index.html")
-	for _, el := range []string{
-		`<button type="button" class="nav" data-view="tenants" id="nav-tenants" hidden>`,
-		`<div id="c-tenant-row" hidden>`,
-		`<section id="view-tenants" class="view" hidden`,
-	} {
-		if !strings.Contains(index, el) {
-			t.Errorf("index.html lacks %s", el)
+	for _, id := range []string{"nav-tenants", "c-tenant-row", "sa-tenant-row", "view-tenants"} {
+		tag := regexp.MustCompile(`<[a-z]+[^>]*\sid="` + id + `"[^>]*>`).FindString(index)
+		if !regexp.MustCompile(`\shidden[\s>]`).MatchString(tag) {
+			t.Errorf("#%s doesn't start hidden: %q", id, tag)
 		}
 	}
 }
 
-// TestScheduleModule runs the schedule module's own tests, which check
-// that "active now" agrees with the server's schedule semantics, if node
-// is installed.
-func TestScheduleModule(t *testing.T) {
+// TestScriptModules runs the script modules' own tests, if node is
+// installed: among them, that "active now" agrees with the server's
+// schedule semantics, and that times read as people would say them.
+func TestScriptModules(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node isn't installed")
 	}
-	out, err := exec.CommandContext(t.Context(), node, "--test", filepath.Join("testdata", "schedule_test.mjs")).CombinedOutput()
-	if err != nil {
-		t.Fatalf("node --test: %v\n%s", err, out)
+	tests, err := filepath.Glob(filepath.Join("testdata", "*_test.mjs"))
+	if err != nil || len(tests) == 0 {
+		t.Fatalf("no module tests: %v", err)
+	}
+	for _, file := range tests {
+		t.Run(filepath.Base(file), func(t *testing.T) {
+			out, err := exec.CommandContext(t.Context(), node, "--test", file).CombinedOutput()
+			if err != nil {
+				t.Fatalf("node --test %s: %v\n%s", file, err, out)
+			}
+		})
+	}
+	for _, module := range []string{"/ui/schedule.js", "/ui/format.js"} {
+		if rec := get(t, module); rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "javascript") {
+			t.Errorf("%s: %d %q", module, rec.Code, rec.Header().Get("Content-Type"))
+		}
 	}
 }
 

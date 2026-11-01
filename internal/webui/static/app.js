@@ -4,6 +4,7 @@
 // chosen by whoever sends a query, so the DOM is only ever built with
 // createElement and textContent: never from HTML strings.
 
+import { fromNow, formatDate } from "./format.js";
 import { WEEKDAYS, DAY_NAMES, DAY_PRESETS, clockMinutes, overnight, scheduleActive, formatDays, describeBlocks, formatPeriod } from "./schedule.js";
 
 const API = "/api/v1";
@@ -1279,10 +1280,13 @@ function networkHint(p) {
     : "This tenant has no networks, so its devices select profiles by DoH path or host name.");
 }
 
-function confirmDialog(title, text) {
+// confirmDialog asks before something that can't be undone, naming the
+// action on its button: "Delete", "Revoke", "Remove".
+function confirmDialog(title, text, action = "Delete") {
   const dlg = $("confirm-dialog");
   $("confirm-title").textContent = title;
   $("confirm-text").textContent = text;
+  $("confirm-ok").textContent = action;
   return new Promise((resolve) => {
     dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok"), { once: true });
     dlg.returnValue = "";
@@ -1661,7 +1665,9 @@ async function createTenant(e) {
 
 // ---------- security ----------
 
-// renderSecurity lists people and their passkeys, and offers to add one.
+// renderSecurity lists who can use the admin API: people and their
+// passkeys, and service accounts and their keys. The operator sees them
+// grouped by tenant.
 async function renderSecurity() {
   const me = state.auth?.session;
   $("add-passkey-person").hidden = !!me?.person;
@@ -1672,18 +1678,47 @@ async function renderSecurity() {
   host.hidden = !rpID || location.hostname === rpID;
   host.textContent = host.hidden ? "" : `Passkeys for this server only work at ${rpID}. Open the UI there to add one.`;
 
-  const data = await api("GET", "/people");
-  const people = data?.people || [];
+  const [peopleData, accountData] = await Promise.all([api("GET", "/people"), api("GET", "/service-accounts")]);
+  const people = peopleData?.people || [];
+  renderPeople(people, me);
+  renderServiceAccounts(accountData?.service_accounts || [], people);
+}
+
+// byTenant groups items by their tenant, the operator's first, then
+// tenants by name. It returns one group when there's nothing to tell
+// apart, so a tenant's own view has no group headings.
+function byTenant(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = item.tenant || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  const keys = [...groups.keys()].sort((x, y) => (x === "" ? -1 : y === "" ? 1 : tenantName(x).localeCompare(tenantName(y))));
+  return keys.map((k) => [k, groups.get(k)]);
+}
+
+// grouped renders items under their tenant's name, when the operator
+// sees more than one tenant's.
+function grouped(box, items, render) {
+  const groups = byTenant(items);
+  const labelled = isOperator() && groups.length > 1;
+  for (const [tenant, list] of groups) {
+    if (labelled) box.append(h("p", { class: "group-label", text: tenant ? tenantName(tenant) : "Operator" }));
+    for (const item of list) box.append(render(item));
+  }
+}
+
+function renderPeople(people, me) {
   const box = clear($("people"));
   if (!people.length) {
-    box.append(h("p", { class: "muted", text: "No one has a passkey yet. Until someone does, sign-in links from doh ui sign in on their own." }));
+    box.append(h("p", { class: "muted empty", text: "No one has a passkey yet. Until someone does, sign-in links from doh ui sign in on their own." }));
     return;
   }
-
-  for (const person of people) {
+  grouped(box, people, (person) => {
     const mine = person.id === me?.person;
     const head = h("div", { class: "person-head" },
-      h("h3", {}, person.name, mine ? h("span", { class: "badge you", text: "You" }) : null),
+      h("h4", {}, person.name, mine ? h("span", { class: "badge you", text: "You" }) : null),
       h("span", { class: "badge", text: person.role }),
       isAdmin() ? h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove ${person.name}`, onClick: () => removePerson(person, mine) }) : null,
     );
@@ -1692,7 +1727,198 @@ async function renderSecurity() {
       h("div", { class: "muted passkey-meta", text: `Added ${fmtTime(k.created, true)} · ${k.last_used ? "last used " + fmtTime(k.last_used, true) : "never used"}` }),
       isAdmin() ? h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove passkey ${k.name}`, onClick: () => removePasskey(person, k, mine) }) : null,
     )));
-    box.append(h("article", { class: "card person" }, head, keys));
+    return h("article", { class: "card person" }, head, keys);
+  });
+}
+
+// ---------- service accounts ----------
+
+// soonDays is when a key's coming expiry is worth pointing out.
+const soonDays = 14;
+
+// keyStatus describes a key's expiry in words and a symbol, never by
+// color alone.
+function keyStatus(k, now = Date.now()) {
+  const left = new Date(k.expires).getTime() - now;
+  if (left <= 0) return h("span", { class: "status bad" }, h("span", { "aria-hidden": "true", text: "⊘ " }), `Expired ${fromNow(k.expires, now)}`);
+  const text = `Expires ${fromNow(k.expires, now)}`;
+  if (left <= soonDays * 864e5) return h("span", { class: "status warn" }, h("span", { "aria-hidden": "true", text: "⚠ " }), text);
+  return h("span", { class: "status", title: formatDate(k.expires) }, text);
+}
+
+function renderServiceAccounts(accounts, people = []) {
+  const box = clear($("service-accounts"));
+  $("new-sa").hidden = !isAdmin();
+  if (!accounts.length) {
+    box.append(h("p", { class: "muted empty", text: "None yet. Make one for each script or device that talks to this server, so each can be revoked on its own." }));
+    return;
+  }
+  grouped(box, accounts, (a) => {
+    const now = Date.now();
+    const keys = [...a.keys].sort((x, y) => new Date(y.expires) - new Date(x.expires));
+    const live = keys.filter((k) => new Date(k.expires).getTime() > now).length;
+    const head = h("div", { class: "person-head" },
+      h("h4", {}, a.name),
+      h("span", { class: "badge", text: a.role }),
+      isAdmin() ? h("button", { type: "button", class: "ghost", text: "Add key", "aria-label": `Add a key to ${a.name}`, onClick: () => addKey(a) }) : null,
+      isAdmin() ? h("button", { type: "button", class: "ghost danger-text", text: "Delete", "aria-label": `Delete ${a.name}`, onClick: () => deleteAccount(a) }) : null,
+    );
+    const meta = h("p", { class: "muted passkey-meta account-meta" },
+      h("code", { text: a.id, title: "Service account ID" }),
+      ` · made ${fromNow(a.created)}${a.created_by ? " by " + describeActor(a.created_by, people) : ""}`,
+      live ? "" : " · no working key");
+    const list = keys.length
+      ? h("ul", { class: "passkeys" }, keys.map((k) => {
+        const expired = new Date(k.expires).getTime() <= now;
+        return h("li", { class: "passkey" + (expired ? " expired" : "") },
+          h("div", { class: "passkey-name" }, h("code", { text: k.id, title: "Key ID: the start of its secret, after doh_sa_" })),
+          h("div", { class: "muted passkey-meta" }, keyStatus(k, now), ` · ${k.last_used ? "used " + fromNow(k.last_used) : "never used"}`),
+          isAdmin() ? h("div", { class: "row-actions" },
+            expired ? null : h("button", { type: "button", class: "ghost", text: "Rotate", "aria-label": `Rotate key ${k.id}`, onClick: () => rotateKey(a, k) }),
+            h("button", { type: "button", class: "ghost danger-text", text: expired ? "Remove" : "Revoke", "aria-label": `${expired ? "Remove" : "Revoke"} key ${k.id}`, onClick: () => revokeKey(a, k, expired) }),
+          ) : null,
+        );
+      }))
+      : null;
+    return h("article", { class: "card person" }, head, meta, list);
+  });
+}
+
+// describeActor names who made something, from the server's record of
+// it: a person by name, or how someone signed in.
+function describeActor(by, people) {
+  const person = people.find((p) => p.id === by);
+  if (person) return person.name;
+  return { "admin token": "the admin token", "reader token": "the reader token", "sign-in link": "a sign-in link" }[by] || "someone no longer here";
+}
+
+function openCreateAccount() {
+  $("sa-name").value = "";
+  $("sa-form").querySelector('input[value="reader"]').checked = true;
+  $("sa-expires").value = "90";
+  const sel = $("sa-tenant");
+  sel.replaceChildren(sel.options[0]);
+  for (const t of state.tenants) sel.append(h("option", { value: t.id, text: t.name || t.id }));
+  $("sa-tenant-row").hidden = !isOperator() || !state.tenants.length;
+  $("sa-dialog").showModal();
+}
+
+async function createAccount(e) {
+  e.preventDefault();
+  const form = $("sa-form");
+  const submit = form.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  try {
+    const body = {
+      name: $("sa-name").value.trim(),
+      role: form.querySelector('input[name="sa-role"]:checked').value,
+    };
+    if (isOperator() && $("sa-tenant").value) body.tenant = $("sa-tenant").value;
+    const account = await api("POST", "/service-accounts", { body });
+    const key = await api("POST", `/service-accounts/${encodeURIComponent(account.id)}/keys`, { body: { expires: daysFromNow($("sa-expires").value) } });
+    $("sa-dialog").close();
+    await renderSecurity();
+    revealSecret(account, key);
+  } catch (err) {
+    report(err);
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+// daysFromNow returns the time n days from now, as the API takes it.
+const daysFromNow = (n) => new Date(Date.now() + Number(n) * 864e5).toISOString();
+
+async function addKey(a) {
+  try {
+    const key = await api("POST", `/service-accounts/${encodeURIComponent(a.id)}/keys`, { body: { expires: daysFromNow(90) } });
+    await renderSecurity();
+    revealSecret(a, key);
+  } catch (err) {
+    report(err);
+  }
+}
+
+// rotating is the key the rotate dialog is for.
+let rotating = null;
+
+function rotateKey(a, k) {
+  rotating = { a, k };
+  $("rotate-title").textContent = `Rotate key ${k.id}`;
+  $("rotate-grace").value = "3600";
+  $("rotate-expires").value = "90";
+  $("rotate-dialog").showModal();
+}
+
+async function submitRotate(e) {
+  e.preventDefault();
+  if (!rotating) return;
+  const { a, k } = rotating;
+  const grace = Number($("rotate-grace").value);
+  const body = { expires: daysFromNow($("rotate-expires").value) };
+  if (grace) body.previous_expires = new Date(Date.now() + grace * 1000).toISOString();
+  try {
+    const key = await api("POST", `/service-accounts/${encodeURIComponent(a.id)}/keys/${encodeURIComponent(k.id)}/rotate`, { body });
+    $("rotate-dialog").close();
+    rotating = null;
+    await renderSecurity();
+    revealSecret(a, key, grace ? `Key ${k.id} keeps working ${fromNow(body.previous_expires)}.` : `Key ${k.id} no longer works.`);
+  } catch (err) {
+    report(err);
+  }
+}
+
+async function revokeKey(a, k, expired) {
+  if (!expired && !(await confirmDialog(`Revoke key ${k.id}?`, `Anything using it to reach this server as ${a.name} stops working at once.`, "Revoke"))) return;
+  try {
+    await api("DELETE", `/service-accounts/${encodeURIComponent(a.id)}/keys/${encodeURIComponent(k.id)}`);
+    toast(expired ? `Removed expired key ${k.id}.` : `Revoked key ${k.id}.`);
+    await renderSecurity();
+  } catch (err) {
+    report(err);
+  }
+}
+
+async function deleteAccount(a) {
+  const keys = a.keys.length === 1 ? "Its key stops" : a.keys.length ? `Its ${a.keys.length} keys stop` : "Nothing uses it yet, so nothing stops";
+  if (!(await confirmDialog(`Delete ${a.name}?`, `${keys} working at once.`))) return;
+  try {
+    await api("DELETE", `/service-accounts/${encodeURIComponent(a.id)}`);
+    toast(`Deleted ${a.name}.`);
+    await renderSecurity();
+  } catch (err) {
+    report(err);
+  }
+}
+
+// revealSecret shows a new key's secret, once. It's cleared from the page
+// when the dialog closes, and Done waits until it's saved.
+function revealSecret(account, key, note = "") {
+  const dlg = $("secret-dialog");
+  $("secret-title").textContent = `New key for ${account.name}`;
+  $("secret-value").textContent = key.secret;
+  $("secret-meta").textContent = [note, `It expires ${formatDate(key.key.expires)}. Send it as a bearer token, or to doh as DOH_TOKEN.`].filter(Boolean).join(" ");
+  $("secret-saved").checked = false;
+  $("secret-done").disabled = true;
+  $("secret-copy").textContent = "Copy";
+  dlg.addEventListener("close", () => { $("secret-value").textContent = ""; }, { once: true });
+  dlg.showModal();
+  $("secret-copy").focus();
+}
+
+async function copySecret() {
+  const button = $("secret-copy");
+  try {
+    await navigator.clipboard.writeText($("secret-value").textContent);
+    button.textContent = "Copied ✓";
+    setTimeout(() => { button.textContent = "Copy"; }, 2000);
+  } catch {
+    // Without clipboard access, select it for copying by hand.
+    const range = document.createRange();
+    range.selectNodeContents($("secret-value"));
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    toast("Select and copy the key by hand.");
   }
 }
 
@@ -1755,6 +1981,13 @@ async function removePerson(person, mine) {
 // ---------- wiring ----------
 
 function wire() {
+  $("new-sa").addEventListener("click", openCreateAccount);
+  $("sa-form").addEventListener("submit", createAccount);
+  $("sa-cancel").addEventListener("click", () => $("sa-dialog").close());
+  $("rotate-form").addEventListener("submit", submitRotate);
+  $("rotate-cancel").addEventListener("click", () => $("rotate-dialog").close());
+  $("secret-copy").addEventListener("click", copySecret);
+  $("secret-saved").addEventListener("change", (e) => { $("secret-done").disabled = !e.target.checked; });
   $("signin-passkey").addEventListener("click", signInWithPasskey);
   $("signout").addEventListener("click", signOut);
   $("passkey-banner-go").addEventListener("click", () => show("security"));
