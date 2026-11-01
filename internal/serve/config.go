@@ -53,7 +53,8 @@ type Config struct {
 	// [doh.DefaultPath].
 	Path string `json:"path,omitempty"`
 
-	// Upstreams are the resolvers queries are forwarded to, tried in order.
+	// Upstreams are the resolvers queries are forwarded to, in order of
+	// preference. See [upstream.Pool] for how they're chosen.
 	// See package [upstream] for the supported URL forms.
 	Upstreams []string `json:"upstreams,omitempty"`
 
@@ -236,6 +237,13 @@ type AdminConfig struct {
 
 	// TraceDir is where slow query snapshots are saved.
 	TraceDir string `json:"trace_dir,omitempty"`
+
+	// Origins are the web origins the admin listener's UI is opened at,
+	// such as "https://admin.dns.example.com" behind a TLS-terminating
+	// proxy. Browser sign-in, and passkeys, work only there. On a loopback
+	// listener it defaults to http://localhost:{port}. Passkeys need a host
+	// name, not an IP address.
+	Origins []string `json:"origins,omitempty"`
 
 	// TokenFile holds the admin API's admin token. It defaults to
 	// AdminTokenFile in the data directory, generated if missing, along
@@ -567,6 +575,12 @@ func (c Config) Validate() error {
 	if c.Admin.Listen != "" {
 		if _, _, err := net.SplitHostPort(c.Admin.Listen); err != nil {
 			errs = append(errs, fmt.Errorf("admin listen: %w", err))
+		}
+	}
+
+	for _, o := range c.Admin.Origins {
+		if u, err := url.Parse(o); err != nil || u.Host == "" || u.Path != "" || (u.Scheme != "https" && u.Scheme != "http") {
+			errs = append(errs, fmt.Errorf("admin origin %q must be a scheme and host, such as https://admin.dns.example.com", o))
 		}
 	}
 

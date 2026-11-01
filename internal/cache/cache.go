@@ -16,6 +16,21 @@ import (
 // TTLs, so a misconfigured zone can't pin a stale answer for days.
 const MaxTTL = 24 * time.Hour
 
+// Serving stale answers ([RFC 8767]): expired answers are kept for
+// MaxStale, to answer with when upstreams can't be reached, with every
+// TTL set to StaleTTL so clients come back for fresh answers soon.
+//
+// [RFC 8767]: https://www.rfc-editor.org/rfc/rfc8767.html
+const (
+	// MaxStale is how long after expiring an answer may still be served
+	// stale, within the one to three days RFC 8767, Section 5 suggests.
+	MaxStale = 24 * time.Hour
+
+	// StaleTTL is the TTL of stale answers, as RFC 8767, Section 4
+	// recommends.
+	StaleTTL = 30
+)
+
 // Cache is a bounded, least-recently-used cache of DNS responses, keyed by
 // question and the header and EDNS bits (RD, AD, CD, EDNS, and DO) that
 // change what a resolver returns. It's safe for concurrent use.
@@ -48,13 +63,26 @@ type entry struct {
 }
 
 // New returns a cache holding up to size responses.
-func New(size int) *Cache {
-	return &Cache{
+func New(size int, opts ...Option) *Cache {
+	c := &Cache{
 		size:    size,
 		now:     time.Now,
 		entries: make(map[key]*list.Element, size),
 		lru:     list.New(),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// Option configures a [Cache].
+type Option func(*Cache)
+
+// WithClock sets the cache's source of the current time, which decides
+// when answers expire. It defaults to [time.Now].
+func WithClock(now func() time.Time) Option {
+	return func(c *Cache) { c.now = now }
 }
 
 // keyOf returns the cache key for query, reporting whether it's cacheable:
@@ -104,8 +132,11 @@ func (c *Cache) Get(query *dns.Msg) *dns.Msg {
 	e := elem.Value.(*entry)
 	now := c.now()
 	if !now.Before(e.expires) {
-		c.lru.Remove(elem)
-		delete(c.entries, k)
+		// Keep expired answers for serving stale, until they're too old.
+		if now.Sub(e.expires) >= MaxStale {
+			c.lru.Remove(elem)
+			delete(c.entries, k)
+		}
 		c.mu.Unlock()
 		return nil
 	}
@@ -117,6 +148,45 @@ func (c *Cache) Get(query *dns.Msg) *dns.Msg {
 	resp.Question = slices.Clone(query.Question)
 	decay(resp, uint32(now.Sub(e.stored)/time.Second))
 
+	return resp
+}
+
+// GetStale returns an expired answer to query, if one expired within
+// [MaxStale], with its ID and question set to the query's and every TTL
+// set to [StaleTTL]. Callers use it only when they can't get a fresh
+// answer ([RFC 8767, Section 4]).
+//
+// [RFC 8767, Section 4]: https://www.rfc-editor.org/rfc/rfc8767.html#section-4
+func (c *Cache) GetStale(query *dns.Msg) *dns.Msg {
+	k, ok := keyOf(query)
+	if !ok {
+		return nil
+	}
+
+	c.mu.Lock()
+	elem, ok := c.entries[k]
+	if !ok {
+		c.mu.Unlock()
+		return nil
+	}
+	e := elem.Value.(*entry)
+	now := c.now()
+	if now.Before(e.expires) || now.Sub(e.expires) >= MaxStale {
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Unlock()
+
+	resp := e.msg.Copy()
+	resp.Id = query.Id
+	resp.Question = slices.Clone(query.Question)
+	for _, section := range [][]dns.RR{resp.Answer, resp.Ns, resp.Extra} {
+		for _, rr := range section {
+			if hdr := rr.Header(); hdr.Rrtype != dns.TypeOPT {
+				hdr.Ttl = StaleTTL
+			}
+		}
+	}
 	return resp
 }
 
@@ -178,8 +248,8 @@ func (c *Cache) Put(query, resp *dns.Msg) {
 	}
 }
 
-// Len returns the number of cached responses, including expired ones not
-// yet evicted.
+// Len returns the number of cached responses, including expired ones kept
+// for serving stale.
 func (c *Cache) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

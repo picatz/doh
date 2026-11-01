@@ -24,7 +24,9 @@ import (
 	"github.com/picatz/doh/internal/filter"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
+	"github.com/picatz/doh/internal/ratelimit"
 	"github.com/picatz/doh/internal/rdap"
+	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/pkg/doh"
 	"golang.org/x/crypto/acme"
@@ -49,6 +51,7 @@ type Server struct {
 	// exchanger forwards queries to the configured upstreams, and
 	// forwardZones to the upstreams of particular domains.
 	exchanger    upstream.Exchanger
+	upstreams    *upstream.Pool // the exchanger, for its health
 	forwardZones map[string]*forwardZone
 
 	telemetry *telemetry
@@ -77,8 +80,11 @@ type Server struct {
 	// qlog is the query log, unless disabled.
 	qlog *querylog.Log
 
-	// tokens authorize admin API requests.
-	tokens tokens
+	// tokens authorize admin API requests, and signin signs browsers in
+	// to the web UI, once the admin listener knows its address.
+	tokens        tokens
+	signin        atomic.Pointer[signin.Service]
+	signinLimiter *ratelimit.Limiter
 
 	trustedProxies []netip.Prefix
 
@@ -114,6 +120,8 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		telemetry: newTelemetry(),
 		state:     filter.NewState(),
 		listeners: make(map[string]string),
+
+		signinLimiter: newSigninLimiter(),
 	}
 
 	if config.Admin.flightRecorder() {
@@ -253,14 +261,14 @@ func (s *Server) configureUpstreams() error {
 		Timeout:    time.Duration(s.config.Timeout),
 	}
 
-	failover := func(urls []string) (upstream.Failover, error) {
-		var f upstream.Failover
+	pool := func(urls []string) (*upstream.Pool, error) {
+		var exchangers []upstream.Exchanger
 		for _, u := range urls {
 			e, err := upstream.Parse(u, opts)
 			if err != nil {
 				return nil, err
 			}
-			f = append(f, s.telemetry.instrument(fmt.Sprint(e), e))
+			exchangers = append(exchangers, s.telemetry.instrument(fmt.Sprint(e), e))
 
 			// Never filter the upstreams' own names, in case this server
 			// is the resolver that resolves them.
@@ -268,18 +276,19 @@ func (s *Server) configureUpstreams() error {
 				s.exempt = append(s.exempt, host)
 			}
 		}
-		return f, nil
+		return upstream.NewPool(exchangers), nil
 	}
 
 	var err error
-	if s.exchanger, err = failover(s.config.Upstreams); err != nil {
+	if s.upstreams, err = pool(s.config.Upstreams); err != nil {
 		return err
 	}
+	s.exchanger = s.upstreams
 
 	s.forwardZones = make(map[string]*forwardZone, len(s.config.Forward))
 	for domain, urls := range s.config.Forward {
 		domain, _ = policy.NormalizeDomain(domain) // validated
-		e, err := failover(urls)
+		e, err := pool(urls)
 		if err != nil {
 			return err
 		}

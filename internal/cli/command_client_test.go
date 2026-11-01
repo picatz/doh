@@ -353,26 +353,8 @@ func TestClientFlags_TokenFile(t *testing.T) {
 	}
 }
 
-func TestUILink(t *testing.T) {
-	tests := []struct {
-		addr, token, want string
-		wantErr           bool
-	}{
-		{"http://127.0.0.1:9090", "a+b/c", "http://127.0.0.1:9090/#token=a%2Bb%2Fc", false},
-		{"localhost:9090", "t", "http://localhost:9090/#token=t", false},
-		{"https://doh.example.com:9090/x?y=1", "t", "https://doh.example.com:9090/#token=t", false},
-		{"http://192.168.1.10:9090", "t", "", true},
-	}
-	for _, tt := range tests {
-		got, err := uiLink(tt.addr, tt.token)
-		if (err != nil) != tt.wantErr || got != tt.want {
-			t.Errorf("uiLink(%q) = %q, %v; want %q", tt.addr, got, err, tt.want)
-		}
-	}
-}
-
 func TestClientCommandsRegistered(t *testing.T) {
-	for _, name := range []string{"status", "ui", "profile", "allow", "deny", "log", "explain", "doctor", "setup"} {
+	for _, name := range []string{"status", "ui", "profile", "allow", "deny", "log", "explain", "doctor", "setup", "people"} {
 		cmd, _, err := New().Find([]string{name})
 		if err != nil || cmd.Name() != name {
 			t.Errorf("command %q not registered: %v", name, err)

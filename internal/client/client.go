@@ -20,6 +20,7 @@ import (
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
+	"github.com/picatz/doh/internal/signin"
 )
 
 // DefaultAddr is the admin listener address clients use by default.
@@ -265,6 +266,39 @@ func (c *Client) MobileConfig(ctx context.Context, profile, device, protocol str
 
 	_, body, err := c.send(req)
 	return body, err
+}
+
+// SigninLink creates a single-use link that signs a browser in to the web
+// UI with role: "admin", "reader", or "" for admin. Only admin tokens can
+// create links.
+func (c *Client) SigninLink(ctx context.Context, role string) (*api.SigninLink, error) {
+	var link api.SigninLink
+	if _, err := c.call(ctx, http.MethodPost, "/signin-links", nil, api.SigninLinkRequest{Role: role}, "application/json", nil, &link); err != nil {
+		return nil, err
+	}
+	return &link, nil
+}
+
+// People returns everyone who can sign in to the web UI with passkeys,
+// without their credential records.
+func (c *Client) People(ctx context.Context) ([]signin.Person, error) {
+	var people api.People
+	if _, err := c.get(ctx, "/people", nil, &people); err != nil {
+		return nil, err
+	}
+	return people.People, nil
+}
+
+// DeletePerson removes a person and their passkeys, signing them out.
+func (c *Client) DeletePerson(ctx context.Context, id string) error {
+	_, err := c.call(ctx, http.MethodDelete, "/people"+segment(id), nil, nil, "", nil, nil)
+	return err
+}
+
+// DeletePasskey removes one of a person's passkeys.
+func (c *Client) DeletePasskey(ctx context.Context, person, passkey string) error {
+	_, err := c.call(ctx, http.MethodDelete, "/people"+segment(person)+"/passkeys"+segment(passkey), nil, nil, "", nil, nil)
+	return err
 }
 
 // deviceQuery returns the query parameters naming device, if any.

@@ -5,11 +5,13 @@
 // createElement and textContent: never from HTML strings.
 
 const API = "/api/v1";
-const TOKEN_KEY = "doh.token";
+const AUTH = "/auth";
 const LIVE_CAP = 500;
 
+// The UI never holds an API token: the server signs the browser in with an
+// HttpOnly session cookie, which fetch sends to this origin by itself.
 const state = {
-  token: "",
+  auth: null, // the server's SessionStatus
   etag: "",
   status: null,
   catalog: { features: [], presets: [] },
@@ -94,8 +96,8 @@ class APIError extends Error {
 }
 
 async function api(method, path, { body, patch = false, query, signal, raw = false } = {}) {
-  const headers = { Authorization: `Bearer ${state.token}`, Accept: "application/json" };
-  const init = { method, headers, signal, cache: "no-store" };
+  const headers = { Accept: "application/json" };
+  const init = { method, headers, signal, cache: "no-store", credentials: "same-origin" };
   if (body !== undefined) {
     headers["Content-Type"] = patch ? "application/merge-patch+json" : "application/json";
     init.body = JSON.stringify(body);
@@ -115,7 +117,7 @@ async function api(method, path, { body, patch = false, query, signal, raw = fal
   if (etag) state.etag = etag;
 
   if (resp.status === 401) {
-    showSignIn("That token was not accepted. It may have been rotated.");
+    showSignIn("Your session ended. Sign in again.");
     throw new APIError(401, { error: "unauthorized" });
   }
   if (raw && resp.ok) return resp;
@@ -128,7 +130,7 @@ async function api(method, path, { body, patch = false, query, signal, raw = fal
     }
   }
   if (!resp.ok) {
-    if (resp.status === 403) toast("This is a read-only token: changes need an admin token.", { error: true });
+    if (resp.status === 403) toast("You're signed in read-only: changes need an admin.", { error: true });
     if (resp.status === 412) {
       await loadPolicy();
       toast("The policy changed elsewhere, so it was reloaded. Try again.", { error: true });
@@ -145,67 +147,235 @@ function report(err) {
   toast(err.message, { error: true, details: err.details || [] });
 }
 
-// ---------- auth ----------
+// ---------- sign-in ----------
 
-function initToken() {
-  const m = location.hash.match(/(?:^#|&)token=([^&]+)/);
-  if (m) {
-    sessionStorage.setItem(TOKEN_KEY, decodeURIComponent(m[1]));
-    history.replaceState(null, "", location.pathname + location.search);
+// authCall calls a sign-in endpoint, returning its JSON, or throwing an
+// APIError with the server's message.
+async function authCall(method, path, body) {
+  const init = { method, headers: { Accept: "application/json" }, cache: "no-store", credentials: "same-origin" };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = typeof body === "string" ? body : JSON.stringify(body);
   }
-  state.token = sessionStorage.getItem(TOKEN_KEY) || "";
+  const resp = await fetch(AUTH + path, init);
+  const text = resp.status === 204 ? "" : await resp.text();
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); } catch { data = { error: text.trim() }; }
+  }
+  if (!resp.ok) throw new APIError(resp.status, data);
+  return data;
 }
 
-function showSignIn(message = "") {
+// takeLinkCode removes a sign-in link's code from the address bar, so it
+// isn't left in history or shared by accident, and returns it.
+function takeLinkCode() {
+  const m = location.hash.match(/(?:^#|&)signin=([A-Za-z0-9_-]+)/);
+  if (!m) return "";
+  history.replaceState(null, "", location.pathname + location.search);
+  return m[1];
+}
+
+// start signs in with a link in the address bar, if there is one, and
+// shows the app or the sign-in screen.
+async function start() {
+  const code = takeLinkCode();
+  try {
+    let status = await authCall("GET", "/session");
+    if (code) {
+      try {
+        status = await authCall("POST", "/link", { code });
+      } catch (err) {
+        state.auth = status;
+        if (err instanceof APIError && err.status === 401) {
+          showSignIn("That sign-in link is invalid, used, or expired. Run doh ui on the server for a new one.");
+          return;
+        }
+        throw err;
+      }
+    }
+    await route(status);
+  } catch (err) {
+    showSignIn(err.message);
+  }
+}
+
+// route shows what a session status calls for: the app, the second step
+// of a link sign-in, or the sign-in screen.
+async function route(status) {
+  state.auth = status;
+  if (status.signed_in) {
+    await enterApp();
+  } else if (status.session?.pending && status.session.method === "link") {
+    showSignIn("", { pending: true });
+  } else {
+    showSignIn();
+  }
+}
+
+function showSignIn(message = "", { pending = false } = {}) {
   stopLive();
+  closeDrawer();
   $("app").hidden = true;
   $("signin").hidden = false;
+
+  $("signin-title").textContent = pending ? "Finish signing in" : "Sign in to doh";
+  $("signin-lede").textContent = pending
+    ? "Your sign-in link worked. This server uses passkeys, so finish with yours."
+    : "Use the passkey you added to this server: Face ID, Touch ID, Windows Hello, or a security key.";
+  $("signin-passkey").textContent = pending ? "Continue with a passkey" : "Sign in with a passkey";
+  $("signin-link-hint").hidden = pending;
+
+  const host = $("signin-host");
+  const rpID = state.auth?.rp_id;
+  host.hidden = !rpID || location.hostname === rpID;
+  if (!host.hidden) {
+    const there = new URL(location.href);
+    there.hostname = rpID;
+    there.hash = "";
+    clear(host).append("Passkeys for this server only work at ", h("a", { href: there.href, text: there.host }), ".");
+  }
+
   const err = $("signin-error");
   err.textContent = message;
   err.hidden = !message;
-  $("signin-token").focus();
+  $("signin-passkey").focus();
 }
 
-async function signIn(token) {
-  state.token = token;
-  sessionStorage.setItem(TOKEN_KEY, token);
+// signInWithPasskey runs a passkey sign-in: alone, or to finish a link.
+async function signInWithPasskey() {
+  const button = $("signin-passkey");
+  button.disabled = true;
   try {
-    await boot();
+    const begin = await authCall("POST", "/passkey/login", {});
+    const credential = await navigator.credentials.get({ publicKey: webauthnJSON.requestOptions(begin.options.publicKey) });
+    const status = await authCall("POST", `/passkey/login/${encodeURIComponent(begin.id)}`, JSON.stringify(webauthnJSON.credential(credential)));
+    await route(status);
   } catch (err) {
-    if (!(err instanceof APIError && err.status === 401)) showSignIn(err.message);
+    showSignIn(passkeyError(err), { pending: !!state.auth?.session?.pending && state.auth.session.method === "link" });
+  } finally {
+    button.disabled = false;
   }
 }
 
-function signOut() {
+// passkeyError explains why a passkey ceremony failed.
+function passkeyError(err) {
+  switch (err?.name) {
+    case "NotAllowedError": return "The passkey request was cancelled or timed out.";
+    case "InvalidStateError": return "This authenticator already has a passkey for this server.";
+    case "SecurityError": return `Passkeys only work at ${state.auth?.rp_id || "this server's host name"}.`;
+    case "NotSupportedError": return "This browser or device doesn't support passkeys.";
+    default: return err?.message || "Something went wrong.";
+  }
+}
+
+async function signOut() {
   stopLive();
-  sessionStorage.removeItem(TOKEN_KEY);
-  state.token = "";
-  $("signin-token").value = "";
+  try {
+    await authCall("POST", "/signout");
+  } catch (err) {
+    report(err);
+  }
+  state.auth = await authCall("GET", "/session").catch(() => state.auth);
   showSignIn();
 }
 
+// refreshAuth reloads the session status, such as after adding a passkey
+// turns a link session into a person's.
+async function refreshAuth() {
+  state.auth = await authCall("GET", "/session");
+  renderWho();
+}
+
+// renderWho shows who's signed in, and recommends a passkey after a link
+// sign-in while no one has one.
+function renderWho() {
+  const s = state.auth?.session;
+  clear($("who")).append(
+    h("span", { class: "who-name", text: s?.name || "" }),
+    s?.role ? h("span", { class: "badge", text: s.role }) : null,
+  );
+  $("passkey-banner").hidden = !(s && !s.person && !state.auth.passkeys_required);
+}
+
+const isAdmin = () => state.auth?.session?.role === "admin";
+
+// ---------- passkeys ----------
+
+// webauthnJSON converts between the WebAuthn JSON forms the server speaks
+// and the objects navigator.credentials uses: natively where the browser
+// can, and otherwise by decoding and encoding the base64url fields
+// (WebAuthn Level 3, sections 5.1.8 and 5.1.9).
+const webauthnJSON = (() => {
+  const toBytes = (s) => {
+    const b64 = s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "=");
+    return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  };
+  const toB64URL = (buf) => {
+    if (!buf) return null;
+    let s = "";
+    for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+  const descriptors = (list) => list?.map((d) => ({ ...d, id: toBytes(d.id) }));
+  const PKC = window.PublicKeyCredential;
+
+  return {
+    creationOptions(json) {
+      if (PKC?.parseCreationOptionsFromJSON) return PKC.parseCreationOptionsFromJSON(json);
+      return { ...json, challenge: toBytes(json.challenge), user: { ...json.user, id: toBytes(json.user.id) }, excludeCredentials: descriptors(json.excludeCredentials) };
+    },
+    requestOptions(json) {
+      if (PKC?.parseRequestOptionsFromJSON) return PKC.parseRequestOptionsFromJSON(json);
+      return { ...json, challenge: toBytes(json.challenge), allowCredentials: descriptors(json.allowCredentials) };
+    },
+    credential(cred) {
+      if (typeof cred.toJSON === "function") return cred.toJSON();
+      const r = cred.response;
+      const response = { clientDataJSON: toB64URL(r.clientDataJSON) };
+      if (r.attestationObject) {
+        response.attestationObject = toB64URL(r.attestationObject);
+        if (r.getAuthenticatorData) response.authenticatorData = toB64URL(r.getAuthenticatorData());
+        if (r.getTransports) response.transports = r.getTransports();
+        if (r.getPublicKeyAlgorithm) response.publicKeyAlgorithm = r.getPublicKeyAlgorithm();
+      } else {
+        response.authenticatorData = toB64URL(r.authenticatorData);
+        response.signature = toB64URL(r.signature);
+        response.userHandle = toB64URL(r.userHandle);
+      }
+      return {
+        id: cred.id, rawId: toB64URL(cred.rawId), type: cred.type,
+        authenticatorAttachment: cred.authenticatorAttachment ?? undefined,
+        clientExtensionResults: cred.getClientExtensionResults(),
+        response,
+      };
+    },
+  };
+})();
+
 // ---------- boot and navigation ----------
 
-async function boot() {
+async function enterApp() {
   const [status, catalog] = await Promise.all([api("GET", "/status"), api("GET", "/catalog")]);
   state.status = status;
   state.catalog = catalog || { features: [], presets: [] };
   setReadOnly(status.policy);
   await loadPolicy();
+  renderWho();
   $("signin").hidden = true;
   $("app").hidden = false;
   show(state.view);
 }
 
 function setReadOnly(policy) {
-  state.readOnly = !!policy?.read_only;
+  const reader = !isAdmin();
+  state.readOnly = !!policy?.read_only || reader;
   const banner = $("readonly");
   banner.hidden = !state.readOnly;
-  banner.textContent = state.readOnly
-    ? policy.source
-      ? `This policy is read-only: it is synced from ${policy.source}. Change it there.`
-      : "This policy is read-only: it is built from the server's flags. Start the server with a policy file to edit it here."
-    : "";
+  banner.textContent = !state.readOnly ? ""
+    : reader ? "You're signed in read-only. Changes need an admin."
+    : policy.source ? `This policy is read-only: it is synced from ${policy.source}. Change it there.`
+    : "This policy is read-only: it is built from the server's flags. Start the server with a policy file to edit it here.";
   for (const el of document.querySelectorAll(".edit")) el.disabled = state.readOnly;
 }
 
@@ -223,10 +393,10 @@ function show(view) {
     if (b.dataset.view === view) b.setAttribute("aria-current", "page");
     else b.removeAttribute("aria-current");
   }
-  for (const v of ["overview", "profiles", "logs", "explain"]) $("view-" + v).hidden = v !== view;
+  for (const v of ["overview", "profiles", "logs", "explain", "security"]) $("view-" + v).hidden = v !== view;
   closeDrawer();
   if (view !== "logs") stopLive();
-  const load = { overview: renderOverview, profiles: renderProfiles, logs: () => loadLogs(true), explain: () => {} }[view];
+  const load = { overview: renderOverview, profiles: renderProfiles, logs: () => loadLogs(true), explain: () => {}, security: renderSecurity }[view];
   Promise.resolve(load()).catch(report);
 }
 
@@ -547,9 +717,9 @@ function appleDownloads(setup) {
   return buttons;
 }
 
-// downloadMobileConfig fetches a configuration profile with the API token,
-// which a plain link can't send, and saves it through a temporary object
-// URL.
+// downloadMobileConfig fetches a configuration profile, so a failure can be
+// shown here rather than saved as a file, and saves it through a temporary
+// object URL.
 async function downloadMobileConfig(setup, protocol, button) {
   button.disabled = true;
   try {
@@ -937,15 +1107,106 @@ async function runExplain(ev) {
   out.append(card);
 }
 
+// ---------- security ----------
+
+// renderSecurity lists people and their passkeys, and offers to add one.
+async function renderSecurity() {
+  const me = state.auth?.session;
+  $("add-passkey-person").hidden = !!me?.person;
+  $("ap-person").required = !me?.person;
+
+  const host = $("security-host");
+  const rpID = state.auth?.rp_id;
+  host.hidden = !rpID || location.hostname === rpID;
+  host.textContent = host.hidden ? "" : `Passkeys for this server only work at ${rpID}. Open the UI there to add one.`;
+
+  const data = await api("GET", "/people");
+  const people = data?.people || [];
+  const box = clear($("people"));
+  if (!people.length) {
+    box.append(h("p", { class: "muted", text: "No one has a passkey yet. Until someone does, sign-in links from doh ui sign in on their own." }));
+    return;
+  }
+
+  for (const person of people) {
+    const mine = person.id === me?.person;
+    const head = h("div", { class: "person-head" },
+      h("h3", {}, person.name, mine ? h("span", { class: "badge you", text: "You" }) : null),
+      h("span", { class: "badge", text: person.role }),
+      isAdmin() ? h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove ${person.name}`, onClick: () => removePerson(person, mine) }) : null,
+    );
+    const keys = h("ul", { class: "passkeys" }, person.passkeys.map((k) => h("li", { class: "passkey" },
+      h("div", { class: "passkey-name" }, k.name, k.synced ? h("span", { class: "badge synced", text: "Synced", title: "A multi-device passkey, backed up to the person's account" }) : null),
+      h("div", { class: "muted passkey-meta", text: `Added ${fmtTime(k.created, true)} · ${k.last_used ? "last used " + fmtTime(k.last_used, true) : "never used"}` }),
+      isAdmin() ? h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove passkey ${k.name}`, onClick: () => removePasskey(person, k, mine) }) : null,
+    )));
+    box.append(h("article", { class: "card person" }, head, keys));
+  }
+}
+
+// addPasskey creates a passkey for the signed-in person, or for a link
+// session, for a new person.
+async function addPasskey(e) {
+  e.preventDefault();
+  const button = $("ap-submit");
+  button.disabled = true;
+  try {
+    const name = $("ap-name").value.trim();
+    const person = $("ap-person").value.trim();
+    const begin = await authCall("POST", "/passkey/register", { name, person });
+    const credential = await navigator.credentials.create({ publicKey: webauthnJSON.creationOptions(begin.options.publicKey) });
+    const passkey = await authCall("POST", `/passkey/register/${encodeURIComponent(begin.id)}`, JSON.stringify(webauthnJSON.credential(credential)));
+    $("ap-name").value = "";
+    toast(`Added passkey ${passkey.name}.`);
+    await refreshAuth();
+    await renderSecurity();
+  } catch (err) {
+    if (err instanceof APIError && err.status === 401) showSignIn("Your session ended. Sign in again.");
+    else toast(passkeyError(err), { error: true });
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function removePasskey(person, passkey, mine) {
+  const last = person.passkeys.length === 1;
+  const warning = mine && last ? " It's your last passkey: you'll need a sign-in link to sign in again." : "";
+  if (!(await confirmDialog(`Remove passkey ${passkey.name}?`, `It will no longer sign ${person.name} in.${warning}`))) return;
+  try {
+    await api("DELETE", `/people/${encodeURIComponent(person.id)}/passkeys/${encodeURIComponent(passkey.id)}`);
+    toast(`Removed passkey ${passkey.name}.`);
+    await renderSecurity();
+  } catch (err) {
+    report(err);
+  }
+}
+
+async function removePerson(person, mine) {
+  const text = mine
+    ? "This removes your passkeys and signs you out everywhere."
+    : `This removes their passkeys and signs them out everywhere.`;
+  if (!(await confirmDialog(`Remove ${person.name}?`, text))) return;
+  try {
+    await api("DELETE", `/people/${encodeURIComponent(person.id)}`);
+    if (mine) {
+      state.auth = await authCall("GET", "/session").catch(() => state.auth);
+      showSignIn("You removed yourself, and were signed out.");
+      return;
+    }
+    toast(`Removed ${person.name}.`);
+    await renderSecurity();
+  } catch (err) {
+    report(err);
+  }
+}
+
 // ---------- wiring ----------
 
 function wire() {
-  $("signin-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const t = $("signin-token").value.trim();
-    if (t) signIn(t);
-  });
+  $("signin-passkey").addEventListener("click", signInWithPasskey);
   $("signout").addEventListener("click", signOut);
+  $("passkey-banner-go").addEventListener("click", () => show("security"));
+  $("add-passkey").addEventListener("submit", addPasskey);
   for (const b of document.querySelectorAll(".nav")) b.addEventListener("click", () => show(b.dataset.view));
   $("new-profile").addEventListener("click", openCreate);
   $("create-form").addEventListener("submit", createProfile);
@@ -965,14 +1226,10 @@ function wire() {
   // Opening a sign-in link in a tab that already has the page loaded only
   // changes the hash.
   window.addEventListener("hashchange", () => {
-    if (!/token=/.test(location.hash)) return;
-    initToken();
-    if (state.token) signIn(state.token);
+    if (/(?:^#|&)signin=/.test(location.hash)) start();
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("drawer").hidden) closeDrawer(); });
 }
 
 wire();
-initToken();
-if (state.token) signIn(state.token);
-else showSignIn();
+start();

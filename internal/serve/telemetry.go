@@ -22,6 +22,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/internal/webui"
 )
@@ -52,6 +53,7 @@ type telemetry struct {
 	blockedReasons expvar.Map // by the check that blocked: list, rebinding, ...
 	cacheHits      expvar.Int
 	cacheMisses    expvar.Int
+	staleAnswers   expvar.Int // answered from expired cache entries
 
 	recorder *flightRecorder
 }
@@ -136,6 +138,9 @@ type instrumented struct {
 	metrics *upstreamMetrics
 }
 
+// String names the upstream.
+func (i *instrumented) String() string { return i.name }
+
 func (i *instrumented) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, error) {
 	start := time.Now()
 	resp, err := i.Exchanger.Exchange(ctx, query)
@@ -161,7 +166,8 @@ func (s *Server) adminHandler() http.Handler {
 	})
 
 	mux.Handle(api.Prefix+"/", s.apiHandler())
-	mux.Handle("GET /{$}", webui.Handler())
+	mux.Handle(signin.Prefix+"/", s.signinHandler())
+	mux.Handle("GET /{$}", s.canonicalHost(webui.Handler()))
 	mux.Handle("GET "+webui.AssetPrefix, webui.Handler())
 
 	mux.HandleFunc("GET "+MetricsPath, s.serveMetrics)
@@ -188,7 +194,10 @@ func (s *Server) adminHandler() http.Handler {
 		}
 	})
 
-	return mux
+	// Refuse cross-origin browser requests that change state, so a page
+	// on another site can't act with a signed-in session. API clients
+	// such as the CLI send no browser fetch headers, and are unaffected.
+	return http.NewCrossOriginProtection().Handler(mux)
 }
 
 // serveVars writes the server's counters, runtime metrics, and build
@@ -211,8 +220,8 @@ func (s *Server) serveVars(w http.ResponseWriter, r *http.Request) {
 
 	t := s.telemetry
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `{"doh": {"queries": %s, "responses": %s, "blocked": %s, "blocked_reasons": %s, "cache": {"hits": %s, "misses": %s}, "upstreams": %s, "slow_queries": %s}, "runtime": %s, "build": %s}`+"\n",
-		t.queries.String(), t.responses.String(), t.blocked.String(), t.blockedReasons.String(), t.cacheHits.String(), t.cacheMisses.String(), t.upstreams.String(), t.slowQueries.String(), runtimeJSON, buildJSON)
+	fmt.Fprintf(w, `{"doh": {"queries": %s, "responses": %s, "blocked": %s, "blocked_reasons": %s, "cache": {"hits": %s, "misses": %s, "stale": %s}, "upstreams": %s, "slow_queries": %s}, "runtime": %s, "build": %s}`+"\n",
+		t.queries.String(), t.responses.String(), t.blocked.String(), t.blockedReasons.String(), t.cacheHits.String(), t.cacheMisses.String(), t.staleAnswers.String(), t.upstreams.String(), t.slowQueries.String(), runtimeJSON, buildJSON)
 }
 
 // serveMetrics writes the server's counters in the Prometheus text
@@ -246,6 +255,7 @@ func (s *Server) serveMetrics(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Fprintf(&b, "# HELP doh_cache_hits_total Queries answered from the cache.\n# TYPE doh_cache_hits_total counter\ndoh_cache_hits_total %s\n", t.cacheHits.String())
 	fmt.Fprintf(&b, "# HELP doh_cache_misses_total Queries the cache couldn't answer.\n# TYPE doh_cache_misses_total counter\ndoh_cache_misses_total %s\n", t.cacheMisses.String())
+	fmt.Fprintf(&b, "# HELP doh_stale_answers_total Queries answered stale, from expired cache entries, because upstreams couldn't be reached.\n# TYPE doh_stale_answers_total counter\ndoh_stale_answers_total %s\n", t.staleAnswers.String())
 	fmt.Fprintf(&b, "# HELP doh_slow_queries_total Queries slower than the slow query threshold.\n# TYPE doh_slow_queries_total counter\ndoh_slow_queries_total %s\n", t.slowQueries.String())
 
 	for _, sample := range runtimeMetrics() {
@@ -357,13 +367,18 @@ func (s *Server) ServeAdmin(ctx context.Context, ln net.Listener) error {
 			slog.String("addr", ln.Addr().String()))
 	}
 
+	if err := s.configureSignin(ln.Addr()); err != nil {
+		ln.Close()
+		return fmt.Errorf("serve: admin sign-in: %w", err)
+	}
+
 	srv := s.httpServer(s.adminHandler())
 	// Profiles and traces take a while to collect, so don't cut them off.
 	srv.WriteTimeout = 0
 
 	s.setListener("admin", ln.Addr())
 	s.logger.Info("serving admin",
-		slog.String("ui", "http://"+ln.Addr().String()+"/"),
+		slog.String("ui", s.uiURL()),
 		slog.String("metrics", "http://"+ln.Addr().String()+MetricsPath),
 		slog.String("vars", "http://"+ln.Addr().String()+VarsPath),
 		slog.String("pprof", "http://"+ln.Addr().String()+PprofPath),

@@ -190,6 +190,34 @@ input[role=switch]:checked::after { transform: translateX(1rem); }
 .signin { min-height: 100vh; display: grid; place-items: center; padding: 1rem; }
 .signin-card { width: min(420px, 100%); display: grid; gap: .6rem; }
 .signin-card h1 { font-size: 1.35rem; margin: 0; }
+.signin-card p { margin: 0; }
+.signin-card button.primary { padding: .65rem 1rem; margin-top: .4rem; }
+.signin-card .hint { font-size: .88rem; }
+
+.account { display: flex; align-items: center; gap: .5rem; margin-left: auto; }
+.who { display: flex; align-items: center; gap: .4rem; color: var(--muted); font-size: .9rem; }
+.who-name { color: var(--text); font-weight: 600; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge { display: inline-block; padding: .05rem .5rem; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: .78rem; font-weight: 600; line-height: 1.6; vertical-align: middle; }
+.badge.you { background: var(--info-bg); color: var(--info); margin-left: .4rem; }
+.badge.synced { background: var(--ok-bg); color: var(--ok); margin-left: .4rem; }
+
+.banner.notice { background: var(--info-bg); color: var(--info); display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+
+.lede { max-width: 62ch; margin-top: -.25rem; }
+.add-passkey h3 { margin-bottom: .5rem; }
+.add-passkey .fields { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; }
+.add-passkey label { display: grid; gap: .25rem; font-size: .88rem; color: var(--muted); }
+.add-passkey input { min-width: 14rem; color: var(--text); }
+.add-passkey .hint { color: var(--warn); margin: 0 0 .5rem; }
+.people { display: grid; gap: .9rem; }
+.person-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.person-head h3 { margin: 0; flex: 1; }
+.passkeys { list-style: none; margin: .6rem 0 0; padding: 0; }
+.passkey { display: grid; grid-template-columns: 1fr auto; gap: 0 1rem; align-items: center; padding: .6rem 0; border-top: 1px solid var(--border); }
+.passkey-name { font-weight: 600; }
+.passkey-meta { font-size: .85rem; grid-column: 1; }
+.passkey > button { grid-column: 2; grid-row: 1 / span 2; }
+button.danger-text { color: var(--bad); }
 
 dialog { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); padding: 1.2rem; width: min(420px, calc(100vw - 2rem)); }
 dialog::backdrop { background: rgb(0 0 0 / .35); }
@@ -202,6 +230,9 @@ dialog form { display: grid; gap: .5rem; }
 
 @media (max-width: 600px) {
   main { padding: 1rem .75rem 4rem; }
+  .account { width: 100%; justify-content: space-between; }
+  .add-passkey input { min-width: 0; width: 100%; }
+  .add-passkey .fields > * { flex: 1 1 100%; }
   .topbar { padding: .5rem .75rem; gap: .5rem; }
   .bar-row { grid-template-columns: 6rem 1fr 3rem; }
   .kv { grid-template-columns: 1fr; }

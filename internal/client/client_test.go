@@ -16,6 +16,7 @@ import (
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
+	"github.com/picatz/doh/internal/signin"
 )
 
 func newTestClient(t *testing.T, h http.HandlerFunc) *Client {
@@ -367,5 +368,72 @@ func TestClient_MobileConfig(t *testing.T) {
 	var apiErr *Error
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || apiErr.Message != "protocol must be https or tls" {
 		t.Errorf("MobileConfig with a bad protocol = %v, want the server's 400", err)
+	}
+}
+
+func TestClient_SigninLink(t *testing.T) {
+	expires := time.Date(2026, 11, 1, 12, 5, 0, 0, time.UTC)
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/signin-links" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q", ct)
+		}
+		var req api.SigninLinkRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Role != "reader" {
+			t.Errorf("request = %+v, %v", req, err)
+		}
+		writeJSON(w, http.StatusCreated, api.SigninLink{URL: "http://localhost:9090/#signin=abc", Expires: expires, PasskeyRequired: true})
+	})
+
+	link, err := c.SigninLink(context.Background(), "reader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.URL != "http://localhost:9090/#signin=abc" || !link.Expires.Equal(expires) || !link.PasskeyRequired {
+		t.Errorf("link = %+v", link)
+	}
+}
+
+func TestClient_People(t *testing.T) {
+	var deleted []string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.EscapedPath() {
+		case "GET /api/v1/people":
+			writeJSON(w, 200, api.People{People: []signin.Person{{
+				ID: "aGFuZGxl", Name: "Alice", Role: signin.RoleAdmin,
+				Passkeys: []signin.Passkey{{ID: "a/b", Name: "MacBook", Synced: true}},
+			}}})
+		case "DELETE /api/v1/people/aGFuZGxl", "DELETE /api/v1/people/aGFuZGxl/passkeys/a%2Fb":
+			deleted = append(deleted, r.URL.EscapedPath())
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			writeJSON(w, 404, api.Error{Error: "not found"})
+		}
+	})
+	ctx := context.Background()
+
+	people, err := c.People(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(people) != 1 || people[0].Name != "Alice" || len(people[0].Passkeys) != 1 || !people[0].Passkeys[0].Synced {
+		t.Fatalf("people = %+v", people)
+	}
+
+	if err := c.DeletePasskey(ctx, "aGFuZGxl", "a/b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeletePerson(ctx, "aGFuZGxl"); err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 2 {
+		t.Errorf("deleted = %q", deleted)
+	}
+
+	var e *Error
+	if err := c.DeletePerson(ctx, "nobody"); !errors.As(err, &e) || e.Status != 404 {
+		t.Errorf("DeletePerson(nobody) = %v, want 404", err)
 	}
 }

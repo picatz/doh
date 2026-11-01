@@ -10,6 +10,7 @@
 - [Local names and forward zones](#local-names-and-forward-zones)
 - [Query log](#query-log)
 - [Admin API and web UI](#admin-api-and-web-ui)
+- [Reliability](#reliability)
 - [Following another server's policy](#following-another-servers-policy)
 - [Troubleshooting](#troubleshooting)
 - [Limits](#limits)
@@ -181,22 +182,49 @@ $ doh log --json -q google | jq .   # JSON lines
 
 ## Admin API and web UI
 
-With `--admin-listen`, the admin listener serves a web UI at `/` and a JSON API at `/api/v1`, alongside metrics and profiling. On first run the server generates two tokens in the data directory: `admin.token` for everything, and `reader.token` for read-only access (`GET` requests). Requests need `Authorization: Bearer <token>`.
+With `--admin-listen`, the admin listener serves a web UI at `/` and a JSON API at `/api/v1`, alongside metrics and profiling. The UI toggles every protection and list, edits allow and deny lists, devices, and rewrites, connects devices, searches and follows the query log, allows or blocks a name from any log entry in one click, and explains any decision.
+
+### Signing in
+
+Browsers never hold an API token. Instead:
 
 ```console
 $ doh serve --dns-listen :53 --admin-listen localhost:9090
 $ doh ui
-http://127.0.0.1:9090/#token=doh_admin_…
+http://localhost:9090/#signin=…
 ```
 
-`doh ui` prints a sign-in link. The token is in the URL fragment, which browsers never send to the server, so it doesn't end up in logs. The UI toggles every protection and list, edits allow and deny lists, devices, and rewrites, searches and follows the query log, allows or blocks a name from any log entry in one click, and explains any decision.
+`doh ui` creates a **sign-in link** through the API: single-use, valid for five minutes, with its code in the URL fragment, which browsers never send to servers, so it stays out of logs. Opening it gives the browser a session cookie that scripts can't read (`HttpOnly`), that other sites can't send (`SameSite=Strict`), and that's `Secure` and host-only (`__Host-`) over HTTPS. Sessions end after two hours unused, or twelve hours at most.
+
+Signed in, add a **passkey** ([WebAuthn](https://www.w3.org/TR/webauthn-3/)): Face ID, Touch ID, Windows Hello, a phone, or a security key. From then on:
+
+- A passkey signs in on its own. It needs your device and its biometric or PIN, and can't be phished: it only works at the UI's own origin.
+- A sign-in link becomes a first factor only: it starts a sign-in that a passkey must finish. A leaked link, or a stolen token that makes them, isn't enough.
+
+Passkeys are verified by a native WebAuthn relying party ([`internal/webauthn`](../internal/webauthn)), with single-use challenges bound to the browser's session, user verification required, and every response bounded. People and their passkeys are kept in `people.json` in the data directory. Sign-in attempts are rate limited per client, and sessions that haven't finished signing in can't crowd out those that have.
+
+If everyone loses their passkeys, an operator with the admin token removes them (`doh people remove`), and sign-in links work on their own again.
+
+Passkeys need the UI opened at a host name: on a loopback admin listener that's `http://localhost:{port}`, where page loads at `127.0.0.1` are redirected. Elsewhere, put the admin listener behind a TLS-terminating proxy and set `--admin-origin https://admin.dns.example.com`. Without an origin, browser sign-in is off, and only API tokens work.
+
+### API tokens
+
+On first run the server generates two tokens in the data directory: `admin.token` for everything, and `reader.token` for read-only access (`GET` requests), for the CLI, automation, and following another server's policy. Requests send `Authorization: Bearer <token>`. Browsers' state-changing requests from other origins are refused, whatever they carry.
 
 The API is documented in [`internal/api`](../internal/api/api.go). Policy changes are conditional on the `ETag` with `If-Match`, so two people editing at once can't overwrite each other's changes (`412 Precondition Failed`). Profiles are changed with JSON merge patches.
 
-The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), and `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory). They refuse to send a token over plain HTTP to anything but a loopback address.
+The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `setup`, `people`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), and `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory). They refuse to send a token over plain HTTP to anything but a loopback address.
 
 > [!WARNING]
 > The admin listener also serves profiles and process details. Keep it on a loopback or private address, or behind a TLS-terminating proxy you control, and treat both tokens as secrets.
+
+## Reliability
+
+DNS failing is the network failing, so the server tries hard not to:
+
+- **Upstreams answer in a race, not a queue.** They're asked in order of preference, but if one hasn't answered after 300 milliseconds, or fails, the next is asked too, and the first answer wins ([RFC 8305](https://www.rfc-editor.org/rfc/rfc8305.html) style). An upstream that fails twice in a row is asked last, with a backoff from five seconds to five minutes, until it answers again. `doh status` shows each upstream's health.
+- **Stale answers beat no answers.** If every upstream fails, names resolved in the last day are answered from the cache ([RFC 8767](https://www.rfc-editor.org/rfc/rfc8767.html)), with a 30-second TTL so clients come back soon, and an [Extended DNS Error](https://www.rfc-editor.org/rfc/rfc8914.html#section-4.4) saying so. They're logged with reason `stale`, and counted in `doh_stale_answers_total`.
+- **Lists and policies keep working offline.** Blocklists are cached on disk and kept if a refresh fails; a policy followed from another server is cached too.
 
 ## Following another server's policy
 
