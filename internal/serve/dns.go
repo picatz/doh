@@ -109,6 +109,15 @@ func shutdownDNS(servers []*dns.Server) error {
 // error code rather than forwarding anything that isn't a single-question
 // standard query.
 func (s *Server) answerDNS(ctx context.Context, transport string, client netip.Addr, req *dns.Msg) *dns.Msg {
+	return s.answerQuery(ctx, request{transport: transport, query: req, client: client})
+}
+
+// answerQuery answers a query received over plain DNS or DoT, replying
+// with an error code rather than forwarding anything that isn't a
+// single-question standard query.
+func (s *Server) answerQuery(ctx context.Context, r request) *dns.Msg {
+	req, transport := r.query, r.transport
+
 	var rejected *dns.Msg
 	switch {
 	case req.Response:
@@ -124,7 +133,7 @@ func (s *Server) answerDNS(ctx context.Context, transport string, client netip.A
 		return rejected
 	}
 
-	resp, err := s.resolve(ctx, request{transport: transport, query: req, client: client})
+	resp, err := s.resolve(ctx, r)
 	if err != nil {
 		s.logger.WarnContext(ctx, "dns: resolving failed",
 			slog.String("name", req.Question[0].Name),

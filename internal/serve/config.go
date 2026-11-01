@@ -34,6 +34,21 @@ type Config struct {
 	// plaintext setting is configured, only plain DNS is served.
 	DNSListen string `json:"dns_listen,omitempty"`
 
+	// DoTListen, if set, also serves DNS-over-TLS (RFC 7858) on this
+	// address (typically ":853"), with the same certificate as DoH. It's
+	// what Android's Private DNS setting uses.
+	DoTListen string `json:"dot_listen,omitempty"`
+
+	// Hostname is the server's public host name, such as
+	// "dns.example.com". Each profile is then also reachable by name, over
+	// DoT and DoH: "kids.dns.example.com" selects profile "kids", and
+	// "tablet--kids.dns.example.com" also names the device "tablet". The
+	// certificate must cover those names: a wildcard certificate for
+	// "*.dns.example.com", or with ACME, certificates are obtained for
+	// each profile's name as it's first used. It defaults to the first
+	// ACME domain.
+	Hostname string `json:"hostname,omitempty"`
+
 	// Path is the URI path of the DoH endpoint. It defaults to
 	// [doh.DefaultPath].
 	Path string `json:"path,omitempty"`
@@ -372,6 +387,11 @@ func (c Config) withDefaults() Config {
 		c.Policy.Refresh = Duration(DefaultPolicyRefresh)
 	}
 
+	if c.Hostname == "" && len(c.TLS.ACME.Domains) > 0 {
+		c.Hostname = c.TLS.ACME.Domains[0]
+	}
+	c.Hostname = strings.ToLower(strings.TrimSuffix(c.Hostname, "."))
+
 	if len(c.TLS.ACME.Domains) > 0 && c.TLS.ACME.CacheDir == "" {
 		if dir, err := os.UserCacheDir(); err == nil {
 			c.TLS.ACME.CacheDir = filepath.Join(dir, "doh", "acme")
@@ -431,6 +451,20 @@ func (c Config) Validate() error {
 	if c.DNSListen != "" {
 		if _, _, err := net.SplitHostPort(c.DNSListen); err != nil {
 			errs = append(errs, fmt.Errorf("dns_listen: %w", err))
+		}
+	}
+
+	if c.DoTListen != "" {
+		if _, _, err := net.SplitHostPort(c.DoTListen); err != nil {
+			errs = append(errs, fmt.Errorf("dot_listen: %w", err))
+		}
+		if c.TLS.CertFile == "" && len(c.TLS.ACME.Domains) == 0 {
+			errs = append(errs, errors.New("dot_listen needs a TLS certificate or an ACME domain"))
+		}
+	}
+	if c.Hostname != "" {
+		if _, ok := policy.NormalizeDomain(c.Hostname); !ok || !strings.Contains(c.Hostname, ".") {
+			errs = append(errs, fmt.Errorf("hostname %q must be a domain name such as dns.example.com", c.Hostname))
 		}
 	}
 

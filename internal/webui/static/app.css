@@ -112,7 +112,7 @@ table.log tbody tr:hover, table.log tbody tr:focus-visible { background: var(--s
 .section h3 { margin-bottom: .5rem; }
 .section .hint { margin: -.25rem 0 .75rem; }
 .toggle-list { display: grid; gap: .25rem; }
-.toggle { display: grid; grid-template-columns: 1fr auto; gap: .2rem 1rem; align-items: center; padding: .55rem .2rem; border-bottom: 1px dashed var(--border); }
+.toggle { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem 1rem; align-items: center; padding: .55rem .2rem; border-bottom: 1px dashed var(--border); }
 .toggle:last-child { border-bottom: 0; }
 .toggle .title { font-weight: 600; }
 .toggle .desc { color: var(--muted); font-size: .85rem; grid-column: 1; }
@@ -139,8 +139,33 @@ input[role=switch]:checked::after { transform: translateX(1rem); }
 .row-item { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; font-size: .9rem; }
 .row-item .mono { overflow-wrap: anywhere; }
 
-.doh-url { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
-.doh-url code { background: var(--surface-2); padding: .3rem .5rem; border-radius: 6px; overflow-wrap: anywhere; }
+/* Connect a device */
+.connect { display: grid; gap: .9rem; margin-top: .75rem; }
+.device-name { display: grid; grid-template-columns: max-content minmax(0, 18rem); justify-content: start; gap: .2rem .75rem; align-items: center; }
+.device-name > span:first-child { font-weight: 600; }
+.device-name .hint, .device-name .field-error { grid-column: 2; margin: 0; font-size: .82rem; }
+.device-name input[aria-invalid=true] { border-color: var(--bad); }
+.field-error { color: var(--bad); }
+.field-error:empty { display: none; }
+.endpoints { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .45rem .9rem; margin: 0; align-items: center; }
+.endpoints dt { color: var(--muted); font-size: .85rem; }
+.endpoints dd { margin: 0; display: flex; gap: .5rem; align-items: center; min-width: 0; }
+.endpoints code { background: var(--surface-2); padding: .3rem .5rem; border-radius: 6px; overflow-wrap: anywhere; min-width: 0; }
+.segmented { display: flex; gap: .2rem; padding: .2rem; background: var(--surface-2); border-radius: 10px; overflow-x: auto; scrollbar-width: none; }
+.segmented [role=tab] { background: transparent; border-color: transparent; white-space: nowrap; color: var(--muted); font-size: .9rem; }
+.segmented [role=tab][aria-selected=true] { background: var(--surface); color: var(--text); border-color: var(--border); font-weight: 600; box-shadow: var(--shadow); }
+.platform { padding: 0 .2rem; }
+.steps { margin: 0; padding-left: 1.4rem; display: grid; gap: .4rem; }
+.steps li::marker { color: var(--accent); font-weight: 700; }
+.downloads { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .9rem; }
+.downloads .hint { flex-basis: 100%; margin: 0; font-size: .82rem; }
+@media (max-width: 560px) {
+  .toggle .control select { max-width: 10.5rem; }
+  .device-name { grid-template-columns: minmax(0, 1fr); }
+  .device-name .hint, .device-name .field-error { grid-column: 1; }
+  .endpoints { grid-template-columns: minmax(0, 1fr); gap: .15rem; }
+  .endpoints dd { margin-bottom: .5rem; }
+}
 .editor-head { display: flex; justify-content: space-between; align-items: start; gap: 1rem; flex-wrap: wrap; }
 
 .drawer {

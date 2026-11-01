@@ -19,6 +19,7 @@ const state = {
   readOnly: false,
   logNext: "",
   live: null, // AbortController of the live stream
+  connect: { device: "", platform: "" }, // the "Connect a device" choices
 };
 
 // ---------- DOM helpers ----------
@@ -397,6 +398,181 @@ function chipEditor(values, placeholder, label, add, remove) {
   return h("div", {}, chips, form);
 }
 
+// ---------- connecting devices ----------
+
+// DEVICE_NAME matches device names: DNS labels of lower-case letters,
+// digits, and single hyphens, as the server requires.
+const DEVICE_NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+const validDevice = (name) => name === "" || (DEVICE_NAME.test(name) && !name.includes("--"));
+
+// guessPlatform picks the platform of the browser showing the UI, which is
+// often the device being set up.
+function guessPlatform() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|Macintosh/.test(ua)) return "apple";
+  if (/Android/.test(ua)) return "android";
+  if (/Windows/.test(ua)) return "windows";
+  if (/Linux/.test(ua)) return "linux";
+  return "";
+}
+
+// copyButton copies text to the clipboard.
+function copyButton(text, label) {
+  return h("button", {
+    type: "button", class: "small", text: "Copy", "aria-label": `Copy ${label}`,
+    onClick: () => navigator.clipboard?.writeText(text).then(() => toast(`Copied ${label}`), () => toast("Couldn't copy", { error: true })),
+  });
+}
+
+// connectSection shows how to point a device at profile p: the encrypted
+// DNS endpoints that select it, and instructions per platform, from the
+// server's setup endpoint. Reading it needs no admin token.
+function connectSection(p) {
+  const id = p.id;
+  const body = h("div", { class: "connect", "aria-live": "polite" }, h("p", { class: "muted", text: "Loading…" }));
+
+  const device = h("input", {
+    value: state.connect.device, placeholder: "living-room-tv", "aria-label": "Device name",
+    spellcheck: "false", autocomplete: "off", autocapitalize: "none", maxlength: 63,
+  });
+  const deviceError = h("span", { class: "field-error", role: "alert" });
+  const deviceRow = h("label", { class: "device-name" },
+    h("span", { text: "Device name" }),
+    device,
+    h("span", { class: "muted hint", text: "Optional: lower-case letters, digits, and hyphens. Logs show it." }),
+    deviceError,
+  );
+
+  let request = 0;
+  const load = async () => {
+    const name = device.value.trim().toLowerCase();
+    const ok = validDevice(name);
+    device.setAttribute("aria-invalid", String(!ok));
+    deviceError.textContent = ok ? "" : "Use lower-case letters, digits, and single hyphens, starting and ending with a letter or digit.";
+    if (!ok) return;
+    state.connect.device = name;
+
+    const mine = ++request;
+    try {
+      const setup = await api("GET", `/profiles/${encodeURIComponent(id)}/setup`, { query: { device: name } });
+      if (mine === request) renderSetup(body, setup);
+    } catch (err) {
+      if (mine === request) clear(body).append(h("p", { class: "error", text: err.message }));
+    }
+  };
+
+  let timer;
+  device.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(load, 250);
+  });
+  load();
+
+  return section("Connect a device",
+    "Point a phone, tablet, or computer at this profile. The profile ID isn't a secret: anyone who knows it can use this profile.",
+    deviceRow, body);
+}
+
+// renderSetup fills body with a setup's endpoints and instructions.
+function renderSetup(body, setup) {
+  clear(body);
+
+  const endpoints = [
+    ["DNS-over-HTTPS", setup.doh_url],
+    ["DNS-over-TLS", setup.dot_host],
+    ["Plain DNS", (setup.dns_addrs || []).join(", ")],
+  ].filter(([, v]) => v);
+  if (endpoints.length) {
+    body.append(h("dl", { class: "endpoints" }, endpoints.flatMap(([label, value]) => [
+      h("dt", { text: label }),
+      h("dd", {}, h("code", { text: value }), copyButton(value, label)),
+    ])));
+  }
+
+  const platforms = setup.platforms || [];
+  if (!platforms.length) return;
+
+  const ids = platforms.map((pl) => pl.id);
+  let current = ids.includes(state.connect.platform) ? state.connect.platform
+    : ids.includes(guessPlatform()) ? guessPlatform() : ids[0];
+
+  const tabs = h("div", { class: "segmented", role: "tablist", "aria-label": "Platform" });
+  const panel = h("div", { class: "platform", role: "tabpanel" });
+
+  const select = (platformID, focus = false) => {
+    current = platformID;
+    state.connect.platform = platformID;
+    for (const tab of tabs.children) {
+      const on = tab.dataset.platform === platformID;
+      tab.setAttribute("aria-selected", String(on));
+      tab.tabIndex = on ? 0 : -1;
+      if (on && focus) tab.focus();
+    }
+    const pl = platforms.find((x) => x.id === platformID);
+    panel.setAttribute("aria-label", pl.name);
+    clear(panel).append(h("ol", { class: "steps" }, pl.steps.map((step) => h("li", { text: step }))));
+    if (pl.id === "apple" && pl.download) panel.append(appleDownloads(setup));
+  };
+
+  for (const pl of platforms) {
+    tabs.append(h("button", {
+      type: "button", role: "tab", text: pl.name, "data-platform": pl.id,
+      onClick: () => select(pl.id),
+    }));
+  }
+  // Arrow keys move between tabs, as WAI-ARIA's tabs pattern describes.
+  tabs.addEventListener("keydown", (e) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const i = ids.indexOf(current);
+    select(ids[(i + step + ids.length) % ids.length], true);
+  });
+
+  body.append(tabs, panel);
+  select(current);
+}
+
+// appleDownloads offers configuration profiles for Apple devices.
+function appleDownloads(setup) {
+  const buttons = h("div", { class: "downloads" });
+  const offer = (label, protocol, primary) => buttons.append(h("button", {
+    type: "button", class: primary ? "primary" : "", text: label,
+    onClick: (e) => downloadMobileConfig(setup, protocol, e.currentTarget),
+  }));
+  if (setup.doh_url) offer("Download configuration profile", "https", true);
+  if (setup.dot_host) offer(setup.doh_url ? "DNS-over-TLS version" : "Download configuration profile", "tls", !setup.doh_url);
+  buttons.append(h("p", { class: "muted hint", text: "Configuration profiles aren't signed, so devices show them as unverified. Downloading again replaces the installed one." }));
+  return buttons;
+}
+
+// downloadMobileConfig fetches a configuration profile with the API token,
+// which a plain link can't send, and saves it through a temporary object
+// URL.
+async function downloadMobileConfig(setup, protocol, button) {
+  button.disabled = true;
+  try {
+    const resp = await api("GET", `/profiles/${encodeURIComponent(setup.profile)}/apple.mobileconfig`, {
+      query: { device: setup.device, protocol }, raw: true,
+    });
+    const blob = await resp.blob();
+    const name = [setup.profile, setup.device].filter(Boolean).join("-") + ".mobileconfig";
+
+    const url = URL.createObjectURL(blob);
+    const a = h("a", { href: url, download: name, hidden: true });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    toast(`Downloaded ${name}`);
+  } catch (err) {
+    report(err);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function renderEditor() {
   const box = $("profile-editor");
   const p = profile();
@@ -409,18 +585,12 @@ function renderEditor() {
   const card = h("div", { class: "card" });
   box.append(card);
 
-  const host = location.hostname || "doh.example.com";
-  const url = `https://${host}/dns-query/${id}`;
   card.append(
     h("div", { class: "editor-head" },
       h("div", {}, h("h2", { text: p.name || p.id }), h("div", { class: "muted mono", text: id })),
       edit(h("button", { type: "button", class: "danger", text: "Delete profile", onClick: () => deleteProfile(p) })),
     ),
-    h("div", { class: "doh-url" },
-      h("span", { class: "muted", text: "DoH URL" }), h("code", { text: url }),
-      h("button", { type: "button", class: "small", text: "Copy", onClick: () => navigator.clipboard?.writeText(url).then(() => toast("Copied"), () => toast("Couldn't copy", { error: true })) }),
-    ),
-    h("p", { class: "muted", text: `Devices can name themselves by appending /<device-name>, such as ${url}/living-room-tv. The ID is not a secret: anyone who knows it can use this profile.` }),
+    connectSection(p),
   );
 
   // Name

@@ -16,17 +16,44 @@ import (
 var fakeNow = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 
 // rdapServer serves a bootstrap registry at /bootstrap mapping tlds to its
-// own /rdap/ base, and answers domain lookups with handle.
+// own RDAP service under /rdap, answering domain queries with handle.
+//
+// It's served either over a real HTTP server, or in memory, for tests in
+// synctest bubbles, where network I/O isn't durably blocking.
 type rdapServer struct {
-	*httptest.Server
+	URL        string
+	httpClient *http.Client
+	mux        http.Handler
+
 	bootstrapHits atomic.Int64
 	domainHits    atomic.Int64
 }
 
+// newRDAPServer serves an RDAP service over a real HTTP server.
 func newRDAPServer(t *testing.T, tlds []string, handle func(w http.ResponseWriter, domain string)) *rdapServer {
 	t.Helper()
 
 	s := &rdapServer{}
+	s.mux = s.handler(t, tlds, handle)
+	srv := httptest.NewServer(s.mux)
+	t.Cleanup(srv.Close)
+	s.URL, s.httpClient = srv.URL, srv.Client()
+	return s
+}
+
+// newMemoryRDAPServer serves an RDAP service in memory, through an
+// [http.RoundTripper] that calls its handler directly, so handlers that
+// block on channels block durably, as synctest needs.
+func newMemoryRDAPServer(t *testing.T, tlds []string, handle func(w http.ResponseWriter, domain string)) *rdapServer {
+	t.Helper()
+
+	s := &rdapServer{URL: "http://rdap.test"}
+	s.mux = s.handler(t, tlds, handle)
+	s.httpClient = &http.Client{Transport: memoryTransport{s.mux}}
+	return s
+}
+
+func (s *rdapServer) handler(t *testing.T, tlds []string, handle func(w http.ResponseWriter, domain string)) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /bootstrap", func(w http.ResponseWriter, r *http.Request) {
 		s.bootstrapHits.Add(1)
@@ -46,14 +73,32 @@ func newRDAPServer(t *testing.T, tlds []string, handle func(w http.ResponseWrite
 		}
 		handle(w, r.PathValue("domain"))
 	})
-
-	s.Server = httptest.NewServer(mux)
-	t.Cleanup(s.Close)
-	return s
+	return mux
 }
 
 func (s *rdapServer) client() *Client {
-	return &Client{HTTPClient: s.Server.Client(), BootstrapURL: s.URL + "/bootstrap", now: func() time.Time { return fakeNow }}
+	return &Client{HTTPClient: s.httpClient, BootstrapURL: s.URL + "/bootstrap", now: func() time.Time { return fakeNow }}
+}
+
+// memoryTransport answers requests by calling a handler directly. Like a
+// real transport, it gives up when the request's context is done, even if
+// the handler hasn't returned.
+type memoryTransport struct{ h http.Handler }
+
+func (m memoryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.h.ServeHTTP(rec, req)
+	}()
+
+	select {
+	case <-done:
+		return rec.Result(), nil
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
 }
 
 func registeredAt(t time.Time) func(http.ResponseWriter, string) {
@@ -289,7 +334,7 @@ func TestClient_BootstrapRefreshKeepsOldOnFailure(t *testing.T) {
 			http.Error(w, "down", http.StatusServiceUnavailable)
 			return
 		}
-		s.Config.Handler.ServeHTTP(w, r)
+		s.mux.ServeHTTP(w, r)
 	}))
 	defer broken.Close()
 

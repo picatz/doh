@@ -865,9 +865,6 @@ func clientCommands() []*cobra.Command {
 		newDomainCommand("deny"),
 		newLogCommand(),
 		newExplainCommand(),
+		newSetupCommand(),
 	}
-}
-
-func init() {
-	CommandRoot.AddCommand(clientCommands()...)
 }

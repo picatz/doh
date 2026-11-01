@@ -57,6 +57,8 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("GET "+p+"/logs/stream", s.apiStream)
 	mux.HandleFunc("GET "+p+"/stats", s.apiStats)
 	mux.HandleFunc("GET "+p+"/explain", s.apiExplain)
+	mux.HandleFunc("GET "+p+"/profiles/{id}/setup", s.apiSetup)
+	mux.HandleFunc("GET "+p+"/profiles/{id}/apple.mobileconfig", s.apiMobileConfig)
 	mux.HandleFunc(p+"/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such endpoint")
 	})
@@ -140,6 +142,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 	pol := engine.Policy()
 
 	status := api.Status{
+		Hostname:  s.config.Hostname,
 		Version:   version(),
 		Started:   s.started,
 		Upstreams: s.config.Upstreams,
@@ -506,6 +509,10 @@ func (s *Server) apiStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Subscribe before responding, so no entry logged after the client
+	// sees the stream start is missed.
+	entries := s.qlog.Subscribe(r.Context(), f)
+
 	rc := http.NewResponseController(w)
 	// Streams outlive the admin server's write timeout.
 	_ = rc.SetWriteDeadline(time.Time{})
@@ -517,8 +524,6 @@ func (s *Server) apiStream(w http.ResponseWriter, r *http.Request) {
 	if err := rc.Flush(); err != nil {
 		return
 	}
-
-	entries := s.qlog.Subscribe(r.Context(), f)
 	heartbeat := time.NewTicker(streamHeartbeat)
 	defer heartbeat.Stop()
 

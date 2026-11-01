@@ -49,6 +49,10 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v string) { c.Listen = v }),
 	option((*pflag.FlagSet).String, "dns-listen", "", "also serve plain DNS over UDP and TCP on this address, such as :53",
 		func(c *serve.Config, v string) { c.DNSListen = v }),
+	option((*pflag.FlagSet).String, "dot-listen", "", "also serve DNS-over-TLS on this address, such as :853, with the DoH certificate",
+		func(c *serve.Config, v string) { c.DoTListen = v }),
+	option((*pflag.FlagSet).String, "hostname", "", "public host name, such as dns.example.com, under which profiles are reachable as {profile}.{hostname} (default the first --acme-domain)",
+		func(c *serve.Config, v string) { c.Hostname = v }),
 	option((*pflag.FlagSet).String, "path", doh.DefaultPath, "URI path of the DoH endpoint",
 		func(c *serve.Config, v string) { c.Path = v }),
 	option((*pflag.FlagSet).StringSlice, "upstream", serve.DefaultUpstreams, "upstream resolvers, tried in order",
@@ -140,10 +144,14 @@ func defineServeFlags(fs *pflag.FlagSet) serveFlags {
 	return flags
 }
 
-var CommandServe = &cobra.Command{
-	Use:   "serve [flags]",
-	Short: "Serve DNS-over-HTTPS, forwarding queries to upstream resolvers",
-	Long: `Serve DNS-over-HTTPS (RFC 8484), forwarding queries to upstream resolvers.
+// newServeCommand returns the "doh serve" command.
+func newServeCommand() *cobra.Command {
+	var flags serveFlags
+
+	cmd := &cobra.Command{
+		Use:   "serve [flags]",
+		Short: "Serve DNS-over-HTTPS, forwarding queries to upstream resolvers",
+		Long: `Serve DNS-over-HTTPS (RFC 8484), forwarding queries to upstream resolvers.
 
 Upstreams are tried in order until one answers, and may use DNS-over-HTTPS
 (https://), DNS-over-TLS (tls://host[:853]), or plain DNS (udp://host[:53],
@@ -187,31 +195,39 @@ Examples:
   # ...with the web UI and admin API, and the router answering for .lan
   doh serve --dns-listen :53 --admin-listen localhost:9090 --forward lan=192.168.1.1
 
+  # Phones and laptops anywhere: DoH and DoT, a profile per host name
+  doh serve --acme-domain dns.example.com --dot-listen :853 --admin-listen localhost:9090
+  doh setup kids --device tablet
+
   # A home resolver following the policy of a server in the cloud
   doh serve --dns-listen :53 --policy https://doh.example.com:9090/api/v1/policy --policy-token-file reader.token`,
-	Args:         cobra.NoArgs,
-	SilenceUsage: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		config, err := commandServeFlags.load()
-		if err != nil {
-			return err
-		}
-		if config.DataDir == "" {
-			config.DataDir = serve.DefaultDataDir()
-		}
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			config, err := flags.load()
+			if err != nil {
+				return err
+			}
+			if config.DataDir == "" {
+				config.DataDir = serve.DefaultDataDir()
+			}
 
-		logger, err := config.Log.Logger()
-		if err != nil {
-			return err
-		}
+			logger, err := config.Log.Logger()
+			if err != nil {
+				return err
+			}
 
-		server, err := serve.New(config, logger)
-		if err != nil {
-			return err
-		}
+			server, err := serve.New(config, logger)
+			if err != nil {
+				return err
+			}
 
-		return server.ListenAndServe(cmd.Context())
-	},
+			return server.ListenAndServe(cmd.Context())
+		},
+	}
+
+	flags = defineServeFlags(cmd.Flags())
+	return cmd
 }
 
 // load builds the serve config from the config file, then environment
@@ -262,13 +278,4 @@ func (f serveFlags) load() (serve.Config, error) {
 // envName returns the environment variable for a flag name.
 func envName(flag string) string {
 	return envPrefix + strings.ToUpper(strings.ReplaceAll(flag, "-", "_"))
-}
-
-// commandServeFlags are the flags of [CommandServe].
-var commandServeFlags serveFlags
-
-func init() {
-	commandServeFlags = defineServeFlags(CommandServe.Flags())
-
-	CommandRoot.AddCommand(CommandServe)
 }

@@ -304,3 +304,68 @@ func TestClient_StreamError(t *testing.T) {
 	}
 	t.Fatal("no error yielded")
 }
+
+func TestClient_Setup(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/api/v1/profiles/kids/setup" || r.URL.Query().Get("device") != "tablet" {
+			writeJSON(w, http.StatusNotFound, api.Error{Error: "unexpected " + r.URL.String()})
+			return
+		}
+		writeJSON(w, http.StatusOK, api.Setup{Profile: "kids", Device: "tablet", DoTHost: "tablet--kids.dns.example.com"})
+	})
+
+	setup, err := c.Setup(t.Context(), "kids", "tablet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setup.DoTHost != "tablet--kids.dns.example.com" {
+		t.Errorf("Setup = %+v", setup)
+	}
+}
+
+func TestClient_SetupWithoutDevice(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "" {
+			writeJSON(w, http.StatusBadRequest, api.Error{Error: "unexpected query " + r.URL.RawQuery})
+			return
+		}
+		writeJSON(w, http.StatusOK, api.Setup{Profile: "default"})
+	})
+	if _, err := c.Setup(t.Context(), "default", ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClient_MobileConfig(t *testing.T) {
+	const plist = `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict/></plist>`
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch {
+		case r.URL.EscapedPath() != "/api/v1/profiles/kids/apple.mobileconfig":
+			writeJSON(w, http.StatusNotFound, api.Error{Error: "unexpected path"})
+		case r.Header.Get("Accept") != api.MobileConfigType:
+			writeJSON(w, http.StatusNotAcceptable, api.Error{Error: "unexpected Accept " + r.Header.Get("Accept")})
+		case q.Get("protocol") == "ftp":
+			writeJSON(w, http.StatusBadRequest, api.Error{Error: "protocol must be https or tls"})
+		case q.Get("protocol") != "tls" || q.Get("device") != "tablet":
+			writeJSON(w, http.StatusBadRequest, api.Error{Error: "unexpected query " + r.URL.RawQuery})
+		default:
+			w.Header().Set("Content-Type", api.MobileConfigType)
+			_, _ = w.Write([]byte(plist))
+		}
+	})
+
+	b, err := c.MobileConfig(t.Context(), "kids", "tablet", "tls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != plist {
+		t.Errorf("MobileConfig = %q", b)
+	}
+
+	_, err = c.MobileConfig(t.Context(), "kids", "tablet", "ftp")
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || apiErr.Message != "protocol must be https or tls" {
+		t.Errorf("MobileConfig with a bad protocol = %v, want the server's 400", err)
+	}
+}

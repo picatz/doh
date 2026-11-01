@@ -334,7 +334,3 @@ Examples:
 	}
 	return cmd
 }
-
-func init() {
-	CommandRoot.AddCommand(newDoctorCommand())
-}

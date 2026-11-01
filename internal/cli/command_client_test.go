@@ -46,6 +46,11 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(api.Error{Error: "no such endpoint: " + key})
 		return
 	}
+	if b, ok := resp.([]byte); ok {
+		w.Header().Set("Content-Type", api.MobileConfigType)
+		w.Write(b)
+		return
+	}
 	if s, ok := resp.(string); ok {
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, s)
@@ -367,8 +372,8 @@ func TestUILink(t *testing.T) {
 }
 
 func TestClientCommandsRegistered(t *testing.T) {
-	for _, name := range []string{"status", "ui", "profile", "allow", "deny", "log", "explain", "doctor"} {
-		cmd, _, err := CommandRoot.Find([]string{name})
+	for _, name := range []string{"status", "ui", "profile", "allow", "deny", "log", "explain", "doctor", "setup"} {
+		cmd, _, err := New().Find([]string{name})
 		if err != nil || cmd.Name() != name {
 			t.Errorf("command %q not registered: %v", name, err)
 		}

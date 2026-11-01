@@ -12,8 +12,6 @@ import (
 )
 
 func TestCommand_Query_Upstreams(t *testing.T) {
-	resetResolverFlags(t)
-
 	answerA := func(req *dns.Msg) *dns.Msg {
 		resp := new(dns.Msg).SetReply(req)
 		resp.Answer = append(resp.Answer, &dns.A{
@@ -46,10 +44,7 @@ func TestCommand_Query_Upstreams(t *testing.T) {
 	udpServer := "udp://" + pc.LocalAddr().String()
 	dohServer := server.URL + doh.DefaultPath
 
-	// Set servers directly rather than with --servers: once parsed, pflag
-	// appends to slice flags, which would leak into later tests.
-	setResolverServers(t, udpServer, dohServer)
-	output := testCommand(t, "query", "example.com", "-k")
+	output := testCommand(t, "query", "example.com", "-k", "--servers", udpServer+","+dohServer)
 
 	type line struct {
 		Server string `json:"server"`
