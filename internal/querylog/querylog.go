@@ -39,6 +39,10 @@ type Entry struct {
 	// Profile is the policy profile that answered the query, if any.
 	Profile string `json:"profile,omitempty"`
 
+	// Tenant is the tenant the profile belonged to when the query was
+	// answered, empty for the server's operator.
+	Tenant string `json:"tenant,omitempty"`
+
 	// Device is the name of the client device, if known.
 	Device string `json:"device,omitempty"`
 
@@ -592,6 +596,11 @@ type Filter struct {
 	// Profile, Device, and Client match entries with exactly these values.
 	Profile, Device, Client string
 
+	// Tenant, if set, matches only that tenant's entries. ParseFilter
+	// never sets it: servers set it from who's asking, so a tenant only
+	// ever sees its own queries.
+	Tenant string
+
 	// Status matches entries with exactly this status.
 	Status Status
 
@@ -640,6 +649,7 @@ func (f Filter) matchLive(e *Entry) bool {
 func (f Filter) match(e *Entry) bool {
 	switch {
 	case f.Profile != "" && e.Profile != f.Profile,
+		f.Tenant != "" && e.Tenant != f.Tenant,
 		f.Device != "" && e.Device != f.Device,
 		f.Client != "" && e.Client != f.Client,
 		f.Status != "" && e.Status != f.Status,

@@ -17,6 +17,7 @@
 package policy
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/jsontext"
@@ -59,9 +60,48 @@ type Policy struct {
 	// Version is the format version, [Version]. Zero is read as Version.
 	Version int `json:"version,omitzero"`
 
+	// Tenants are the groups of people who share this server, such as
+	// families or friends, each managing their own profiles. Profiles
+	// without a tenant belong to the server's operator.
+	Tenants []Tenant `json:"tenants,omitempty"`
+
 	// Profiles are the policies for groups of clients, each with a unique
 	// ID.
 	Profiles []Profile `json:"profiles"`
+}
+
+// DefaultMaxTenantProfiles bounds each tenant's profiles, unless the
+// tenant sets its own limit.
+const DefaultMaxTenantProfiles = 20
+
+// Tenant is a group of people who manage their own profiles on a shared
+// server, without seeing or affecting anyone else's.
+//
+// What a tenant's profiles may do is bounded, since they run on someone
+// else's server: they may only select clients by address within the
+// tenant's Networks, and may only use preset blocklists, unless the
+// operator allows CustomLists.
+type Tenant struct {
+	// ID identifies the tenant, as [ValidID] describes.
+	ID string `json:"id"`
+
+	// Name is a human-readable name, such as "The Smiths".
+	Name string `json:"name,omitempty"`
+
+	// Networks are the addresses or prefixes the tenant's profiles may
+	// select clients and devices by, such as the tenant's home network.
+	// Tenants' networks can't overlap. Without any, the tenant's devices
+	// select its profiles by DoH path or host name only.
+	Networks []string `json:"networks,omitempty"`
+
+	// CustomLists lets the tenant's profiles use blocklists by HTTPS URL,
+	// which the server downloads. Without it, they may use presets only.
+	// File paths are never allowed.
+	CustomLists bool `json:"custom_lists,omitzero"`
+
+	// MaxProfiles bounds the tenant's profiles. It defaults to
+	// DefaultMaxTenantProfiles.
+	MaxProfiles int `json:"max_profiles,omitzero"`
 }
 
 // Profile is the policy for a group of clients, such as a household's
@@ -74,6 +114,10 @@ type Profile struct {
 
 	// Name is a human-readable name, such as "Streaming sticks".
 	Name string `json:"name,omitempty"`
+
+	// Tenant is the ID of the tenant the profile belongs to, or empty for
+	// the server's operator.
+	Tenant string `json:"tenant,omitempty"`
 
 	// Clients are the addresses or prefixes, such as "192.168.1.0/24",
 	// whose queries use this profile.
@@ -199,6 +243,17 @@ func Defaults() *Policy {
 	}
 }
 
+// Tenant returns the tenant with id, or nil.
+func (p *Policy) Tenant(id string) *Tenant {
+	if p == nil {
+		return nil
+	}
+	if i := slices.IndexFunc(p.Tenants, func(t Tenant) bool { return t.ID == id }); i >= 0 {
+		return &p.Tenants[i]
+	}
+	return nil
+}
+
 // Profile returns the profile with id, or nil.
 func (p *Policy) Profile(id string) *Profile {
 	if p == nil {
@@ -285,9 +340,44 @@ func (p *Policy) Validate() error {
 		errs = append(errs, fmt.Errorf("version %d is not supported (want %d)", p.Version, Version))
 	}
 
+	tenants := make(map[string]*Tenant, len(p.Tenants))
+	var networks []tenantNetwork
+	for i := range p.Tenants {
+		t := &p.Tenants[i]
+		at := fmt.Sprintf("tenants[%d]", i)
+		if t.ID != "" {
+			at = fmt.Sprintf("tenant %q", t.ID)
+		}
+		switch {
+		case !ValidID(t.ID):
+			errs = append(errs, fmt.Errorf("%s: id must be 1 to 63 lower-case letters, digits, and single hyphens, starting and ending with a letter or digit", at))
+		case tenants[t.ID] != nil:
+			errs = append(errs, fmt.Errorf("%s: duplicate id", at))
+		}
+		tenants[t.ID] = t
+
+		if t.MaxProfiles < 0 {
+			errs = append(errs, fmt.Errorf("%s: max_profiles must not be negative", at))
+		}
+		for _, n := range t.Networks {
+			prefix, err := ParsePrefix(n)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: %v", at, err))
+				continue
+			}
+			for _, other := range networks {
+				if other.prefix.Overlaps(prefix) {
+					errs = append(errs, fmt.Errorf("%s: network %s overlaps tenant %q's %s", at, prefix, other.tenant, other.prefix))
+				}
+			}
+			networks = append(networks, tenantNetwork{t.ID, prefix})
+		}
+	}
+
 	ids := make(map[string]bool)
 	addrs := make(map[netip.Prefix]string)
 	devices := make(map[string]bool)
+	tenantProfiles := make(map[string]int)
 
 	for i, pr := range p.Profiles {
 		at := fmt.Sprintf("profiles[%d]", i)
@@ -306,10 +396,28 @@ func (p *Policy) Validate() error {
 		}
 		ids[pr.ID] = true
 
+		var tenant *Tenant
+		if pr.Tenant != "" {
+			if tenant = tenants[pr.Tenant]; tenant == nil {
+				fail("no tenant %q", pr.Tenant)
+			} else {
+				tenantProfiles[pr.Tenant]++
+			}
+			if pr.ID == DefaultProfile {
+				fail("the default profile belongs to the server's operator, not a tenant")
+			}
+		}
+
 		claim := func(s, owner string) {
 			prefix, err := ParsePrefix(s)
 			if err != nil {
 				fail("%v", err)
+				return
+			}
+			// A tenant may only claim addresses in its own networks, so
+			// it can't capture anyone else's clients.
+			if tenant != nil && !tenant.contains(prefix) {
+				fail("%s is outside tenant %q's networks", prefix, tenant.ID)
 				return
 			}
 			if other, ok := addrs[prefix]; ok {
@@ -336,8 +444,20 @@ func (p *Policy) Validate() error {
 		}
 
 		for _, l := range pr.Lists {
-			if _, err := blocklist.ParseSource(l); err != nil {
+			src, err := blocklist.ParseSource(l)
+			if err != nil {
 				fail("%v", err)
+				continue
+			}
+			// Lists are downloaded or read by the server, so tenants may
+			// only use presets, or with CustomLists, HTTPS URLs: never
+			// files, or plain HTTP.
+			if tenant != nil && !isPreset(src) && (!tenant.CustomLists || !strings.HasPrefix(src.Location, "https://")) {
+				if tenant.CustomLists {
+					fail("list %q: tenants' custom lists must be HTTPS URLs", l)
+				} else {
+					fail("list %q: tenant %q may only use preset lists", l, tenant.ID)
+				}
 			}
 		}
 		if dup := firstDuplicate(pr.Lists); dup != "" {
@@ -380,10 +500,39 @@ func (p *Policy) Validate() error {
 		}
 	}
 
+	for id, n := range tenantProfiles {
+		if limit := cmp.Or(tenants[id].MaxProfiles, DefaultMaxTenantProfiles); n > limit {
+			errs = append(errs, fmt.Errorf("tenant %q: has %d profiles, more than its limit of %d", id, n, limit))
+		}
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("policy: %w", errors.Join(errs...))
 	}
 	return nil
+}
+
+// tenantNetwork is a network a tenant owns.
+type tenantNetwork struct {
+	tenant string
+	prefix netip.Prefix
+}
+
+// contains reports whether prefix lies within one of t's networks.
+func (t *Tenant) contains(prefix netip.Prefix) bool {
+	for _, n := range t.Networks {
+		network, err := ParsePrefix(n)
+		if err == nil && network.Bits() <= prefix.Bits() && network.Contains(prefix.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPreset reports whether src is a preset list, by its name and URL.
+func isPreset(src blocklist.Source) bool {
+	url, ok := blocklist.Presets[src.Name]
+	return ok && url == src.Location
 }
 
 // firstDuplicate returns the first string that appears twice in s, or "".

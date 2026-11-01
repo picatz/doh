@@ -76,7 +76,7 @@ func noStore(next http.Handler) http.Handler {
 }
 
 func (s *Service) status(sess Session, ok bool) SessionStatus {
-	st := SessionStatus{PasskeysRequired: s.HasPasskeys(), RPID: s.rpID}
+	st := SessionStatus{PasskeysRequired: s.HasPasskeys(sess.Tenant), RPID: s.rpID}
 	if ok {
 		st.Session = &sess
 		st.SignedIn = !sess.Pending
@@ -106,13 +106,13 @@ func (s *Service) handleLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pending := s.HasPasskeys()
-	sess := Session{Name: "Sign-in link", Role: l.role, Method: "link", Pending: pending}
+	pending := s.HasPasskeys(l.tenant)
+	sess := Session{Name: "Sign-in link", Role: l.role, Tenant: l.tenant, Method: "link", Pending: pending}
 	if err := s.startSession(w, r, sess); err != nil {
 		writeError(w, http.StatusInternalServerError, "starting a session failed")
 		return
 	}
-	s.logger.InfoContext(r.Context(), "signin: link used", slog.String("role", string(l.role)), slog.Bool("passkey_required", pending))
+	s.logger.InfoContext(r.Context(), "signin: link used", slog.String("role", string(l.role)), slog.String("tenant", l.tenant), slog.Bool("passkey_required", pending))
 
 	sess, ok = s.Session(r)
 	writeJSON(w, http.StatusOK, s.status(sess, ok))
@@ -190,7 +190,7 @@ func (s *Service) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 	if prior.Method == "link" {
 		method = "link+passkey"
 	}
-	sess := Session{Person: person.ID, Name: person.Name, Role: person.Role, Method: method}
+	sess := Session{Person: person.ID, Name: person.Name, Role: person.Role, Tenant: person.Tenant, Method: method}
 	if err := s.startSession(w, r, sess); err != nil {
 		writeError(w, http.StatusInternalServerError, "starting a session failed")
 		return
@@ -303,7 +303,7 @@ func (s *Service) handleRegisterBegin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "too many passkeys are being added at once; try again shortly")
 		return
 	}
-	s.enrollments[options.ID] = enrollment{handle: handle, person: personName, passkey: passkeyName, role: sess.Role, expires: now.Add(pendingLifetime)}
+	s.enrollments[options.ID] = enrollment{handle: handle, person: personName, passkey: passkeyName, role: sess.Role, tenant: sess.Tenant, expires: now.Add(pendingLifetime)}
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, options)
@@ -316,6 +316,7 @@ type enrollment struct {
 	person  string
 	passkey string
 	role    Role
+	tenant  string
 	expires time.Time
 }
 
@@ -397,7 +398,7 @@ func (s *Service) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 
 	// A link session becomes the new person's session, under a new ID.
 	if sess.Person == "" {
-		next := Session{Person: person.ID, Name: person.Name, Role: person.Role, Method: sess.Method}
+		next := Session{Person: person.ID, Name: person.Name, Role: person.Role, Tenant: person.Tenant, Method: sess.Method}
 		if err := s.startSession(w, r, next); err != nil {
 			writeError(w, http.StatusInternalServerError, "starting a session failed")
 			return
@@ -436,7 +437,7 @@ func (s *Service) addPasskey(e enrollment, cred webauthn.Credential) (Passkey, P
 	people := slices.Clone(s.people)
 	i := slices.IndexFunc(people, func(p Person) bool { return p.ID == id })
 	if i < 0 {
-		people = append(people, Person{ID: id, Name: e.person, Role: e.role, Created: now})
+		people = append(people, Person{ID: id, Name: e.person, Role: e.role, Tenant: e.tenant, Created: now})
 		i = len(people) - 1
 	}
 	people[i].Passkeys = append(slices.Clone(people[i].Passkeys), passkey)

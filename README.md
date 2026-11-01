@@ -166,6 +166,8 @@ $ doh allow example.com --profile streaming
 
 Or do all of it in the web UI: `doh ui` prints a single-use sign-in link, and once signed in you can add a passkey, which then signs you in on its own and is required to finish any sign-in link. See [Signing in](docs/protections.md#signing-in).
 
+Sharing a server with family or friends? Each household can be a **tenant** that manages its own profiles, devices, log, and people, bounded so it can't see or affect anyone else's: see [Sharing a server](docs/protections.md#sharing-a-server).
+
 Profiles live in `policy.json` in the data directory, created with the secure defaults on first run, so they can be kept in version control and edited by hand as well as through the UI and API. A home server can also follow the policy of a server in the cloud, so one place manages a family's devices. See **[Profiles and protections](docs/protections.md)** for every protection, how each works, and its limits.
 
 ### Connecting phones and laptops, anywhere

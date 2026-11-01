@@ -210,49 +210,64 @@ Once anyone has added a passkey in the UI, a link only starts signing in:
 finish with a passkey. Passkeys also sign in on their own, without a link.
 
 Creating a link needs the admin token. --reader makes a link for a
-read-only session.
+read-only session, and --tenant a link that signs in to a tenant, such as
+to invite a household's first admin (as "doh tenant invite" does).
 
 Examples:
   doh ui
   doh ui --open
-  doh ui --reader`,
+  doh ui --reader
+  doh ui --tenant smiths`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 	}
 	f := addClientFlags(cmd)
 	open := cmd.Flags().Bool("open", false, "open the link in a browser")
 	reader := cmd.Flags().Bool("reader", false, "sign in read-only")
+	tenant := cmd.Flags().String("tenant", "", "sign in to this tenant, such as to invite its first admin")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		c, err := f.client()
-		if err != nil {
-			return err
-		}
-		role := "admin"
-		if *reader {
-			role = "reader"
-		}
-		link, err := c.SigninLink(cmd.Context(), role)
-		if err != nil {
-			return err
-		}
-		if f.json {
-			return printJSON(cmd.OutOrStdout(), link)
-		}
-
-		w := cmd.OutOrStdout()
-		fmt.Fprintln(w, link.URL)
-		note := "Single-use; expires in " + humanDuration(time.Until(link.Expires)) + "."
-		if link.PasskeyRequired {
-			note += " Finish signing in with your passkey."
-		}
-		fmt.Fprintln(cmd.ErrOrStderr(), note)
-
-		if *open {
-			return openBrowser(link.URL)
-		}
-		return nil
+		return printSigninLink(cmd, f, *reader, *tenant, *open)
 	}
 	return cmd
+}
+
+// printSigninLink creates a sign-in link and prints it: the link alone on
+// standard output, so scripts can use it, and notes on standard error.
+func printSigninLink(cmd *cobra.Command, f *clientFlags, reader bool, tenant string, open bool) error {
+	c, err := f.client()
+	if err != nil {
+		return err
+	}
+	role := "admin"
+	if reader {
+		role = "reader"
+	}
+	link, err := c.SigninLink(cmd.Context(), role, tenant)
+	if err != nil {
+		return err
+	}
+	if f.json {
+		return printJSON(cmd.OutOrStdout(), link)
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout(), link.URL)
+	note := "Single-use; expires in " + humanDuration(time.Until(link.Expires)) + "."
+	if tenant != "" {
+		as := "an admin"
+		if reader {
+			as = "a reader"
+		}
+		note = "Signs in to tenant " + strconv.Quote(tenant) + " as " + as + ". " + note
+	}
+	if link.PasskeyRequired {
+		note += " Finish signing in with your passkey."
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), note)
+
+	if open {
+		return openBrowser(link.URL)
+	}
+	return nil
 }
 
 // humanDuration rounds d to whole minutes, or seconds under a minute.
@@ -283,13 +298,18 @@ func openBrowser(link string) error {
 	return exec.Command(name, link).Start()
 }
 
-// arrayKeys are the profile fields "doh profile set" always treats as
+// profileListKeys are the profile fields "doh profile set" always treats
+// as string lists.
+var profileListKeys = []string{"lists", "allow", "deny", "block_tlds", "clients"}
+
+// tenantListKeys are the tenant fields "doh tenant set" always treats as
 // string lists.
-var arrayKeys = []string{"lists", "allow", "deny", "block_tlds", "clients"}
+var tenantListKeys = []string{"networks"}
 
 // mergePatch turns key=value arguments with dotted keys, such as
-// security.rebinding=false, into a JSON merge patch.
-func mergePatch(args []string) (map[string]any, error) {
+// security.rebinding=false, into a JSON merge patch. Values of listKeys
+// are always string lists.
+func mergePatch(args []string, listKeys []string) (map[string]any, error) {
 	patch := map[string]any{}
 	for _, arg := range args {
 		key, value, ok := strings.Cut(arg, "=")
@@ -320,17 +340,17 @@ func mergePatch(args []string) (map[string]any, error) {
 		if _, exists := obj[last]; exists {
 			return nil, fmt.Errorf("key %q is set twice", key)
 		}
-		obj[last] = parseValue(key, value)
+		obj[last] = parseValue(key, value, listKeys)
 	}
 	return patch, nil
 }
 
-// parseValue interprets a "doh profile set" value.
-func parseValue(key, value string) any {
+// parseValue interprets a "doh profile set" or "doh tenant set" value.
+func parseValue(key, value string, listKeys []string) any {
 	switch {
 	case value == "":
 		return nil // an empty value resets the field
-	case slices.Contains(arrayKeys, key) || strings.Contains(value, ","):
+	case slices.Contains(listKeys, key) || strings.Contains(value, ","):
 		list := []string{}
 		for v := range strings.SplitSeq(value, ",") {
 			if v = strings.TrimSpace(v); v != "" {
@@ -363,6 +383,7 @@ Examples:
   doh profile list
   doh profile show default
   doh profile create kids --name "Kids' tablets"
+  doh profile create smith-kids --tenant smiths
   doh profile set kids safe_search=true security.newly_registered=true
   doh profile set streaming lists=threat-intel,hagezi-pro security.newly_registered=false
   doh profile delete kids`,
@@ -387,11 +408,23 @@ Examples:
 		if listFlags.json {
 			return printJSON(cmd.OutOrStdout(), api.Profiles{Profiles: profiles})
 		}
+		// Show tenants only on servers that have them.
+		tenants := slices.ContainsFunc(profiles, func(p policy.Profile) bool { return p.Tenant != "" })
+
 		tw := newTable(cmd.OutOrStdout())
-		fmt.Fprintln(tw, "ID\tNAME\tCLIENTS\tLISTS\tPROTECTIONS")
+		if tenants {
+			fmt.Fprintln(tw, "ID\tNAME\tTENANT\tCLIENTS\tLISTS\tPROTECTIONS")
+		} else {
+			fmt.Fprintln(tw, "ID\tNAME\tCLIENTS\tLISTS\tPROTECTIONS")
+		}
 		for _, p := range profiles {
 			clients := len(p.Clients) + len(p.Devices)
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", p.ID, cmp.Or(p.Name, "-"), clients, cmp.Or(strings.Join(p.Lists, ","), "-"), cmp.Or(strings.Join(protections(p), ","), "-"))
+			cols := []string{p.ID, cmp.Or(p.Name, "-")}
+			if tenants {
+				cols = append(cols, cmp.Or(p.Tenant, "-"))
+			}
+			cols = append(cols, strconv.Itoa(clients), cmp.Or(strings.Join(p.Lists, ","), "-"), cmp.Or(strings.Join(protections(p), ","), "-"))
+			fmt.Fprintln(tw, strings.Join(cols, "\t"))
 		}
 		return tw.Flush()
 	}
@@ -426,12 +459,13 @@ Examples:
 	}
 	createFlags := addClientFlags(create)
 	name := create.Flags().String("name", "", "human-readable name")
+	tenant := create.Flags().String("tenant", "", "the tenant the profile belongs to (operators only; a tenant's profiles are always its own)")
 	create.RunE = func(cmd *cobra.Command, args []string) error {
 		c, err := createFlags.client()
 		if err != nil {
 			return err
 		}
-		p, err := c.CreateProfile(cmd.Context(), policy.Profile{ID: args[0], Name: *name})
+		p, err := c.CreateProfile(cmd.Context(), policy.Profile{ID: args[0], Name: *name, Tenant: *tenant})
 		if err != nil {
 			return err
 		}
@@ -482,7 +516,7 @@ Examples:
 	}
 	setFlags := addClientFlags(set)
 	set.RunE = func(cmd *cobra.Command, args []string) error {
-		patch, err := mergePatch(args[1:])
+		patch, err := mergePatch(args[1:], profileListKeys)
 		if err != nil {
 			return err
 		}
@@ -887,6 +921,7 @@ func clientCommands() []*cobra.Command {
 		newLogCommand(),
 		newExplainCommand(),
 		newSetupCommand(),
+		newTenantCommand(),
 		newPeopleCommand(),
 	}
 }

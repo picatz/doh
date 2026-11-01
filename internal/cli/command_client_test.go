@@ -97,7 +97,7 @@ func TestMergePatch(t *testing.T) {
 		{[]string{"security=1", "security.bypass=true"}, "", true},
 	}
 	for _, tt := range tests {
-		got, err := mergePatch(tt.args)
+		got, err := mergePatch(tt.args, profileListKeys)
 		if (err != nil) != tt.wantErr {
 			t.Errorf("mergePatch(%q) err = %v", tt.args, err)
 			continue
@@ -354,7 +354,7 @@ func TestClientFlags_TokenFile(t *testing.T) {
 }
 
 func TestClientCommandsRegistered(t *testing.T) {
-	for _, name := range []string{"status", "ui", "profile", "allow", "deny", "log", "explain", "doctor", "setup", "people"} {
+	for _, name := range []string{"status", "ui", "profile", "allow", "deny", "log", "explain", "doctor", "setup", "tenant", "people"} {
 		cmd, _, err := New().Find([]string{name})
 		if err != nil || cmd.Name() != name {
 			t.Errorf("command %q not registered: %v", name, err)

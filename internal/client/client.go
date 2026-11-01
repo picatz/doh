@@ -269,14 +269,53 @@ func (c *Client) MobileConfig(ctx context.Context, profile, device, protocol str
 }
 
 // SigninLink creates a single-use link that signs a browser in to the web
-// UI with role: "admin", "reader", or "" for admin. Only admin tokens can
-// create links.
-func (c *Client) SigninLink(ctx context.Context, role string) (*api.SigninLink, error) {
+// UI with role: "admin", "reader", or "" for admin. With tenant, the link
+// signs in to that tenant, such as to invite a household's first admin;
+// only the operator may name a tenant. Only admins can create links.
+func (c *Client) SigninLink(ctx context.Context, role, tenant string) (*api.SigninLink, error) {
 	var link api.SigninLink
-	if _, err := c.call(ctx, http.MethodPost, "/signin-links", nil, api.SigninLinkRequest{Role: role}, "application/json", nil, &link); err != nil {
+	if _, err := c.call(ctx, http.MethodPost, "/signin-links", nil, api.SigninLinkRequest{Role: role, Tenant: tenant}, "application/json", nil, &link); err != nil {
 		return nil, err
 	}
 	return &link, nil
+}
+
+// Tenants returns the tenants the caller can see: every one for the
+// operator, or a tenant's own.
+func (c *Client) Tenants(ctx context.Context) ([]policy.Tenant, error) {
+	var tenants api.Tenants
+	if _, err := c.get(ctx, "/tenants", nil, &tenants); err != nil {
+		return nil, err
+	}
+	return tenants.Tenants, nil
+}
+
+// CreateTenant adds a tenant. Only the operator can.
+func (c *Client) CreateTenant(ctx context.Context, t policy.Tenant) (*policy.Tenant, error) {
+	var out policy.Tenant
+	if _, err := c.call(ctx, http.MethodPost, "/tenants", nil, t, "application/json", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PatchTenant changes the tenant with id by applying patch, encoded as
+// JSON, as a merge patch ([RFC 7396]). Only the operator can.
+//
+// [RFC 7396]: https://www.rfc-editor.org/rfc/rfc7396.html
+func (c *Client) PatchTenant(ctx context.Context, id string, patch any) (*policy.Tenant, error) {
+	var out policy.Tenant
+	if _, err := c.call(ctx, http.MethodPatch, "/tenants"+segment(id), nil, patch, api.MergePatchType, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteTenant removes the tenant with id, which must have no profiles
+// left, and its people. Only the operator can.
+func (c *Client) DeleteTenant(ctx context.Context, id string) error {
+	_, err := c.call(ctx, http.MethodDelete, "/tenants"+segment(id), nil, nil, "", nil, nil)
+	return err
 }
 
 // People returns everyone who can sign in to the web UI with passkeys,

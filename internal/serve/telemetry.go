@@ -171,17 +171,24 @@ func (s *Server) adminHandler() http.Handler {
 	mux.Handle("GET "+webui.AssetPrefix, webui.Handler())
 
 	mux.HandleFunc("GET "+MetricsPath, s.serveMetrics)
-	mux.HandleFunc("GET "+VarsPath, s.serveVars)
+	// Variables, profiles, and traces describe the whole process, so only
+	// the operator may read them: with tenants signing in from elsewhere,
+	// the admin listener may well be reachable from the internet.
+	debug := func(pattern string, h http.HandlerFunc) {
+		mux.Handle(pattern, s.requireOperator(h))
+	}
+
+	debug("GET "+VarsPath, s.serveVars)
 
 	// Mount pprof explicitly: importing net/http/pprof also registers its
 	// handlers on http.DefaultServeMux, which this server never serves.
-	mux.HandleFunc("GET "+PprofPath, pprof.Index)
-	mux.HandleFunc("GET "+PprofPath+"cmdline", pprof.Cmdline)
-	mux.HandleFunc("GET "+PprofPath+"profile", pprof.Profile)
-	mux.HandleFunc("GET "+PprofPath+"symbol", pprof.Symbol)
-	mux.HandleFunc("GET "+PprofPath+"trace", pprof.Trace)
+	debug("GET "+PprofPath, pprof.Index)
+	debug("GET "+PprofPath+"cmdline", pprof.Cmdline)
+	debug("GET "+PprofPath+"profile", pprof.Profile)
+	debug("GET "+PprofPath+"symbol", pprof.Symbol)
+	debug("GET "+PprofPath+"trace", pprof.Trace)
 
-	mux.HandleFunc("GET "+FlightRecorderPath, func(w http.ResponseWriter, r *http.Request) {
+	debug("GET "+FlightRecorderPath, func(w http.ResponseWriter, r *http.Request) {
 		if s.telemetry.recorder == nil {
 			http.Error(w, "flight recorder disabled; enable it with --flight-recorder", http.StatusNotFound)
 			return

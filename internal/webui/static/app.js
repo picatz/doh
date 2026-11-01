@@ -16,6 +16,7 @@ const state = {
   status: null,
   catalog: { features: [], presets: [] },
   profiles: [],
+  tenants: [], // every tenant for the operator, or the caller's own
   selected: "",
   view: "overview",
   readOnly: false,
@@ -130,7 +131,7 @@ async function api(method, path, { body, patch = false, query, signal, raw = fal
     }
   }
   if (!resp.ok) {
-    if (resp.status === 403) toast("You're signed in read-only: changes need an admin.", { error: true });
+    if (resp.status === 403) toast(isAdmin() && data?.error ? data.error : "You're signed in read-only: changes need an admin.", { error: true });
     if (resp.status === 412) {
       await loadPolicy();
       toast("The policy changed elsewhere, so it was reloaded. Try again.", { error: true });
@@ -291,14 +292,24 @@ async function refreshAuth() {
 // sign-in while no one has one.
 function renderWho() {
   const s = state.auth?.session;
-  clear($("who")).append(
+  const tenant = state.status?.tenant;
+  // Node.append would turn a missing badge into the text "null", so filter.
+  clear($("who")).append(...[
+    tenant && h("span", { class: "badge tenant", title: "Your tenant", text: tenantName(tenant) }),
     h("span", { class: "who-name", text: s?.name || "" }),
-    s?.role ? h("span", { class: "badge", text: s.role }) : null,
-  );
+    s?.role && h("span", { class: "badge", text: s.role }),
+  ].filter(Boolean));
   $("passkey-banner").hidden = !(s && !s.person && !state.auth.passkeys_required);
 }
 
 const isAdmin = () => state.auth?.session?.role === "admin";
+
+// isOperator reports whether the UI acts as the server's operator, rather
+// than for a tenant: the server tells tenants which one they are.
+const isOperator = () => !state.status?.tenant;
+
+const tenantOf = (id) => state.tenants.find((t) => t.id === id);
+const tenantName = (id) => tenantOf(id)?.name || id;
 
 // ---------- passkeys ----------
 
@@ -360,7 +371,10 @@ async function enterApp() {
   state.status = status;
   state.catalog = catalog || { features: [], presets: [] };
   setReadOnly(status.policy);
-  await loadPolicy();
+  await Promise.all([loadPolicy(), loadTenants()]);
+  // Only the operator manages tenants and sees how the server runs.
+  $("nav-tenants").hidden = !isOperator();
+  $("list-health-card").hidden = !isOperator();
   renderWho();
   $("signin").hidden = true;
   $("app").hidden = false;
@@ -379,6 +393,12 @@ function setReadOnly(policy) {
   for (const el of document.querySelectorAll(".edit")) el.disabled = state.readOnly;
 }
 
+// loadTenants loads the tenants the caller can see.
+async function loadTenants() {
+  const data = await api("GET", "/tenants");
+  state.tenants = data?.tenants || [];
+}
+
 async function loadPolicy() {
   const data = await api("GET", "/profiles");
   state.profiles = data?.profiles || [];
@@ -388,15 +408,16 @@ async function loadPolicy() {
 }
 
 function show(view) {
+  if (view === "tenants" && !isOperator()) view = "overview";
   state.view = view;
   for (const b of document.querySelectorAll(".nav")) {
     if (b.dataset.view === view) b.setAttribute("aria-current", "page");
     else b.removeAttribute("aria-current");
   }
-  for (const v of ["overview", "profiles", "logs", "explain", "security"]) $("view-" + v).hidden = v !== view;
+  for (const v of ["overview", "profiles", "logs", "explain", "security", "tenants"]) $("view-" + v).hidden = v !== view;
   closeDrawer();
   if (view !== "logs") stopLive();
-  const load = { overview: renderOverview, profiles: renderProfiles, logs: () => loadLogs(true), explain: () => {}, security: renderSecurity }[view];
+  const load = { overview: renderOverview, profiles: renderProfiles, logs: () => loadLogs(true), explain: () => {}, security: renderSecurity, tenants: renderTenants }[view];
   Promise.resolve(load()).catch(report);
 }
 
@@ -428,7 +449,7 @@ async function renderOverview() {
     card("Blocked", fmtNum(blocked), pct),
     card("Rewritten", fmtNum(stats.by_status?.rewritten)),
     card("Errors", fmtNum(stats.by_status?.error)),
-    card("Since start", fmtNum(status.queries?.total), `${fmtNum(status.queries?.cached)} from cache`),
+    status.queries && card("Since start", fmtNum(status.queries.total), `${fmtNum(status.queries.cached)} from cache`),
   );
 
   const reasons = Object.entries(stats.by_reason || {}).sort((a, b) => b[1] - a[1]);
@@ -451,6 +472,15 @@ async function renderOverview() {
 
   const info = clear($("server-info"));
   const kv = (k, v) => info.append(h("dt", { text: k }), h("dd", {}, v));
+  if (!isOperator()) {
+    // Tenants see their own corner of the server.
+    $("server-title").textContent = "Your tenant";
+    kv("Tenant", tenantName(status.tenant));
+    kv("Profiles", fmtNum(status.policy?.profiles));
+    kv("Query log", status.query_log?.enabled ? "on" : "off");
+    kv("Version", status.version || "—");
+    return;
+  }
   kv("Version", status.version || "—");
   kv("Uptime", status.started ? fmtDuration(Date.now() - new Date(status.started)) : "—");
   for (const [k, v] of Object.entries(status.listeners || {})) kv(`Listener (${k})`, h("span", { class: "mono", text: v }));
@@ -488,6 +518,7 @@ function renderProfiles() {
         h("h3", { text: p.name || p.id }),
         h("div", { class: "profile-meta mono", text: p.id }),
         h("div", { class: "profile-meta", text: `${on} protections · ${lists} lists · ${devices} devices` }),
+        isOperator() && p.tenant ? h("span", { class: "badge tenant", text: tenantName(p.tenant) }) : null,
       ),
     );
   }
@@ -757,7 +788,11 @@ function renderEditor() {
 
   card.append(
     h("div", { class: "editor-head" },
-      h("div", {}, h("h2", { text: p.name || p.id }), h("div", { class: "muted mono", text: id })),
+      h("div", {},
+        h("h2", { text: p.name || p.id }),
+        h("div", { class: "muted mono", text: id }),
+        isOperator() && p.tenant ? h("span", { class: "badge tenant", text: `Tenant: ${tenantName(p.tenant)}` }) : null,
+      ),
       edit(h("button", { type: "button", class: "danger", text: "Delete profile", onClick: () => deleteProfile(p) })),
     ),
     connectSection(p),
@@ -802,10 +837,7 @@ function renderEditor() {
     section("Privacy", "Ads and trackers.", group("privacy")),
     section("Parental", "Content some households restrict.",
       h("div", { class: "toggle-list" }, feats.filter((f) => f.category === "parental").map(featToggle)), group("parental")),
-    section("Custom lists", "Lists by URL or file path on the server, optionally named as name=location.",
-      chipEditor(custom, "https://example.com/list.txt", "Custom list",
-        (v) => patchProfile(id, { lists: [...lists, v] }),
-        (v) => patchProfile(id, { lists: lists.filter((l) => l !== v) }))),
+    customListsSection(p, custom, lists),
   );
 
   // Allow and deny
@@ -841,9 +873,10 @@ function renderEditor() {
     const addrs = dAddrs.value.split(/[\s,]+/).filter(Boolean);
     patchProfile(id, { devices: [...devices, { name: n, addrs }] });
   });
+  const bounds = networkHint(p);
   card.append(
-    section("Devices", "Named clients. Their addresses select this profile, and logs show their names.", devRows, devForm),
-    section("Networks", "Addresses or prefixes whose queries use this profile. The most specific match wins.",
+    section("Devices", "Named clients. Their addresses select this profile, and logs show their names.", bounds, devRows, devForm),
+    section("Networks", "Addresses or prefixes whose queries use this profile. The most specific match wins.", bounds?.cloneNode(true),
       chipEditor(p.clients, "192.168.1.0/24", "Client prefix",
         (v) => patchProfile(id, { clients: [...(p.clients || []), v] }),
         (v) => patchProfile(id, { clients: (p.clients || []).filter((c) => c !== v) }))),
@@ -883,6 +916,36 @@ function renderEditor() {
     )));
 }
 
+// customListsSection edits a profile's lists by URL or path. A tenant's
+// profiles may only use presets, unless the operator allows HTTPS lists,
+// since the server downloads them.
+function customListsSection(p, custom, lists) {
+  const id = p.id;
+  const editor = (placeholder) => chipEditor(custom, placeholder, "Custom list",
+    (v) => patchProfile(id, { lists: [...lists, v] }),
+    (v) => patchProfile(id, { lists: lists.filter((l) => l !== v) }));
+
+  if (!p.tenant) {
+    return section("Custom lists", "Lists by URL or file path on the server, optionally named as name=location.", editor("https://example.com/list.txt"));
+  }
+  if (tenantOf(p.tenant)?.custom_lists) {
+    return section("Custom lists", "Lists by HTTPS URL, optionally named as name=URL.", editor("https://example.com/list.txt"));
+  }
+  return section("Custom lists", "",
+    h("p", { class: "muted", text: "This profile's tenant can use preset lists only. Ask the server's operator to allow custom lists." }),
+    custom.length ? h("div", { class: "chips" }, custom.map((v) => h("span", { class: "chip", text: v }))) : null);
+}
+
+// networkHint says which addresses a tenant's profile may select devices
+// by: only those within its tenant's networks.
+function networkHint(p) {
+  if (!p.tenant) return null;
+  const nets = tenantOf(p.tenant)?.networks || [];
+  return h("p", { class: "field-note" }, nets.length
+    ? `Addresses must be within this tenant's networks: ${nets.join(", ")}.`
+    : "This tenant has no networks, so its devices select profiles by DoH path or host name.");
+}
+
 function confirmDialog(title, text) {
   const dlg = $("confirm-dialog");
   $("confirm-title").textContent = title;
@@ -912,6 +975,12 @@ async function deleteProfile(p) {
 function openCreate() {
   $("c-id").value = "";
   $("c-name").value = "";
+  const sel = $("c-tenant");
+  sel.replaceChildren(sel.options[0]);
+  for (const t of state.tenants) sel.append(h("option", { value: t.id, text: t.name ? `${t.name} (${t.id})` : t.id }));
+  sel.value = "";
+  // Tenants' profiles are always their own; only the operator chooses.
+  $("c-tenant-row").hidden = !isOperator() || !state.tenants.length;
   $("create-dialog").showModal();
 }
 
@@ -920,7 +989,8 @@ async function createProfile(e) {
   const id = $("c-id").value.trim();
   const name = $("c-name").value.trim();
   try {
-    const p = await api("POST", "/profiles", { body: { id, name, security: {} } });
+    const tenant = isOperator() ? $("c-tenant").value : "";
+    const p = await api("POST", "/profiles", { body: { id, name, tenant: tenant || undefined, security: {} } });
     $("create-dialog").close();
     replaceProfile(p);
     state.selected = p.id;
@@ -1107,6 +1177,132 @@ async function runExplain(ev) {
   out.append(card);
 }
 
+// ---------- tenants ----------
+
+// renderTenants lists tenants for the operator, each editable in place.
+async function renderTenants() {
+  await Promise.all([loadTenants(), loadPolicy()]);
+  const box = clear($("tenant-cards"));
+  if (!state.tenants.length) {
+    box.append(h("p", { class: "muted", text: "No tenants yet. Create one to share this server with another household." }));
+    return;
+  }
+  for (const t of state.tenants) box.append(tenantCard(t));
+}
+
+// patchTenant applies a merge patch to a tenant, re-rendering the view.
+async function patchTenant(id, patch) {
+  const t = await api("PATCH", `/tenants/${encodeURIComponent(id)}`, { body: patch, patch: true });
+  const i = state.tenants.findIndex((x) => x.id === id);
+  if (i >= 0) state.tenants[i] = t;
+  await renderTenants();
+  return t;
+}
+
+function tenantCard(t) {
+  const profiles = state.profiles.filter((p) => p.tenant === t.id);
+  const networks = t.networks || [];
+
+  const custom = edit(h("input", { type: "checkbox", role: "switch", checked: !!t.custom_lists, "aria-label": `Custom lists for ${t.id}` }));
+  custom.addEventListener("change", () => patchTenant(t.id, { custom_lists: custom.checked }).catch((err) => { custom.checked = !custom.checked; report(err); }));
+
+  const max = edit(h("input", { type: "number", min: 1, max: 1000, value: t.max_profiles || 20, "aria-label": `Most profiles for ${t.id}` }));
+  max.addEventListener("change", () => {
+    const n = parseInt(max.value, 10);
+    if (n >= 1) patchTenant(t.id, { max_profiles: n }).catch(report);
+  });
+
+  const head = h("div", { class: "tenant-head" },
+    h("h3", { text: t.name || t.id }),
+    h("span", { class: "muted mono", text: t.id }),
+    h("span", { class: "spacer" }),
+    edit(h("button", { type: "button", class: "ghost danger-text", text: "Delete", onClick: () => deleteTenant(t, profiles.length) })),
+  );
+
+  return h("article", { class: "card tenant-card" },
+    head,
+    h("div", { class: "tenant-grid" },
+      section("Networks", "Addresses its profiles may select devices by.",
+        chipEditor(networks, "192.168.10.0/24", `Network for ${t.id}`,
+          (v) => patchTenant(t.id, { networks: [...networks, v] }),
+          (v) => patchTenant(t.id, { networks: networks.filter((n) => n !== v) }))),
+      section("Profiles", "",
+        profiles.length
+          ? h("div", { class: "chips" }, profiles.map((p) => h("span", { class: "chip", text: p.id })))
+          : h("p", { class: "muted", text: "None yet. Its admins create them, or you can from Profiles." })),
+      section("Limits", "",
+        h("div", { class: "toggle-list" },
+          h("div", { class: "toggle" }, h("div", { class: "title", text: "Custom lists" }), h("div", { class: "control" }, custom),
+            h("div", { class: "desc", text: "Let its profiles use blocklists by HTTPS URL, which this server downloads, not only presets." })),
+          h("div", { class: "toggle" }, h("div", { class: "title", text: "Most profiles" }), h("div", { class: "control" }, max),
+            h("div", { class: "desc", text: `It has ${profiles.length}.` })),
+        )),
+    ),
+    inviteSection(t),
+  );
+}
+
+// inviteSection makes single-use sign-in links for a tenant's people.
+function inviteSection(t) {
+  const result = h("div", { "aria-live": "polite" });
+  const role = edit(h("select", { "aria-label": "Role" },
+    h("option", { value: "admin", text: "Admin" }),
+    h("option", { value: "reader", text: "Read-only" })));
+  const button = edit(h("button", { type: "button", class: "primary", text: "Invite someone" }));
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const link = await api("POST", "/signin-links", { body: { tenant: t.id, role: role.value } });
+      clear(result).append(h("div", { class: "invite" },
+        h("div", { class: "link" }, h("output", { text: link.url }), copyButton(link.url, "sign-in link")),
+        h("p", { class: "field-note", text: `Send this to them. It works once, and expires at ${fmtTime(link.expires)}.${link.passkey_required ? " They'll finish with their passkey." : " They can add a passkey once signed in."}` }),
+      ));
+    } catch (err) {
+      report(err);
+    } finally {
+      button.disabled = state.readOnly;
+    }
+  });
+  return section("Invite", "A single-use sign-in link to this tenant, for its first admin or anyone else.",
+    h("div", { class: "invite-form" }, role, button), result);
+}
+
+async function deleteTenant(t, profiles) {
+  const text = profiles
+    ? `It still has ${profiles} profile${profiles === 1 ? "" : "s"}: delete or move them first.`
+    : "Its people and their passkeys are removed too, and they're signed out.";
+  if (!(await confirmDialog(`Delete ${t.name || t.id}?`, text))) return;
+  try {
+    await api("DELETE", `/tenants/${encodeURIComponent(t.id)}`);
+    toast(`Deleted ${t.id}`);
+    await renderTenants();
+  } catch (err) {
+    report(err);
+  }
+}
+
+function openCreateTenant() {
+  for (const id of ["t-id", "t-name", "t-networks"]) $(id).value = "";
+  $("tenant-dialog").showModal();
+}
+
+async function createTenant(e) {
+  e.preventDefault();
+  const body = {
+    id: $("t-id").value.trim(),
+    name: $("t-name").value.trim() || undefined,
+    networks: $("t-networks").value.split(/[\s,]+/).filter(Boolean),
+  };
+  try {
+    const t = await api("POST", "/tenants", { body });
+    $("tenant-dialog").close();
+    toast(`Created ${t.id}. Invite its first admin below.`);
+    await renderTenants();
+  } catch (err) {
+    report(err);
+  }
+}
+
 // ---------- security ----------
 
 // renderSecurity lists people and their passkeys, and offers to add one.
@@ -1209,6 +1405,9 @@ function wire() {
   $("add-passkey").addEventListener("submit", addPasskey);
   for (const b of document.querySelectorAll(".nav")) b.addEventListener("click", () => show(b.dataset.view));
   $("new-profile").addEventListener("click", openCreate);
+  $("new-tenant").addEventListener("click", openCreateTenant);
+  $("tenant-form").addEventListener("submit", createTenant);
+  $("tenant-cancel").addEventListener("click", () => $("tenant-dialog").close());
   $("create-form").addEventListener("submit", createProfile);
   $("create-cancel").addEventListener("click", () => $("create-dialog").close());
   $("log-filters").addEventListener("submit", (e) => {

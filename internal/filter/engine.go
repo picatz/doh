@@ -288,6 +288,10 @@ func (e *Engine) isLocal(name string) bool {
 // ID returns the profile's ID.
 func (p *Profile) ID() string { return p.config.ID }
 
+// Tenant returns the ID of the tenant the profile belongs to, or "" for
+// the server's operator.
+func (p *Profile) Tenant() string { return p.config.Tenant }
+
 // HasDevice reports whether the profile names device.
 func (p *Profile) HasDevice(device string) bool { return p.devices[device] }
 

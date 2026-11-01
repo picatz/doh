@@ -33,6 +33,7 @@
       <button type="button" class="nav" data-view="logs">Query log</button>
       <button type="button" class="nav" data-view="explain">Explain</button>
       <button type="button" class="nav" data-view="security">Security</button>
+      <button type="button" class="nav" data-view="tenants" id="nav-tenants" hidden>Tenants</button>
     </nav>
     <div class="account">
       <span id="who" class="who"></span>
@@ -52,11 +53,11 @@
       <div id="stat-cards" class="cards"></div>
       <div class="grid2">
         <div class="card"><h3>Blocked by reason</h3><div id="by-reason" class="bars"></div></div>
-        <div class="card"><h3>Server</h3><dl id="server-info" class="kv"></dl></div>
+        <div class="card"><h3 id="server-title">Server</h3><dl id="server-info" class="kv"></dl></div>
         <div class="card"><h3>Top blocked</h3><ol id="top-blocked" class="toplist"></ol></div>
         <div class="card"><h3>Top clients</h3><ol id="top-clients" class="toplist"></ol></div>
       </div>
-      <div class="card">
+      <div class="card" id="list-health-card">
         <h3>Blocklists</h3>
         <div class="table-wrap"><table>
           <thead><tr><th scope="col">List</th><th scope="col">Rules</th><th scope="col">Loaded</th><th scope="col">State</th></tr></thead>
@@ -108,6 +109,15 @@
       <div id="explain-result"></div>
     </section>
 
+    <section id="view-tenants" class="view" hidden aria-labelledby="tenants-title">
+      <div class="heading-row">
+        <h2 id="tenants-title">Tenants</h2>
+        <button type="button" id="new-tenant" class="primary edit">New tenant</button>
+      </div>
+      <p class="muted lede">Share this server with other households. Each tenant manages its own profiles, devices, query log, and people, and sees no one else's. Its profiles select devices by DoH path or host name, or by address within the networks you give it.</p>
+      <div id="tenant-cards" class="tenants"></div>
+    </section>
+
     <section id="view-security" class="view" hidden aria-labelledby="security-title">
       <h2 id="security-title">Security</h2>
       <p class="muted lede">Passkeys sign you in with Face ID, Touch ID, Windows Hello, or a security key. Once anyone has one, sign-in links from <code>doh ui</code> need a passkey to finish.</p>
@@ -138,7 +148,25 @@
     <input id="c-id" required pattern="[a-z0-9][a-z0-9\-]{0,62}" placeholder="streaming" spellcheck="false">
     <label for="c-name">Name</label>
     <input id="c-name" placeholder="Streaming sticks">
+    <div id="c-tenant-row" hidden>
+      <label for="c-tenant">Tenant</label>
+      <select id="c-tenant"><option value="">None: yours, as the operator</option></select>
+    </div>
     <div class="actions"><button type="button" id="create-cancel">Cancel</button><button type="submit" class="primary">Create</button></div>
+  </form>
+</dialog>
+
+<dialog id="tenant-dialog">
+  <form id="tenant-form" method="dialog">
+    <h3>New tenant</h3>
+    <label for="t-id">ID <span class="muted">(lower-case letters, digits, and hyphens)</span></label>
+    <input id="t-id" required pattern="[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?" placeholder="smiths" spellcheck="false">
+    <label for="t-name">Name</label>
+    <input id="t-name" placeholder="The Smiths">
+    <label for="t-networks">Networks <span class="muted">(optional, comma-separated)</span></label>
+    <input id="t-networks" placeholder="192.168.10.0/24, fd10::/64" spellcheck="false">
+    <p class="muted hint">Their profiles may select devices by these addresses. Tenants' networks can't overlap.</p>
+    <div class="actions"><button type="button" id="tenant-cancel">Cancel</button><button type="submit" class="primary">Create</button></div>
   </form>
 </dialog>
 
