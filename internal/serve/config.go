@@ -39,6 +39,11 @@ type Config struct {
 	// what Android's Private DNS setting uses.
 	DoTListen string `json:"dot_listen,omitempty"`
 
+	// DoQListen, if set, also serves DNS-over-QUIC (RFC 9250) on this UDP
+	// address (typically ":853"), with the same certificate as DoH. It's
+	// experimental, built on golang.org/x/net/quic.
+	DoQListen string `json:"doq_listen,omitempty"`
+
 	// Hostname is the server's public host name, such as
 	// "dns.example.com". Each profile is then also reachable by name, over
 	// DoT and DoH: "kids.dns.example.com" selects profile "kids", and
@@ -468,6 +473,14 @@ func (c Config) Validate() error {
 		}
 		if c.TLS.CertFile == "" && len(c.TLS.ACME.Domains) == 0 {
 			errs = append(errs, errors.New("dot_listen needs a TLS certificate or an ACME domain"))
+		}
+	}
+	if c.DoQListen != "" {
+		if _, _, err := net.SplitHostPort(c.DoQListen); err != nil {
+			errs = append(errs, fmt.Errorf("doq_listen: %w", err))
+		}
+		if c.TLS.CertFile == "" && len(c.TLS.ACME.Domains) == 0 {
+			errs = append(errs, errors.New("doq_listen needs a TLS certificate or an ACME domain"))
 		}
 	}
 	if c.Hostname != "" {

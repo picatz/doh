@@ -405,6 +405,15 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		opened = append(opened, dotLn)
 	}
 
+	var doqPC net.PacketConn
+	if s.config.DoQListen != "" {
+		if doqPC, err = net.ListenPacket("udp", s.config.DoQListen); err != nil {
+			closeAll()
+			return listenError("serve: doq", s.config.DoQListen, err)
+		}
+		opened = append(opened, doqPC)
+	}
+
 	var adminLn net.Listener
 	if s.config.Admin.Listen != "" {
 		if adminLn, err = net.Listen("tcp", s.config.Admin.Listen); err != nil {
@@ -448,6 +457,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	if dotLn != nil {
 		g.Go(func() error { return s.ServeDoT(ctx, dotLn) })
+	}
+	if doqPC != nil {
+		g.Go(func() error { return s.ServeDoQ(ctx, doqPC) })
 	}
 	g.Go(func() error { return s.lists.Refresh(ctx, time.Duration(s.config.Blocklist.Refresh)) })
 	if s.store != nil {

@@ -1,11 +1,13 @@
 // Package upstream exchanges DNS messages with upstream resolvers over
-// DNS-over-HTTPS, DNS-over-TLS, or plain DNS (UDP and TCP).
+// DNS-over-HTTPS, DNS-over-TLS, DNS-over-QUIC, or plain DNS (UDP and
+// TCP).
 //
 // Upstreams are identified by URL:
 //
 //	https://dns.google/dns-query   DNS-over-HTTPS (RFC 8484)
 //	http://127.0.0.1:8080/dns-query  DoH without TLS, such as to a local server
 //	tls://1.1.1.1:853              DNS-over-TLS (RFC 7858)
+//	quic://dns.example:853         DNS-over-QUIC (RFC 9250), experimental
 //	tcp://9.9.9.9:53               DNS over TCP
 //	udp://9.9.9.9:53               DNS over UDP, retried over TCP if truncated
 //	9.9.9.9                        shorthand for udp://9.9.9.9:53
@@ -25,6 +27,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/picatz/doh/internal/doq"
 	"github.com/picatz/doh/pkg/doh"
 )
 
@@ -125,10 +128,47 @@ func Parse(rawURL string, opts Options) (Exchanger, error) {
 				Dialer:    opts.Dialer,
 			},
 		}, nil
+	case "quic":
+		if opts.Dialer != nil {
+			return nil, fmt.Errorf("upstream: %q: DNS-over-QUIC upstreams resolve their own names, so a custom resolver can't be used with them", rawURL)
+		}
+
+		tlsConfig := &tls.Config{}
+		if opts.TLSConfig != nil {
+			tlsConfig = opts.TLSConfig.Clone()
+		}
+		if tlsConfig.ServerName == "" {
+			tlsConfig.ServerName = u.Hostname()
+		}
+
+		return &quicUpstream{
+			client:  &doq.Client{Addr: withDefaultPort(u.Host, doq.DefaultPort), TLSConfig: tlsConfig},
+			timeout: timeout,
+		}, nil
 	default:
-		return nil, fmt.Errorf("upstream: unsupported scheme %q in %q (want https, http, tls, tcp, or udp)", u.Scheme, rawURL)
+		return nil, fmt.Errorf("upstream: unsupported scheme %q in %q (want https, http, tls, quic, tcp, or udp)", u.Scheme, rawURL)
 	}
 }
+
+// quicUpstream is a DNS-over-QUIC upstream, which reuses one connection
+// for its queries.
+type quicUpstream struct {
+	client  *doq.Client
+	timeout time.Duration
+}
+
+// Exchange sends query, bounded by the upstream's timeout if ctx has no
+// earlier deadline.
+func (u *quicUpstream) Exchange(ctx context.Context, query *dns.Msg) (*dns.Msg, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, u.timeout)
+		defer cancel()
+	}
+	return u.client.Exchange(ctx, query)
+}
+
+func (u *quicUpstream) String() string { return u.client.String() }
 
 // withDefaultPort appends port to host if it has none.
 func withDefaultPort(host, port string) string {
