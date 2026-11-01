@@ -263,6 +263,7 @@ dialog form { display: grid; gap: .5rem; }
 .app { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .4rem .2rem; border-bottom: 1px dashed var(--border); cursor: pointer; }
 .app:last-child { border-bottom: 0; }
 .app-name { font-weight: 600; }
+.app-search { width: 100%; max-width: 24rem; margin: .25rem 0 .75rem; }
 
 .tz { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .75rem; margin-bottom: .75rem; }
 .tz > label { font-weight: 600; }
@@ -297,6 +298,7 @@ dialog form { display: grid; gap: .5rem; }
 .mode-panel { display: grid; gap: .6rem; }
 .radio, .check { display: flex; align-items: center; gap: .45rem; cursor: pointer; }
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .3rem .75rem; }
+.check-grid.scroll { max-height: 14rem; overflow-y: auto; padding-right: .25rem; }
 
 @media (max-width: 600px) {
   .schedule { grid-template-columns: 1fr; }

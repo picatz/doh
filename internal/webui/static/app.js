@@ -26,6 +26,7 @@ const state = {
   live: null, // AbortController of the live stream
   connect: { device: "", platform: "" }, // the "Connect a device" choices
   draft: null, // the schedule being added or edited, kept across renders
+  appQuery: "", // the Apps search, kept across renders
 };
 
 // ---------- DOM helpers ----------
@@ -50,6 +51,9 @@ function h(tag, attrs = {}, ...children) {
   }
   return el;
 }
+
+// count says how many of a thing there are: "1 list", "3 lists".
+const count = (n, noun) => `${fmtNum(n)} ${noun}${n === 1 ? "" : "s"}`;
 
 function clear(el) {
   el.replaceChildren();
@@ -516,11 +520,13 @@ function renderProfiles() {
     const devices = p.devices?.length || 0;
     const lists = p.lists?.length || 0;
     const on = Object.entries(p.security || {}).filter(([k, v]) => v === true).length;
+    const apps = p.services?.length || 0;
+    const meta = [count(on, "protection"), count(lists, "list"), apps ? count(apps, "app") : null, count(devices, "device")];
     cards.append(
       h("button", { type: "button", class: "card", "aria-pressed": String(p.id === state.selected), onClick: () => selectProfile(p.id) },
         h("h3", { text: p.name || p.id }),
         h("div", { class: "profile-meta mono", text: p.id }),
-        h("div", { class: "profile-meta", text: `${on} protections · ${lists} lists · ${devices} devices` }),
+        h("div", { class: "profile-meta", text: meta.filter(Boolean).join(" · ") }),
         isOperator() && p.tenant ? h("span", { class: "badge tenant", text: tenantName(p.tenant) }) : null,
       ),
     );
@@ -930,14 +936,18 @@ function renderEditor() {
 
 // ---------- apps and schedules ----------
 
-const CATEGORIES = [["social", "Social"], ["video", "Video"], ["gaming", "Gaming"], ["messaging", "Messaging"]];
+const CATEGORIES = [
+  ["social", "Social"], ["messaging", "Messaging"], ["video", "Video and streaming"], ["music", "Music"],
+  ["gaming", "Gaming"], ["ai", "AI chat"], ["shopping", "Shopping"], ["dating", "Dating"], ["gambling", "Gambling and betting"],
+];
 
 const services = () => state.catalog.services || [];
 const serviceName = (id) => services().find((s) => s.id === id)?.name || id;
 const listTitle = (name) => state.catalog.presets?.find((x) => x.name === name)?.title || name;
 const blockNames = (kind, id) => (kind === "service" ? serviceName(id) : listTitle(id));
 
-// appsSection toggles the services a profile always blocks, by category.
+// appsSection toggles the services a profile always blocks, by category,
+// with a search that narrows the catalog as you type.
 function appsSection(p) {
   const blocked = p.services || [];
   const known = new Set(services().map((s) => s.id));
@@ -945,17 +955,45 @@ function appsSection(p) {
     const list = services().filter((s) => s.category === cat);
     if (!list.length) return null;
     return h("fieldset", { class: "app-group" }, h("legend", { text: title }),
-      list.map((s) => h("label", { class: "app" },
+      list.map((s) => h("label", { class: "app", "data-search": `${s.name} ${s.id} ${title}`.toLowerCase() },
         h("span", { class: "app-name", text: s.name }),
         switchControl(`Block ${s.name}`, blocked.includes(s.id), (on) => {
           const cur = profile().services || [];
           return { services: on ? [...cur, s.id] : cur.filter((x) => x !== s.id) };
         }),
       )));
+  }).filter(Boolean);
+
+  const grid = h("div", { class: "app-groups" }, groups);
+  const none = h("p", { class: "muted", text: "No apps match.", hidden: true });
+  const search = h("input", {
+    type: "search", class: "app-search", placeholder: `Search ${services().length} apps`,
+    "aria-label": "Search apps", value: state.appQuery || "",
   });
+  const narrow = () => {
+    const q = (state.appQuery = search.value.trim().toLowerCase());
+    let shown = 0;
+    for (const g of groups) {
+      let any = false;
+      for (const app of g.querySelectorAll(".app")) {
+        app.hidden = q !== "" && !app.dataset.search.includes(q);
+        any ||= !app.hidden;
+      }
+      g.hidden = !any;
+      shown += any ? 1 : 0;
+    }
+    none.hidden = shown > 0;
+  };
+  search.addEventListener("input", narrow);
+  narrow();
+
+  const summary = blocked.length
+    ? `Blocked: ${blocked.map(serviceName).join(", ")}.`
+    : "Nothing blocked by name yet.";
   const unknown = blocked.filter((id) => !known.has(id));
   return section("Apps", "Block apps and sites by name, with the domains they use. Apps change their domains, so this is a best effort: deny any that slip through.",
-    h("div", { class: "app-groups" }, groups),
+    h("p", { class: "field-note", text: summary }),
+    search, none, grid,
     unknown.length ? h("p", { class: "field-note", text: `Also blocked, but no longer in the catalog: ${unknown.join(", ")}.` }) : null);
 }
 
@@ -1097,7 +1135,7 @@ function scheduleForm(p, d) {
         draftChips(d.allow, "school.example", "Allow during this schedule"));
       return;
     }
-    const checks = (kind, items) => h("div", { class: "check-grid" }, items.map(([value, label]) => {
+    const checks = (kind, items) => h("div", { class: "check-grid" + (items.length > 24 ? " scroll" : "") }, items.map(([value, label]) => {
       const input = edit(h("input", { type: "checkbox", checked: d[kind].includes(value) }));
       input.addEventListener("change", () => { d[kind] = input.checked ? [...d[kind], value] : d[kind].filter((x) => x !== value); });
       return h("label", { class: "check" }, input, label);

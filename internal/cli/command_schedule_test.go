@@ -368,16 +368,22 @@ func TestScheduleList_WithoutTimeZone(t *testing.T) {
 }
 
 func TestServicesCommand(t *testing.T) {
-	run := func(args ...string) string {
-		root := &cobra.Command{Use: "doh"}
+	exec := func(args ...string) (string, error) {
+		root := &cobra.Command{Use: "doh", SilenceErrors: true}
 		root.AddCommand(newServicesCommand())
 		var out bytes.Buffer
 		root.SetOut(&out)
+		root.SetErr(&out)
 		root.SetArgs(append([]string{"services"}, args...))
-		if err := root.Execute(); err != nil {
+		err := root.Execute()
+		return out.String(), err
+	}
+	run := func(args ...string) string {
+		out, err := exec(args...)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return out.String()
+		return out
 	}
 
 	out := run()
@@ -389,6 +395,35 @@ func TestServicesCommand(t *testing.T) {
 	var listed []services.Service
 	if err := json.Unmarshal([]byte(run("--json")), &listed); err != nil || len(listed) != len(services.Catalog) {
 		t.Errorf("services --json: %d services, %v", len(listed), err)
+	}
+
+	// A search matches IDs, names, and categories, case-insensitively.
+	if out := run("CHAT"); !strings.Contains(out, "chatgpt") || !strings.Contains(out, "wechat") || strings.Contains(out, "tiktok") {
+		t.Errorf("services CHAT:\n%s", out)
+	}
+	if err := json.Unmarshal([]byte(run("--category", "dating", "--json")), &listed); err != nil || len(listed) == 0 {
+		t.Fatalf("services --category dating: %v", err)
+	}
+	for _, s := range listed {
+		if s.Category != "dating" {
+			t.Errorf("services --category dating listed %s (%s)", s.ID, s.Category)
+		}
+	}
+	if out := run("nothing-like-this", "--json"); strings.TrimSpace(out) != "[]" {
+		t.Errorf("services --json with no matches = %q, want []", out)
+	}
+
+	for args, want := range map[string]string{
+		"nothing-like-this": "no services match",
+		"--category=nope":   `unknown --category "nope"`,
+	} {
+		out, err := exec(args)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("services %s: %v, want %q", args, err, want)
+		}
+		if strings.Contains(out, "Usage:") {
+			t.Errorf("services %s printed usage for a failed search:\n%s", args, out)
+		}
 	}
 }
 
