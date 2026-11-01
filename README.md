@@ -8,7 +8,7 @@
 `doh` is a single binary for [DNS over HTTPS](https://www.rfc-editor.org/rfc/rfc8484.html) (DoH):
 
 - **`doh query`** looks up records from several DoH servers at once ([Cloudflare](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/), [Google](https://developers.google.com/speed/public-dns/docs/doh), and [Quad9](https://quad9.net/news/blog/doh-with-quad9-dns-servers/) by default, or your own), streaming the results as JSON.
-- **`doh serve`** runs a DoH and plain DNS server that forwards queries to upstream resolvers over DoH, DNS-over-TLS, or plain DNS, with TLS from your own certificates or [Let's Encrypt](https://letsencrypt.org/). It protects every device that uses it: threat intelligence, DNS rebinding and look-alike domain protection, newly registered domain checks, profiles for groups of devices, a query log you can trace and undo blocks from, and a web UI.
+- **`doh serve`** runs a DoH, DNS-over-TLS, and plain DNS server (with experimental DNS-over-QUIC) that forwards queries to upstream resolvers over DoH, DNS-over-TLS, DNS-over-QUIC, or plain DNS, with TLS from your own certificates or [Let's Encrypt](https://letsencrypt.org/). It protects every device that uses it: threat intelligence, DNS rebinding and look-alike domain protection, newly registered domain checks, profiles for groups of devices, a query log you can trace and undo blocks from, and a web UI.
 - **`doh status`**, **`profile`**, **`allow`**, **`log`**, **`explain`**, and **`doctor`** manage a running server, and check that a device's DNS actually goes through it.
 
 It's also a Go library: [`pkg/doh`](https://pkg.go.dev/github.com/picatz/doh/pkg/doh) provides the client and server building blocks.
@@ -188,6 +188,17 @@ $ doh setup kids --device ipad --mobileconfig ipad.mobileconfig   # open it on t
 
 The web UI's **Connect a device** panel shows the same, for every platform, with one-click configuration profile downloads.
 
+#### DNS-over-QUIC (experimental)
+
+Add `--doq-listen :853` to also serve [DNS-over-QUIC](https://www.rfc-editor.org/rfc/rfc9250.html) on UDP port 853, with the same certificate, and the same profile host names, as DNS-over-TLS. Queries share one connection without waiting on each other, and responses are padded when queries are. Upstreams can use it too, as `quic://dns.example.com`.
+
+```console
+$ doh serve --acme-domain dns.example.com --dot-listen :853 --doq-listen :853
+$ doh query example.com --servers quic://dns.example.com
+```
+
+It's built on `golang.org/x/net/quic`, which its authors don't yet consider ready for production, so DoQ is opt-in. DNS-over-HTTPS over HTTP/3 is waiting on Go's standard library ([#73](https://github.com/picatz/doh/issues/73)).
+
 ### Your network's own names
 
 Special-use and private names, such as `localhost`, `home.arpa`, and reverse lookups of private addresses, are answered locally rather than leaked upstream. To resolve your network's hostnames, forward their domain to the router, or give names fixed answers with a profile's rewrites:
@@ -293,12 +304,12 @@ $ doh query --help
 Query DNS records from DoH servers using the given domains and record type.
 
 Users can specify which servers to use for the query, or use the default servers from Google, Cloudflare, and Quad9.
-Servers can use DNS-over-HTTPS (https://, or http:// for a local server), DNS-over-TLS (tls://host[:853]), or plain
-DNS (udp://host[:53], tcp://host[:53], or just host), the same forms doh serve accepts as upstreams. They can also
-specify a timeout for the query, which defaults to 30 seconds if not specified. Each server is queried in parallel,
-and each domain is queried in parallel. Results are streamed to STDOUT as JSON newline delimited objects, including
-the TLS version, cipher suite, and ALPN protocol for encrypted servers, which can be piped to other commands (e.g. jq)
-or redirected to a file.
+Servers can use DNS-over-HTTPS (https://, or http:// for a local server), DNS-over-TLS (tls://host[:853]),
+DNS-over-QUIC (quic://host[:853], experimental), or plain DNS (udp://host[:53], tcp://host[:53], or just host), the
+same forms doh serve accepts as upstreams. They can also specify a timeout for the query, which defaults to 30 seconds
+if not specified. Each server is queried in parallel, and each domain is queried in parallel. Results are streamed to
+STDOUT as JSON newline delimited objects, including the TLS version, cipher suite, and ALPN protocol for encrypted
+servers, which can be piped to other commands (e.g. jq) or redirected to a file.
 
 Usage:
   doh query domains... [flags]
@@ -309,7 +320,7 @@ Flags:
       --resolver-addr string      address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53); connects directly, ignoring HTTP(S)_PROXY
       --resolver-network string   protocol to use for resolving DoH server names (e.g. udp, tcp) (default "udp")
       --retry-max int             maximum number of retries for each DoH query (default 10)
-      --servers strings           servers to query: https://, http://, tls://, udp://, tcp://, or host (default [https://dns.google/dns-query,https://cloudflare-dns.com/dns-query,https://dns.quad9.net:5053/dns-query])
+      --servers strings           servers to query: https://, http://, tls://, quic://, udp://, tcp://, or host (default [https://dns.google/dns-query,https://cloudflare-dns.com/dns-query,https://dns.quad9.net:5053/dns-query])
       --timeout duration          timeout for query, 0s for none (plain DNS and DNS-over-TLS exchanges still give up after 5s) (default 30s)
       --type string               dns record type to query for each domain, such as A, AAAA, MX, etc. (default "A")
 ```
@@ -326,8 +337,8 @@ Serve DNS-over-HTTPS (RFC 8484), forwarding queries to upstream resolvers.
 Upstreams are asked in order of preference: if one is slow to answer, or
 fails, the next is asked too, and the first answer wins. Upstreams that keep
 failing are asked last until they recover. They may use DNS-over-HTTPS
-(https://), DNS-over-TLS (tls://host[:853]), or plain DNS (udp://host[:53],
-tcp://host[:53], or just host).
+(https://), DNS-over-TLS (tls://host[:853]), DNS-over-QUIC (quic://host[:853],
+experimental), or plain DNS (udp://host[:53], tcp://host[:53], or just host).
 
 DoH requires TLS unless --plaintext is set, for running behind a reverse proxy
 or load balancer that terminates TLS. Certificates come from files, reloaded
@@ -395,6 +406,7 @@ Flags:
       --config string                  path to a JSON config file
       --data-dir string                directory for the policy, admin API tokens, query log, and registration cache (default $STATE_DIRECTORY, or doh in the user config dir)
       --dns-listen string              also serve plain DNS over UDP and TCP on this address, such as :53
+      --doq-listen string              also serve DNS-over-QUIC (experimental) on this UDP address, such as :853, with the DoH certificate
       --dot-listen string              also serve DNS-over-TLS on this address, such as :853, with the DoH certificate
       --flight-recorder                keep recent execution traces in memory, to snapshot from the admin listener
       --forward strings                send names under a domain to other upstreams, as domain=upstream, such as lan=192.168.1.1

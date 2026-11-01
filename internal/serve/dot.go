@@ -47,7 +47,7 @@ func (s *Server) ServeDoT(ctx context.Context, ln net.Listener) error {
 			}
 		}
 
-		resp := s.answerDoT(queryCtx, addrOf(w.RemoteAddr()), serverName, req)
+		resp := s.answerByServerName(queryCtx, "dot", addrOf(w.RemoteAddr()), serverName, req)
 		if err := w.WriteMsg(resp); err != nil {
 			s.logger.Debug("dot: writing response", slog.Any("error", err))
 		}
@@ -85,16 +85,16 @@ func (s *Server) ServeDoT(ctx context.Context, ln net.Listener) error {
 	return errors.Join(err, shutdownDNS([]*dns.Server{srv}))
 }
 
-// answerDoT answers a DNS-over-TLS query, selecting the profile by the TLS
-// server name, if it names one.
-func (s *Server) answerDoT(ctx context.Context, client netip.Addr, serverName string, req *dns.Msg) *dns.Msg {
+// answerByServerName answers a query received over transport ("dot" or
+// "doq"), selecting the profile by the TLS server name, if it names one.
+func (s *Server) answerByServerName(ctx context.Context, transport string, client netip.Addr, serverName string, req *dns.Msg) *dns.Msg {
 	profile, device, ok := s.profileFromHost(serverName)
 	if ok && s.engine.Load().Profile(profile) == nil {
 		// A name under the hostname that isn't a profile: refuse rather
 		// than silently falling back to another profile's rules.
 		return refuseUnknownProfile(req)
 	}
-	return s.answerQuery(ctx, request{transport: "dot", query: req, client: client, profile: profile, device: device})
+	return s.answerQuery(ctx, request{transport: transport, query: req, client: client, profile: profile, device: device})
 }
 
 // refuseUnknownProfile answers a query whose host name names no profile.

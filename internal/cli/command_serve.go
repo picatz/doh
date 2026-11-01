@@ -51,6 +51,8 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v string) { c.DNSListen = v }),
 	option((*pflag.FlagSet).String, "dot-listen", "", "also serve DNS-over-TLS on this address, such as :853, with the DoH certificate",
 		func(c *serve.Config, v string) { c.DoTListen = v }),
+	option((*pflag.FlagSet).String, "doq-listen", "", "also serve DNS-over-QUIC (experimental) on this UDP address, such as :853, with the DoH certificate",
+		func(c *serve.Config, v string) { c.DoQListen = v }),
 	option((*pflag.FlagSet).String, "hostname", "", "public host name, such as dns.example.com, under which profiles are reachable as {profile}.{hostname} (default the first --acme-domain)",
 		func(c *serve.Config, v string) { c.Hostname = v }),
 	option((*pflag.FlagSet).String, "path", doh.DefaultPath, "URI path of the DoH endpoint",
@@ -158,8 +160,8 @@ func newServeCommand() *cobra.Command {
 Upstreams are asked in order of preference: if one is slow to answer, or
 fails, the next is asked too, and the first answer wins. Upstreams that keep
 failing are asked last until they recover. They may use DNS-over-HTTPS
-(https://), DNS-over-TLS (tls://host[:853]), or plain DNS (udp://host[:53],
-tcp://host[:53], or just host).
+(https://), DNS-over-TLS (tls://host[:853]), DNS-over-QUIC (quic://host[:853],
+experimental), or plain DNS (udp://host[:53], tcp://host[:53], or just host).
 
 DoH requires TLS unless --plaintext is set, for running behind a reverse proxy
 or load balancer that terminates TLS. Certificates come from files, reloaded

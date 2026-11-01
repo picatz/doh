@@ -63,12 +63,12 @@ func newQueryCommand() *cobra.Command {
 		Long: `Query DNS records from DoH servers using the given domains and record type.
 
 Users can specify which servers to use for the query, or use the default servers from Google, Cloudflare, and Quad9.
-Servers can use DNS-over-HTTPS (https://, or http:// for a local server), DNS-over-TLS (tls://host[:853]), or plain
-DNS (udp://host[:53], tcp://host[:53], or just host), the same forms doh serve accepts as upstreams. They can also
-specify a timeout for the query, which defaults to 30 seconds if not specified. Each server is queried in parallel,
-and each domain is queried in parallel. Results are streamed to STDOUT as JSON newline delimited objects, including
-the TLS version, cipher suite, and ALPN protocol for encrypted servers, which can be piped to other commands (e.g. jq)
-or redirected to a file.`,
+Servers can use DNS-over-HTTPS (https://, or http:// for a local server), DNS-over-TLS (tls://host[:853]),
+DNS-over-QUIC (quic://host[:853], experimental), or plain DNS (udp://host[:53], tcp://host[:53], or just host), the
+same forms doh serve accepts as upstreams. They can also specify a timeout for the query, which defaults to 30 seconds
+if not specified. Each server is queried in parallel, and each domain is queried in parallel. Results are streamed to
+STDOUT as JSON newline delimited objects, including the TLS version, cipher suite, and ALPN protocol for encrypted
+servers, which can be piped to other commands (e.g. jq) or redirected to a file.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			servers, err := cmd.Flags().GetStringSlice("servers")
@@ -213,7 +213,7 @@ or redirected to a file.`,
 	}
 
 	cmd.Flags().String("type", "A", "dns record type to query for each domain, such as A, AAAA, MX, etc.")
-	cmd.Flags().StringSlice("servers", defaultServers, "servers to query: https://, http://, tls://, udp://, tcp://, or host")
+	cmd.Flags().StringSlice("servers", defaultServers, "servers to query: https://, http://, tls://, quic://, udp://, tcp://, or host")
 	cmd.Flags().Duration("timeout", 30*time.Second, "timeout for query, 0s for none (plain DNS and DNS-over-TLS exchanges still give up after 5s)")
 	cmd.Flags().String("resolver-addr", "", "address of a DNS resolver to use for resolving DoH server names (e.g. 8.8.8.8:53); connects directly, ignoring HTTP(S)_PROXY")
 	cmd.Flags().String("resolver-network", "udp", "protocol to use for resolving DoH server names (e.g. udp, tcp)")
