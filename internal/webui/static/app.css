@@ -334,6 +334,56 @@ table.log tbody tr:hover, table.log tbody tr:focus-visible { background: var(--s
 .pill.error { background: var(--warn-bg); color: var(--warn); }
 .pill.skip { background: var(--surface-2); color: var(--muted); }
 
+/* ---------- activity ---------- */
+
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.log-filters { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-3); align-items: center; }
+.log-search { position: relative; flex: 1 1 16rem; min-width: 0; display: flex; align-items: center; }
+.log-search .icon { position: absolute; left: .7rem; color: var(--muted); pointer-events: none; }
+.log-search input { width: 100%; padding-left: 2.3rem; }
+.seg { display: inline-flex; gap: 2px; margin: 0; min-width: 0; padding: 3px; border: 0; border-radius: var(--r-md); background: var(--surface-2); overflow-x: auto; scrollbar-width: none; max-width: 100%; }
+.seg label { position: relative; flex: none; }
+.seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.seg span { display: inline-flex; align-items: center; gap: .35rem; min-height: calc(var(--target) - 6px); padding: .25rem .7rem; border-radius: calc(var(--r-md) - 3px); color: var(--muted); font-size: .9rem; font-weight: 500; white-space: nowrap; transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.seg .icon { width: 1rem; height: 1rem; }
+.seg label:hover span { color: var(--text); }
+.seg input:checked + span { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow), 0 0 0 1px var(--border); }
+.seg input:focus-visible + span { outline: 2px solid var(--glaze); outline-offset: 1px; }
+.more-filters { flex: none; }
+.more-filters summary { display: inline-flex; align-items: center; gap: .4rem; min-height: var(--target); padding: 0 .75rem; border: 1px solid var(--border); border-radius: var(--r-md); cursor: pointer; list-style: none; font-weight: 500; color: var(--muted); }
+.more-filters summary::-webkit-details-marker { display: none; }
+.more-filters[open] summary { color: var(--text); border-color: var(--border-strong); }
+.more-filters-body { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-top: var(--s-3); }
+.more-filters-body label { display: grid; gap: .25rem; font-size: .85rem; color: var(--muted); }
+.more-filters[open] { flex-basis: 100%; }
+.pill { display: inline-flex; align-items: center; gap: .25rem; }
+.cached { font-size: .78rem; margin-left: .35rem; }
+.empty-state { display: grid; justify-items: center; gap: var(--s-1); padding: var(--s-7) var(--s-4); text-align: center; }
+.empty-state p { margin: 0; }
+.buddy.big { width: 4rem; height: 4rem; margin-bottom: var(--s-2); }
+
+/* On phones, each query is a two-line card: what and when, then who and why. */
+@media (max-width: 719px) {
+  table.log thead { display: none; }
+  table.log, table.log tbody { display: block; }
+  table.log tr {
+    display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr) auto; grid-template-areas: "name name time" "who why status";
+    gap: .15rem var(--s-3); padding: .65rem var(--s-1); border-bottom: 1px solid var(--border);
+  }
+  table.log td { display: block; padding: 0; border: 0; min-width: 0; }
+  table.log .c-name { grid-area: name; min-width: 0; font-size: .92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  table.log .c-time { grid-area: time; color: var(--muted); font-size: .8rem; text-align: right; font-variant-numeric: tabular-nums; }
+  table.log .c-status { grid-area: status; justify-self: end; }
+  table.log .c-who { grid-area: who; font-size: .8rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 11rem; }
+  table.log .c-why { grid-area: why; font-size: .8rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  table.log .c-why:not(:empty)::before { content: "· "; }
+  table.log .c-type, table.log .c-ms, table.log .cached { display: none; }
+  .log-search { flex-basis: 100%; }
+  .seg { flex: 1 1 auto; }
+  .seg .icon { display: none; }
+  .seg span { padding-inline: .55rem; }
+}
+
 .filters { display: flex; gap: .6rem; flex-wrap: wrap; align-items: end; }
 .filters label { display: grid; gap: .2rem; font-size: .85rem; color: var(--muted); }
 

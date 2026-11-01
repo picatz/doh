@@ -183,21 +183,38 @@
         <h2 id="logs-title">Activity</h2>
         <label class="switch"><input type="checkbox" id="live" role="switch"><span>Live</span></label>
       </div>
-      <form id="log-filters" class="filters">
-        <label>Profile <select id="f-profile"><option value="">All</option></select></label>
-        <label>Status <select id="f-status">
-          <option value="">All</option><option value="allowed">Allowed</option><option value="blocked">Blocked</option>
-          <option value="rewritten">Rewritten</option><option value="error">Error</option></select></label>
-        <label>Name <input id="f-q" type="search" placeholder="contains…" spellcheck="false"></label>
-        <label>Client <input id="f-client" type="search" placeholder="192.168.1.20" spellcheck="false"></label>
-        <button type="submit">Apply</button>
+      <form id="log-filters" class="log-filters" role="search">
+        <div class="log-search">
+          <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+          <input id="f-q" type="search" placeholder="Find a domain…" aria-label="Find a domain" spellcheck="false" autocapitalize="off" enterkeyhint="search">
+        </div>
+        <fieldset class="seg" id="f-status-group">
+          <legend class="visually-hidden">Show</legend>
+          <label><input type="radio" name="f-status" value="" checked><span>All</span></label>
+          <label><input type="radio" name="f-status" value="blocked"><span><svg class="icon" aria-hidden="true"><use href="#i-block"/></svg>Blocked</span></label>
+          <label><input type="radio" name="f-status" value="allowed"><span><svg class="icon" aria-hidden="true"><use href="#i-allow"/></svg>Allowed</span></label>
+          <label><input type="radio" name="f-status" value="rewritten"><span>Rewritten</span></label>
+          <label><input type="radio" name="f-status" value="error"><span><svg class="icon" aria-hidden="true"><use href="#i-warn"/></svg>Failed</span></label>
+        </fieldset>
+        <details class="more-filters" id="more-filters">
+          <summary>Filters</summary>
+          <div class="more-filters-body">
+            <label>Profile <select id="f-profile"><option value="">All profiles</option></select></label>
+            <label>Device or address <input id="f-client" type="search" placeholder="192.168.1.20" spellcheck="false" autocapitalize="off"></label>
+          </div>
+        </details>
+        <button type="submit" class="visually-hidden">Apply</button>
       </form>
       <div id="log-scope" class="scope" hidden></div>
-      <div class="table-wrap"><table class="log">
-        <thead><tr><th scope="col">Time</th><th scope="col">Client</th><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Status</th><th scope="col">Reason</th><th scope="col" class="num">ms</th></tr></thead>
+      <div class="table-wrap" id="log-table"><table class="log">
+        <thead><tr><th scope="col">Time</th><th scope="col">Device</th><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Status</th><th scope="col">Why</th><th scope="col" class="num">ms</th></tr></thead>
         <tbody id="log-rows"></tbody>
       </table></div>
-      <p id="log-empty" class="muted center" hidden>No queries match.</p>
+      <div id="log-empty" class="empty-state" hidden>
+        <svg class="buddy big" aria-hidden="true"><use href="#buddy-calm"/></svg>
+        <p><strong>No queries match.</strong></p>
+        <p class="muted" id="log-empty-hint">Try a wider filter.</p>
+      </div>
       <div class="center"><button type="button" id="load-more" hidden>Load more</button></div>
     </section>
 

@@ -1588,7 +1588,7 @@ async function createProfile(e) {
 function logFilter() {
   return {
     profile: $("f-profile").value,
-    status: $("f-status").value,
+    status: document.querySelector('input[name="f-status"]:checked')?.value || "",
     q: $("f-q").value.trim(),
     client: $("f-client").value.trim(),
     since: state.logScope.since,
@@ -1600,9 +1600,12 @@ function logFilter() {
 // setLogFilter fills the Activity view's filter from a URL's query.
 function setLogFilter(q) {
   $("f-profile").value = q.get("profile") || "";
-  $("f-status").value = q.get("status") || "";
+  const status = q.get("status") || "";
+  for (const r of document.querySelectorAll('input[name="f-status"]')) r.checked = r.value === status;
   $("f-q").value = q.get("q") || "";
   $("f-client").value = q.get("client") || "";
+  // Filters beyond search and status open when a link uses them.
+  if (q.get("profile") || q.get("client")) $("more-filters").open = true;
   const valid = (t) => (t && !Number.isNaN(Date.parse(t)) ? t : "");
   state.logScope = { since: valid(q.get("since")), until: valid(q.get("until")), reason: q.get("reason") || "" };
   renderLogScope();
@@ -1653,17 +1656,26 @@ function reasonText(e) {
   return e.reason ? checkName(e.reason) : "";
 }
 
+// STATUS_WORDS say each status in words, with a symbol, so it never
+// rests on color.
+const STATUS_WORDS = { allowed: ["Allowed", "allow"], blocked: ["Blocked", "block"], rewritten: ["Rewritten", "arrow"], error: ["Failed", "warn"] };
+
+function statusPill(status) {
+  const [word, sym] = STATUS_WORDS[status] || [status, "arrow"];
+  return h("span", { class: `pill ${status}` }, icon(sym), word);
+}
+
 function logRow(e) {
   // Hostnames are what devices call themselves, so they read as labels.
   const who = e.device || e.hostname || e.client || "—";
-  const tr = h("tr", { tabindex: 0 },
-    h("td", { title: fmtTime(e.time, true), text: fmtTime(e.time) }),
-    h("td", { class: "mono", title: e.client || "", text: who }),
-    h("td", { class: "name", text: e.name }),
-    h("td", { text: e.type }),
-    h("td", {}, h("span", { class: `pill ${e.status}`, text: e.status }), e.cached ? h("span", { class: "muted", text: " cached" }) : null),
-    h("td", { text: reasonText(e) }),
-    h("td", { class: "num", text: (e.duration_ms ?? 0).toFixed(1) }),
+  const tr = h("tr", { tabindex: 0, "aria-label": `${e.name}, ${(STATUS_WORDS[e.status] || [e.status])[0]}, ${fmtTime(e.time)}` },
+    h("td", { class: "c-time", title: fmtTime(e.time, true), text: fmtTime(e.time) }),
+    h("td", { class: "c-who mono", title: e.client || "", text: who }),
+    h("td", { class: "c-name name", text: e.name }),
+    h("td", { class: "c-type", text: e.type }),
+    h("td", { class: "c-status" }, statusPill(e.status), e.cached ? h("span", { class: "muted cached", text: "cached" }) : null),
+    h("td", { class: "c-why", text: reasonText(e) }),
+    h("td", { class: "c-ms num", text: (e.duration_ms ?? 0).toFixed(1) }),
   );
   const open = () => openDrawer(e);
   tr.addEventListener("click", open);
@@ -1671,16 +1683,26 @@ function logRow(e) {
   return tr;
 }
 
+// loadLogs loads the first page of Activity, or with reset false, the
+// next. Only the latest load shows, however responses arrive.
+let logSeq = 0;
 async function loadLogs(reset) {
+  const seq = ++logSeq;
   const rows = $("log-rows");
-  const query = { ...logFilter(), limit: 100 };
+  const filter = logFilter();
+  const query = { ...filter, limit: 100 };
   if (!reset && state.logNext) query.page_token = state.logNext;
   const page = await api("GET", "/logs", { query });
+  if (seq !== logSeq) return;
   if (reset) clear(rows);
   for (const e of page.entries || []) rows.append(logRow(e));
   state.logNext = page.next_page_token || "";
   $("load-more").hidden = !state.logNext;
-  $("log-empty").hidden = rows.childElementCount > 0;
+  const empty = rows.childElementCount === 0;
+  $("log-empty").hidden = !empty;
+  $("log-table").hidden = empty;
+  const narrowed = Object.values(filter).some(Boolean);
+  $("log-empty-hint").textContent = narrowed ? "Try a wider filter." : "Queries appear here as devices use this server.";
 }
 
 function stopLive() {
@@ -1715,6 +1737,7 @@ async function startLive() {
         rows.prepend(logRow(entry));
         while (rows.childElementCount > LIVE_CAP) rows.lastElementChild.remove();
         $("log-empty").hidden = true;
+        $("log-table").hidden = false;
       }
     }
     if (state.live === ctl) toast("Live stream ended.");
@@ -2455,6 +2478,12 @@ function wire() {
   $("create-form").addEventListener("submit", createProfile);
   $("create-cancel").addEventListener("click", () => $("create-dialog").close());
   $("log-filters").addEventListener("submit", (e) => { e.preventDefault(); applyLogFilter(); });
+  // Choices apply at once; typing applies after a pause, or on Enter.
+  for (const el of document.querySelectorAll('input[name="f-status"], #f-profile')) el.addEventListener("change", applyLogFilter);
+  let typingTimer;
+  for (const id of ["f-q", "f-client"]) {
+    $(id).addEventListener("input", () => { clearTimeout(typingTimer); typingTimer = setTimeout(applyLogFilter, 350); });
+  }
   $("load-more").addEventListener("click", () => loadLogs(false).catch(report));
   $("live").addEventListener("change", (e) => {
     if (e.target.checked) { clear($("log-rows")); $("load-more").hidden = true; startLive(); }
