@@ -42,8 +42,12 @@ func (s *Server) apiHandler() http.Handler {
 
 	mux.HandleFunc("GET "+p+"/status", s.apiStatus)
 	mux.HandleFunc("GET "+p+"/catalog", s.apiCatalog)
-	mux.HandleFunc("GET "+p+"/policy", s.apiGetPolicy)
-	mux.HandleFunc("PUT "+p+"/policy", s.apiPutPolicy)
+	mux.HandleFunc("GET "+p+"/policy", operatorOnly(s.apiGetPolicy))
+	mux.HandleFunc("PUT "+p+"/policy", operatorOnly(s.apiPutPolicy))
+	mux.HandleFunc("GET "+p+"/tenants", s.apiListTenants)
+	mux.HandleFunc("POST "+p+"/tenants", operatorOnly(s.apiCreateTenant))
+	mux.HandleFunc("PATCH "+p+"/tenants/{id}", operatorOnly(s.apiPatchTenant))
+	mux.HandleFunc("DELETE "+p+"/tenants/{id}", operatorOnly(s.apiDeleteTenant))
 	mux.HandleFunc("GET "+p+"/profiles", s.apiListProfiles)
 	mux.HandleFunc("POST "+p+"/profiles", s.apiCreateProfile)
 	mux.HandleFunc("GET "+p+"/profiles/{id}", s.apiGetProfile)
@@ -83,22 +87,22 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 			return
 		}
 
-		// A bearer token, from the CLI or automation, or a browser's
-		// signed-in session.
-		role := s.sessionRole(r)
+		// A bearer token, from the CLI or automation, which acts as the
+		// operator; or a browser's signed-in session.
+		p, _ := s.sessionPrincipal(r)
 		if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-			role = s.tokens.roleOf(strings.TrimSpace(token))
+			p = principal{role: s.tokens.roleOf(strings.TrimSpace(token))}
 		}
 
 		switch {
-		case role == roleNone:
+		case p.role == roleNone:
 			w.Header().Set("WWW-Authenticate", `Bearer realm="doh"`)
 			writeError(w, http.StatusUnauthorized, "sign in, or send a valid bearer token")
-		case role == roleReader && r.Method != http.MethodGet && r.Method != http.MethodHead:
+		case p.role == roleReader && r.Method != http.MethodGet && r.Method != http.MethodHead:
 			w.Header().Set("WWW-Authenticate", `Bearer realm="doh", error="insufficient_scope"`)
 			writeError(w, http.StatusForbidden, "this token can only read; use the admin token to make changes")
 		default:
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, withPrincipal(r, p))
 		}
 	})
 }
@@ -168,12 +172,25 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 	status.Policy.ETag = pol.ETag()
 	status.Policy.Profiles = len(pol.Profiles)
 
+	// Tenants see their own corner of the server, not how it's run or how
+	// busy everyone else is.
+	if p := principalOf(r); !p.operator() {
+		status.Listeners, status.Lists, status.Queries = nil, nil, nil
+		status.Policy.Source, status.Policy.Error = "", ""
+		status.Policy.Profiles = len(visibleProfiles(pol, p))
+		status.Tenant = p.tenant
+	}
+
 	if s.qlog != nil {
 		status.QueryLog = api.QueryLogStatus{Enabled: true, Entries: s.qlog.Len()}
 		if s.config.DataDir != "" {
 			status.QueryLog.Dir = filepath.Join(s.config.DataDir, "querylog")
 			status.QueryLog.Retention = time.Duration(cmp.Or(s.config.QueryLog.Retention, Duration(querylog.DefaultRetention))).String()
 		}
+	}
+
+	if p := principalOf(r); !p.operator() {
+		status.QueryLog = api.QueryLogStatus{Enabled: status.QueryLog.Enabled}
 	}
 
 	writeJSON(w, http.StatusOK, status)
@@ -283,13 +300,13 @@ func (s *Server) apiPutPolicy(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiListProfiles(w http.ResponseWriter, r *http.Request) {
 	p := s.engine.Load().Policy()
 	w.Header().Set("ETag", p.ETag())
-	writeJSON(w, http.StatusOK, api.Profiles{Profiles: p.Profiles})
+	writeJSON(w, http.StatusOK, api.Profiles{Profiles: visibleProfiles(p, principalOf(r))})
 }
 
 func (s *Server) apiGetProfile(w http.ResponseWriter, r *http.Request) {
 	p := s.engine.Load().Policy()
 	pr := p.Profile(r.PathValue("id"))
-	if pr == nil {
+	if !principalOf(r).sees(pr) {
 		writeError(w, http.StatusNotFound, "no profile "+strconv.Quote(r.PathValue("id")))
 		return
 	}
@@ -302,9 +319,20 @@ func (s *Server) apiCreateProfile(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &pr) {
 		return
 	}
+
+	// A tenant's profiles are its own.
+	who := principalOf(r)
+	if !who.operator() {
+		if pr.Tenant != "" && pr.Tenant != who.tenant {
+			writeError(w, http.StatusForbidden, "you can only create profiles for your own tenant")
+			return
+		}
+		pr.Tenant = who.tenant
+	}
+
 	next, ok := s.updatePolicy(w, r, func(p *policy.Policy) error {
 		if p.Profile(pr.ID) != nil {
-			return fmt.Errorf("profile %q already exists", pr.ID)
+			return fmt.Errorf("the profile id %q is taken; choose another", pr.ID)
 		}
 		p.Profiles = append(p.Profiles, pr)
 		return nil
@@ -316,10 +344,10 @@ func (s *Server) apiCreateProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiDeleteProfile(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id, who := r.PathValue("id"), principalOf(r)
 	_, ok := s.updatePolicy(w, r, func(p *policy.Policy) error {
 		i := slices.IndexFunc(p.Profiles, func(pr policy.Profile) bool { return pr.ID == id })
-		if i < 0 {
+		if i < 0 || !who.sees(&p.Profiles[i]) {
 			return fmt.Errorf("no profile %q: %w", id, errNotFound)
 		}
 		p.Profiles = slices.Delete(p.Profiles, i, i+1)
@@ -352,10 +380,10 @@ func (s *Server) apiPatchProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := r.PathValue("id")
+	id, who := r.PathValue("id"), principalOf(r)
 	next, ok := s.updatePolicy(w, r, func(p *policy.Policy) error {
 		pr := p.Profile(id)
-		if pr == nil {
+		if !who.sees(pr) {
 			return fmt.Errorf("no profile %q: %w", id, errNotFound)
 		}
 
@@ -374,6 +402,9 @@ func (s *Server) apiPatchProfile(w http.ResponseWriter, r *http.Request) {
 		}
 		if patched.ID != id {
 			return errors.New("a profile's id can't be changed; create a new profile instead")
+		}
+		if patched.Tenant != pr.Tenant && !who.operator() {
+			return errors.New("only the server's operator can move a profile between tenants")
 		}
 		*pr = patched
 		return nil
@@ -443,7 +474,7 @@ func (s *Server) apiDomain(allow, add bool) http.HandlerFunc {
 		id := r.PathValue("id")
 		next, ok := s.updatePolicy(w, r, func(p *policy.Policy) error {
 			pr := p.Profile(id)
-			if pr == nil {
+			if !principalOf(r).sees(pr) {
 				return fmt.Errorf("no profile %q: %w", id, errNotFound)
 			}
 
@@ -473,6 +504,8 @@ func parseFilter(w http.ResponseWriter, r *http.Request) (querylog.Filter, bool)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return f, false
 	}
+	// Tenants only ever see their own queries.
+	f.Tenant = principalOf(r).tenant
 	return f, true
 }
 
@@ -588,8 +621,13 @@ func (s *Server) apiExplain(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	profile := v.Get("profile")
-	if profile != "" && s.engine.Load().Profile(profile) == nil {
+	profile, who := v.Get("profile"), principalOf(r)
+	switch {
+	case profile == "" && !who.operator():
+		// Matching by address could land on someone else's profile.
+		writeError(w, http.StatusBadRequest, "name one of your profiles to explain with")
+		return
+	case profile != "" && !who.sees(s.engine.Load().Policy().Profile(profile)):
 		writeError(w, http.StatusNotFound, "no profile "+strconv.Quote(profile))
 		return
 	}

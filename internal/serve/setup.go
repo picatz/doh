@@ -125,7 +125,7 @@ func (s *Server) apiSetup(w http.ResponseWriter, r *http.Request) {
 // writing any error.
 func (s *Server) setupRequest(w http.ResponseWriter, r *http.Request) (*policy.Profile, string, bool) {
 	pr := s.engine.Load().Policy().Profile(r.PathValue("id"))
-	if pr == nil {
+	if !principalOf(r).sees(pr) {
 		writeError(w, http.StatusNotFound, "no profile "+strconv.Quote(r.PathValue("id")))
 		return nil, "", false
 	}

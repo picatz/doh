@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -101,23 +102,6 @@ func isSigninAttempt(r *http.Request) bool {
 	return p == "/link" || p == "/passkey/login" || strings.HasPrefix(p, "/passkey/login/")
 }
 
-// sessionRole returns the role of r's signed-in browser session, if any.
-func (s *Server) sessionRole(r *http.Request) role {
-	svc := s.signin.Load()
-	if svc == nil {
-		return roleNone
-	}
-	sess, ok := svc.Session(r)
-	switch {
-	case !ok || sess.Pending:
-		return roleNone
-	case sess.Role == signin.RoleAdmin:
-		return roleAdmin
-	default:
-		return roleReader
-	}
-}
-
 func (s *Server) apiSigninLink(w http.ResponseWriter, r *http.Request) {
 	svc := s.signin.Load()
 	if svc == nil {
@@ -131,7 +115,21 @@ func (s *Server) apiSigninLink(w http.ResponseWriter, r *http.Request) {
 	}
 	role := signin.Role(cmp.Or(req.Role, string(signin.RoleAdmin)))
 
-	code, expires, err := svc.NewLink(role)
+	// A tenant's admins invite people to their own tenant; the operator
+	// may invite anyone to any tenant.
+	who := principalOf(r)
+	switch {
+	case !who.operator() && req.Tenant != "" && req.Tenant != who.tenant:
+		writeError(w, http.StatusForbidden, "you can only invite people to your own tenant")
+		return
+	case !who.operator():
+		req.Tenant = who.tenant
+	case req.Tenant != "" && s.engine.Load().Policy().Tenant(req.Tenant) == nil:
+		writeError(w, http.StatusNotFound, "no tenant "+strconv.Quote(req.Tenant))
+		return
+	}
+
+	code, expires, err := svc.NewLink(role, req.Tenant)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -139,33 +137,43 @@ func (s *Server) apiSigninLink(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, api.SigninLink{
 		URL:             s.uiURL() + "#signin=" + code,
 		Expires:         expires,
-		PasskeyRequired: svc.HasPasskeys(),
+		PasskeyRequired: svc.HasPasskeys(req.Tenant),
 	})
 }
 
 func (s *Server) apiPeople(w http.ResponseWriter, r *http.Request) {
-	svc := s.signin.Load()
-	if svc == nil {
-		writeJSON(w, http.StatusOK, api.People{People: []signin.Person{}})
-		return
+	people := []signin.Person{}
+	if svc := s.signin.Load(); svc != nil {
+		who := principalOf(r)
+		people = slices.DeleteFunc(svc.People(), func(p signin.Person) bool { return !who.seesPerson(p) })
 	}
-	writeJSON(w, http.StatusOK, api.People{People: svc.People()})
+	writeJSON(w, http.StatusOK, api.People{People: people})
 }
 
 func (s *Server) apiDeletePerson(w http.ResponseWriter, r *http.Request) {
-	s.deleteSignin(w, func(svc *signin.Service) error { return svc.DeletePerson(r.PathValue("id")) })
+	s.deleteSignin(w, r, func(svc *signin.Service) error { return svc.DeletePerson(r.PathValue("id")) })
 }
 
 func (s *Server) apiDeletePasskey(w http.ResponseWriter, r *http.Request) {
-	s.deleteSignin(w, func(svc *signin.Service) error { return svc.DeletePasskey(r.PathValue("id"), r.PathValue("passkey")) })
+	s.deleteSignin(w, r, func(svc *signin.Service) error { return svc.DeletePasskey(r.PathValue("id"), r.PathValue("passkey")) })
 }
 
-func (s *Server) deleteSignin(w http.ResponseWriter, del func(*signin.Service) error) {
+func (s *Server) deleteSignin(w http.ResponseWriter, r *http.Request, del func(*signin.Service) error) {
 	svc := s.signin.Load()
 	if svc == nil {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+
+	// Only people the caller can see can be removed; anyone else looks
+	// like they don't exist.
+	who := principalOf(r)
+	id := r.PathValue("id")
+	if !slices.ContainsFunc(svc.People(), func(p signin.Person) bool { return p.ID == id && who.seesPerson(p) }) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
 	switch err := del(svc); {
 	case errors.Is(err, signin.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")

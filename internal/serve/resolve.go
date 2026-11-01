@@ -38,6 +38,7 @@ type result struct {
 	resp            *dns.Msg
 	decision        filter.Decision
 	profile, device string
+	tenant          string
 	logged          bool
 	cached          bool
 	upstream        string
@@ -98,7 +99,7 @@ func (s *Server) decide(ctx context.Context, req request) (result, error) {
 		res.decision.Action, res.decision.Reason = api.ActionRefuse, "refused"
 		return res, nil
 	}
-	res.profile, res.logged = profile.ID(), profile.Logged()
+	res.profile, res.tenant, res.logged = profile.ID(), profile.Tenant(), profile.Logged()
 
 	switch q.Qclass {
 	case dns.ClassINET:
@@ -286,6 +287,7 @@ func (s *Server) log(req request, res result, err error, elapsed time.Duration) 
 	e := querylog.Entry{
 		Time:       time.Now(),
 		Profile:    res.profile,
+		Tenant:     res.tenant,
 		Device:     res.device,
 		Transport:  req.transport,
 		Name:       strings.ToLower(strings.TrimSuffix(q.Name, ".")),

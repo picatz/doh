@@ -31,6 +31,10 @@
 //	GET    /api/v1/logs/stream                    text/event-stream of querylog.Entry
 //	GET    /api/v1/stats                          querylog.Stats
 //	GET    /api/v1/explain?name=&type=&profile=&client=   Explanation
+//	GET    /api/v1/tenants                        Tenants
+//	POST   /api/v1/tenants                        policy.Tenant → 201 (operator)
+//	PATCH  /api/v1/tenants/{id}                   merge patch → policy.Tenant (operator)
+//	DELETE /api/v1/tenants/{id}                   204 (operator)
 //	POST   /api/v1/signin-links                   SigninLinkRequest → SigninLink
 //	GET    /api/v1/people                         People
 //	DELETE /api/v1/people/{id}                    204
@@ -97,6 +101,11 @@ type Status struct {
 	// Hostname is the server's public host name, under which each profile
 	// is reachable by name, if configured.
 	Hostname string `json:"hostname,omitempty"`
+
+	// Tenant is the tenant the caller acts for, empty for the server's
+	// operator. Tenants see a narrower status: their own profiles, and
+	// nothing about listeners, lists, or traffic.
+	Tenant string `json:"tenant,omitempty"`
 
 	// Policy describes where the policy comes from.
 	Policy PolicyStatus `json:"policy"`
@@ -315,6 +324,17 @@ type SigninLinkRequest struct {
 	// Role is what the link's session may do: "admin" (the default) or
 	// "reader".
 	Role string `json:"role,omitempty"`
+
+	// Tenant is the tenant the link signs in to, such as to invite a
+	// family's first admin. Only the operator may name one; a tenant's
+	// links are always for its own tenant. Empty, from the operator, signs
+	// in as the operator.
+	Tenant string `json:"tenant,omitempty"`
+}
+
+// Tenants lists tenants: every one for the operator, or a tenant's own.
+type Tenants struct {
+	Tenants []policy.Tenant `json:"tenants"`
 }
 
 // SigninLink is a single-use link that signs a browser in to the web UI.

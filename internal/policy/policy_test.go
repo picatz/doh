@@ -152,3 +152,65 @@ func TestClone_Independent(t *testing.T) {
 		t.Error("Clone shares memory with the original")
 	}
 }
+
+func TestValidate_Tenants(t *testing.T) {
+	smiths := Tenant{ID: "smiths", Name: "The Smiths", Networks: []string{"192.168.10.0/24"}}
+	jones := Tenant{ID: "jones", Networks: []string{"192.168.20.0/24", "fd20::/64"}, CustomLists: true}
+
+	valid := &Policy{
+		Tenants: []Tenant{smiths, jones},
+		Profiles: []Profile{
+			{ID: "default"},
+			{ID: "smiths-kids", Tenant: "smiths", Clients: []string{"192.168.10.0/26"}, Lists: []string{"threat-intel", "default"}},
+			{ID: "jones", Tenant: "jones", Devices: []Device{{Name: "tv", Addrs: []string{"192.168.20.9", "fd20::9"}}}, Lists: []string{"mine=https://lists.example/block.txt"}},
+			{ID: "roaming", Tenant: "smiths"}, // DoH and host names only
+		},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid tenant policy: %v", err)
+	}
+
+	for _, tt := range []struct {
+		desc     string
+		tenants  []Tenant
+		profiles []Profile
+		want     string
+	}{
+		{"unknown tenant", nil, []Profile{{ID: "x", Tenant: "nobody"}}, `no tenant "nobody"`},
+		{"bad tenant id", []Tenant{{ID: "Bad"}}, nil, "id must be"},
+		{"duplicate tenant", []Tenant{{ID: "a"}, {ID: "a"}}, nil, "duplicate id"},
+		{"overlapping networks", []Tenant{{ID: "a", Networks: []string{"10.0.0.0/8"}}, {ID: "b", Networks: []string{"10.1.0.0/16"}}}, nil, "overlaps"},
+		{"bad network", []Tenant{{ID: "a", Networks: []string{"10.0.0.0/33"}}}, nil, "invalid prefix"},
+		{"client outside networks", []Tenant{smiths}, []Profile{{ID: "x", Tenant: "smiths", Clients: []string{"0.0.0.0/0"}}}, "outside tenant"},
+		{"wider than its network", []Tenant{smiths}, []Profile{{ID: "x", Tenant: "smiths", Clients: []string{"192.168.0.0/16"}}}, "outside tenant"},
+		{"device outside networks", []Tenant{smiths}, []Profile{{ID: "x", Tenant: "smiths", Devices: []Device{{Name: "d", Addrs: []string{"10.9.9.9"}}}}}, "outside tenant"},
+		{"no networks at all", []Tenant{{ID: "a"}}, []Profile{{ID: "x", Tenant: "a", Clients: []string{"192.168.1.5"}}}, "outside tenant"},
+		{"custom list without permission", []Tenant{smiths}, []Profile{{ID: "x", Tenant: "smiths", Lists: []string{"https://lists.example/x.txt"}}}, "only use preset"},
+		{"file list", []Tenant{jones}, []Profile{{ID: "x", Tenant: "jones", Lists: []string{"/etc/shadow"}}}, "HTTPS"},
+		{"named file list", []Tenant{jones}, []Profile{{ID: "x", Tenant: "jones", Lists: []string{"threat-intel=/etc/passwd"}}}, "HTTPS"},
+		{"plain http list", []Tenant{jones}, []Profile{{ID: "x", Tenant: "jones", Lists: []string{"http://169.254.169.254/latest"}}}, "HTTPS"},
+		{"tenant default profile", []Tenant{smiths}, []Profile{{ID: "default", Tenant: "smiths"}}, "belongs to the server's operator"},
+		{"over the profile limit", []Tenant{{ID: "a", MaxProfiles: 1}}, []Profile{{ID: "x", Tenant: "a"}, {ID: "y", Tenant: "a"}}, "more than its limit of 1"},
+		{"negative limit", []Tenant{{ID: "a", MaxProfiles: -1}}, nil, "must not be negative"},
+	} {
+		err := (&Policy{Tenants: tt.tenants, Profiles: tt.profiles}).Validate()
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: Validate = %v, want an error containing %q", tt.desc, err, tt.want)
+		}
+	}
+
+	// The operator's own profiles aren't bound by tenants' rules.
+	operator := &Policy{Tenants: []Tenant{smiths}, Profiles: []Profile{{ID: "lab", Clients: []string{"10.0.0.0/8"}, Lists: []string{"/etc/doh/block.txt"}}}}
+	if err := operator.Validate(); err != nil {
+		t.Errorf("operator profile: %v", err)
+	}
+
+	// A tenant may not take addresses another profile already claims.
+	clash := &Policy{Tenants: []Tenant{smiths}, Profiles: []Profile{
+		{ID: "lab", Clients: []string{"192.168.10.5"}},
+		{ID: "x", Tenant: "smiths", Clients: []string{"192.168.10.5"}},
+	}}
+	if err := clash.Validate(); err == nil || !strings.Contains(err.Error(), "also claimed") {
+		t.Errorf("clashing claim: %v", err)
+	}
+}

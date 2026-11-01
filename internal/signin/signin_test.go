@@ -137,7 +137,7 @@ func (b *browser) useLink(code string) int {
 
 func (f *fixture) link(role Role) string {
 	f.t.Helper()
-	code, _, err := f.service.NewLink(role)
+	code, _, err := f.service.NewLink(role, "")
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestSignIn_RejectsBadLinks(t *testing.T) {
 		t.Errorf("expired link = %d, want 401", status)
 	}
 
-	if _, _, err := f.service.NewLink("root"); err == nil {
+	if _, _, err := f.service.NewLink("root", ""); err == nil {
 		t.Error("NewLink accepted an invalid role")
 	}
 }
@@ -430,7 +430,7 @@ func TestPeople_Persisted(t *testing.T) {
 	if len(k.Credential.PublicKey) != 0 {
 		t.Error("People exposed credential records")
 	}
-	if !reloaded.HasPasskeys() {
+	if !reloaded.HasPasskeys("") {
 		t.Error("reloaded service doesn't require passkeys")
 	}
 
@@ -457,7 +457,7 @@ func TestDeletePerson_EndsSessions(t *testing.T) {
 	if b.status().Session != nil {
 		t.Error("deleted person's session is still live")
 	}
-	if f.service.HasPasskeys() {
+	if f.service.HasPasskeys("") {
 		t.Error("passkeys still required with no one left")
 	}
 	if err := f.service.DeletePerson(id); err != ErrNotFound {
@@ -538,5 +538,71 @@ func TestSessions_PendingFloodDoesNotEvictSignedIn(t *testing.T) {
 	f.service.mu.Unlock()
 	if pending > maxPendingSessions {
 		t.Errorf("%d pending sessions, want at most %d", pending, maxPendingSessions)
+	}
+}
+
+func TestSignIn_TenantsRequirePasskeysSeparately(t *testing.T) {
+	f := newFixture(t, "")
+
+	// The operator has a passkey, so the operator's links need one.
+	op := f.browser()
+	op.useLink(f.link(RoleAdmin))
+	if op.addPasskey("Laptop", "Operator") != http.StatusCreated {
+		t.Fatal("operator passkey failed")
+	}
+
+	// A newly invited family has none yet, so their link signs in alone,
+	// and their first passkey makes them a person of their tenant.
+	code, _, err := f.service.NewLink(RoleAdmin, "smiths")
+	if err != nil {
+		t.Fatal(err)
+	}
+	smith := f.browser()
+	if smith.useLink(code) != http.StatusOK {
+		t.Fatal("tenant link failed")
+	}
+	st := smith.status()
+	if !st.SignedIn || st.Session.Tenant != "smiths" {
+		t.Fatalf("tenant link session = %+v, want signed in to smiths", st)
+	}
+	if smith.addPasskey("Phone", "Sam Smith") != http.StatusCreated {
+		t.Fatal("tenant passkey failed")
+	}
+	if st := smith.status(); st.Session.Tenant != "smiths" || st.Session.Name != "Sam Smith" {
+		t.Errorf("after adding a passkey: %+v", st.Session)
+	}
+	for _, p := range f.service.People() {
+		if p.Name == "Sam Smith" && p.Tenant != "smiths" {
+			t.Errorf("person %+v isn't in the smiths tenant", p)
+		}
+	}
+
+	// Now the Smiths' links need a passkey too, and finishing with one
+	// makes the session theirs.
+	code, _, _ = f.service.NewLink(RoleAdmin, "smiths")
+	again := f.browser()
+	again.auth = smith.auth
+	again.useLink(code)
+	if st := again.status(); !st.Session.Pending {
+		t.Fatalf("tenant with passkeys: %+v, want pending", st)
+	}
+	if again.signInWithPasskey(webauthntest.Response{}) != http.StatusOK {
+		t.Fatal("finishing with the tenant's passkey failed")
+	}
+	if st := again.status(); !st.SignedIn || st.Session.Tenant != "smiths" {
+		t.Errorf("finished session = %+v", st.Session)
+	}
+
+	// A passkey's owner decides the session's tenant: the operator's
+	// passkey signs in as the operator, whatever link started it.
+	code, _, _ = f.service.NewLink(RoleReader, "smiths")
+	mixed := f.browser()
+	mixed.auth = op.auth
+	mixed.useLink(code)
+	if mixed.signInWithPasskey(webauthntest.Response{}) != http.StatusOK {
+		t.Fatal("operator passkey failed")
+	}
+	if st := mixed.status(); st.Session.Tenant != "" || st.Session.Role != RoleAdmin {
+		t.Errorf("session after the operator's passkey = %+v, want the operator", st.Session)
 	}
 }

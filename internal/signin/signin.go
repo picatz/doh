@@ -7,9 +7,10 @@
 // link's single-use code for a session cookie. Signed in, they can add
 // passkeys ([WebAuthn]), which then sign them in directly.
 //
-// Once anyone has a passkey, links become a first factor only: a link
-// leads to a pending session that a passkey must complete, so stealing a
-// link, or the token that makes them, isn't enough to sign in. Passkeys are
+// Once anyone in a tenant (or, for the operator, anyone without one) has a
+// passkey, that tenant's links become a first factor only: a link leads to
+// a pending session that a passkey must complete, so stealing a link, or
+// the token that makes them, isn't enough to sign in. Passkeys are
 // a sign-in on their own, since they require user verification (a
 // biometric or PIN) as well as the device.
 //
@@ -111,6 +112,10 @@ type Person struct {
 	// Role is what they may do.
 	Role Role `json:"role"`
 
+	// Tenant is the tenant they belong to, or empty for the server's
+	// operator, who may manage every tenant.
+	Tenant string `json:"tenant,omitempty"`
+
 	// Created is when they were added.
 	Created time.Time `json:"created"`
 
@@ -152,6 +157,10 @@ type Session struct {
 	// Role is what the session may do.
 	Role Role `json:"role"`
 
+	// Tenant is the tenant the session may act for, or empty for the
+	// server's operator.
+	Tenant string `json:"tenant,omitempty"`
+
 	// Method is how the session signed in: "link", "passkey", or
 	// "link+passkey".
 	Method string `json:"method"`
@@ -187,6 +196,7 @@ type Service struct {
 
 type link struct {
 	role    Role
+	tenant  string
 	expires time.Time
 }
 
@@ -257,16 +267,17 @@ func New(config Config) (*Service, error) {
 // RPID returns the WebAuthn relying party ID passkeys are created for.
 func (s *Service) RPID() string { return s.rpID }
 
-// HasPasskeys reports whether anyone has a passkey, which makes passkeys
-// required to complete link sign-ins.
-func (s *Service) HasPasskeys() bool {
+// HasPasskeys reports whether anyone in tenant (or for "", the
+// operator) has a passkey, which makes passkeys required to complete that
+// tenant's link sign-ins.
+func (s *Service) HasPasskeys(tenant string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.hasPasskeys()
+	return s.hasPasskeys(tenant)
 }
 
-func (s *Service) hasPasskeys() bool {
-	return slices.ContainsFunc(s.people, func(p Person) bool { return len(p.Passkeys) > 0 })
+func (s *Service) hasPasskeys(tenant string) bool {
+	return slices.ContainsFunc(s.people, func(p Person) bool { return p.Tenant == tenant && len(p.Passkeys) > 0 })
 }
 
 // People returns everyone who can sign in with passkeys, without their
@@ -333,10 +344,10 @@ func (s *Service) DeletePasskey(person, passkey string) error {
 	return nil
 }
 
-// NewLink creates a single-use sign-in code granting role, valid for
-// [DefaultLinkTTL]. The caller must already be authorized for role, such
-// as by an API token.
-func (s *Service) NewLink(role Role) (code string, expires time.Time, err error) {
+// NewLink creates a single-use sign-in code granting role in tenant (or
+// for "", as the server's operator), valid for [DefaultLinkTTL]. The
+// caller must already be authorized for both, such as by an API token.
+func (s *Service) NewLink(role Role, tenant string) (code string, expires time.Time, err error) {
 	if !role.valid() {
 		return "", time.Time{}, fmt.Errorf("signin: invalid role %q", role)
 	}
@@ -359,7 +370,7 @@ func (s *Service) NewLink(role Role) (code string, expires time.Time, err error)
 	if len(s.links) >= maxLinks {
 		return "", time.Time{}, errors.New("signin: too many outstanding sign-in links; wait a few minutes")
 	}
-	s.links[sha256.Sum256([]byte(code))] = link{role: role, expires: expires}
+	s.links[sha256.Sum256([]byte(code))] = link{role: role, tenant: tenant, expires: expires}
 	return code, expires, nil
 }
 
