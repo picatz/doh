@@ -354,7 +354,7 @@ func TestClientFlags_TokenFile(t *testing.T) {
 }
 
 func TestClientCommandsRegistered(t *testing.T) {
-	for _, name := range []string{"status", "ui", "profile", "allow", "deny", "log", "explain", "doctor", "setup", "tenant", "people"} {
+	for _, name := range []string{"status", "ui", "profile", "allow", "deny", "log", "explain", "doctor", "setup", "tenant", "people", "services", "schedule"} {
 		cmd, _, err := New().Find([]string{name})
 		if err != nil || cmd.Name() != name {
 			t.Errorf("command %q not registered: %v", name, err)

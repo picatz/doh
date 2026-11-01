@@ -94,13 +94,17 @@ func compileSchedule(sc policy.Schedule) (schedule, error) {
 // active reports whether the schedule's period includes now, in the
 // profile's time zone. A period that ends before it starts runs past
 // midnight, so it belongs to the day it started on: a Friday 21:00 to
-// 07:00 bedtime is active early on Saturday morning.
+// 07:00 bedtime is active early on Saturday morning. One that ends when it
+// starts lasts all day.
 func (s schedule) active(now time.Time) bool {
 	minute := now.Hour()*60 + now.Minute()
 	today := now.Weekday()
 	yesterday := (today + 6) % 7
 
-	if s.start < s.end {
+	switch {
+	case s.start == s.end: // all day
+		return s.days[today]
+	case s.start < s.end:
 		return s.days[today] && s.start <= minute && minute < s.end
 	}
 	return (s.days[today] && minute >= s.start) || (s.days[yesterday] && minute < s.end)
@@ -154,6 +158,9 @@ func (p *Profile) scheduleBlock(name string, t *Trace) (Decision, bool) {
 
 	for _, sc := range active {
 		until := " until " + sc.end24
+		if sc.start == sc.end {
+			until = " today"
+		}
 		if svc, d, ok := sc.services.match(name); ok {
 			t.Add(ReasonSchedule, api.CheckMatch, "%s: %s is blocked%s", sc.name, svc.Name, until)
 			return block(ReasonSchedule, d, sc.name, fmt.Sprintf("%s: %s is blocked%s", sc.name, svc.Name, until)), true

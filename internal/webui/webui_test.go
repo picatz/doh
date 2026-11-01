@@ -4,6 +4,8 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -150,8 +152,22 @@ func TestIndex_NoInlineCodeOrExternalAssets(t *testing.T) {
 	}
 }
 
+// readScripts returns every embedded script, joined.
+func readScripts(t *testing.T) string {
+	t.Helper()
+	names, err := fs.Glob(static, "static/*.js")
+	if err != nil || len(names) < 2 {
+		t.Fatalf("scripts = %q, %v", names, err)
+	}
+	var all strings.Builder
+	for _, name := range names {
+		all.WriteString(readStatic(t, strings.TrimPrefix(name, "static/")))
+	}
+	return all.String()
+}
+
 func TestScript_NoUnsafeDOMOrDynamicCode(t *testing.T) {
-	js := readStatic(t, "app.js")
+	js := readScripts(t)
 
 	for _, bad := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "setTimeout(\"", "setInterval(", "srcdoc"} {
 		if strings.Contains(js, bad) {
@@ -202,7 +218,7 @@ func TestIcon_NoScript(t *testing.T) {
 // into the page couldn't steal a long-lived credential, and sign-in link
 // codes are removed from the address bar as soon as the page loads.
 func TestScript_HoldsNoToken(t *testing.T) {
-	js := readStatic(t, "app.js")
+	js := readScripts(t)
 	html := readStatic(t, "index.html")
 
 	for _, bad := range []string{"Authorization", "Bearer", "state.token", "#token=", `type="password"`} {
@@ -257,5 +273,39 @@ func TestIndex_OperatorOnlyStartsHidden(t *testing.T) {
 		if !strings.Contains(index, el) {
 			t.Errorf("index.html lacks %s", el)
 		}
+	}
+}
+
+// TestScheduleModule runs the schedule module's own tests, which check
+// that "active now" agrees with the server's schedule semantics, if node
+// is installed.
+func TestScheduleModule(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node isn't installed")
+	}
+	out, err := exec.CommandContext(t.Context(), node, "--test", filepath.Join("testdata", "schedule_test.mjs")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node --test: %v\n%s", err, out)
+	}
+}
+
+// TestScript_SchedulesFollowTheProfileTimeZone checks that whether a
+// schedule is in effect is computed in the profile's time zone, in one
+// place, and that the time zone picker works without Intl.supportedValuesOf.
+func TestScript_SchedulesFollowTheProfileTimeZone(t *testing.T) {
+	js := readStatic(t, "app.js")
+	mod := readStatic(t, "schedule.js")
+	if n := strings.Count(js+mod, "Intl.DateTimeFormat(\"en-US\""); n != 1 || !strings.Contains(mod, "timeZone, weekday") {
+		t.Error("schedules aren't checked in the profile's time zone by one function")
+	}
+	if !strings.Contains(js, `import { WEEKDAYS`) || !strings.Contains(js, `from "./schedule.js"`) {
+		t.Error("app.js doesn't use schedule.js")
+	}
+	if !regexp.MustCompile(`try \{ zones = Intl\.supportedValuesOf\("timeZone"\); \} catch`).MatchString(js) {
+		t.Error("the time zone picker has no fallback for browsers without Intl.supportedValuesOf")
+	}
+	if rec := get(t, "/ui/schedule.js"); rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "javascript") {
+		t.Errorf("/ui/schedule.js: %d %q", rec.Code, rec.Header().Get("Content-Type"))
 	}
 }

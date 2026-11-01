@@ -12,6 +12,8 @@ func New() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "doh",
 		Short: "doh is a CLI for querying and serving DNS over HTTPS (DoH)",
+		// main reports errors, once.
+		SilenceErrors: true,
 	}
 	root.AddCommand(
 		newQueryCommand(),

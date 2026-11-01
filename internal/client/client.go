@@ -410,6 +410,41 @@ func (c *Client) Profile(ctx context.Context, id string) (*policy.Profile, error
 	return &p, nil
 }
 
+// ProfileVersion returns the profile with id and the entity tag of the
+// policy it belongs to, for a conditional change with
+// [Client.PatchProfileIf].
+func (c *Client) ProfileVersion(ctx context.Context, id string) (*policy.Profile, string, error) {
+	var p policy.Profile
+	h, err := c.get(ctx, "/profiles"+segment(id), nil, &p)
+	if err != nil {
+		return nil, "", err
+	}
+	return &p, h.Get("ETag"), nil
+}
+
+// PatchProfileIf changes the profile with id like [Client.PatchProfile],
+// but only if the policy's entity tag is still ifMatch: otherwise the
+// server refuses with 412 Precondition Failed ([IsPreconditionFailed]),
+// so changes made since the profile was read aren't lost.
+func (c *Client) PatchProfileIf(ctx context.Context, id string, patch any, ifMatch string) (*policy.Profile, error) {
+	var header http.Header
+	if ifMatch != "" {
+		header = http.Header{"If-Match": {ifMatch}}
+	}
+	var out policy.Profile
+	if _, err := c.call(ctx, http.MethodPatch, "/profiles"+segment(id), nil, patch, api.MergePatchType, header, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// IsPreconditionFailed reports whether err is the server refusing a
+// conditional change because the policy changed first.
+func IsPreconditionFailed(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Status == http.StatusPreconditionFailed
+}
+
 // CreateProfile adds a profile.
 func (c *Client) CreateProfile(ctx context.Context, p policy.Profile) (*policy.Profile, error) {
 	var out policy.Profile

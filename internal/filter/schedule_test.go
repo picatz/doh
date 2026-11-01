@@ -153,3 +153,24 @@ func TestSchedules_Lists(t *testing.T) {
 		t.Errorf("scheduled list: %+v", d.Decision)
 	}
 }
+
+func TestSchedules_AllDay(t *testing.T) {
+	p := policy.Profile{ID: "kids", TimeZone: "America/New_York", Schedules: []policy.Schedule{
+		{Name: "Weekend off", Days: []string{"sat", "sun"}, Start: "00:00", End: "00:00", Services: []string{"youtube"}},
+	}}
+	for when, blocked := range map[string]bool{
+		"Sat 2026-11-07 00:00": true,
+		"Sun 2026-11-08 23:59": true,
+		"Mon 2026-11-09 00:00": false,
+		"Fri 2026-11-06 23:59": false,
+	} {
+		e := engine(t, Options{Now: at(t, when)}, p)
+		d := e.Profile("kids").Check(t.Context(), Query{Name: "www.youtube.com", Type: dns.TypeA}, nil)
+		if (d.Action == api.ActionBlock) != blocked {
+			t.Errorf("%s: %+v, want blocked %v", when, d.Decision, blocked)
+		}
+		if blocked && d.Detail != "Weekend off: YouTube is blocked today" {
+			t.Errorf("%s: detail %q", when, d.Detail)
+		}
+	}
+}

@@ -300,7 +300,7 @@ func openBrowser(link string) error {
 
 // profileListKeys are the profile fields "doh profile set" always treats
 // as string lists.
-var profileListKeys = []string{"lists", "allow", "deny", "block_tlds", "clients"}
+var profileListKeys = []string{"lists", "allow", "deny", "block_tlds", "clients", "services"}
 
 // tenantListKeys are the tenant fields "doh tenant set" always treats as
 // string lists.
@@ -502,14 +502,18 @@ Examples:
 		Short: "Change a profile's settings",
 		Long: `Change a profile's settings with key=value pairs, using dots for nested
 fields. Values are true or false, integers, comma-separated lists, or strings;
-an empty value (key=) resets a field. lists, allow, deny, block_tlds, and
-clients are always lists, replacing the profile's current ones.
+an empty value (key=) resets a field. lists, allow, deny, block_tlds, clients,
+and services are always lists, replacing the profile's current ones. Blocked
+apps are services IDs from "doh services"; schedules have "doh schedule", and
+time_zone names the IANA zone they run in (blank is the server's local time).
 
 Examples:
   doh profile set kids safe_search=true security.bypass=true
   doh profile set default security.newly_registered=true security.newly_registered_days=14
   doh profile set default lists=threat-intel,hagezi-normal
   doh profile set kids name="Kids' tablets" block_response=null
+  doh profile set kids services=tiktok,roblox
+  doh profile set kids time_zone=America/New_York
   doh profile set kids block_tlds=   # an empty value resets a field`,
 		Args:         cobra.MinimumNArgs(2),
 		SilenceUsage: true,
@@ -596,6 +600,7 @@ func printProfile(w io.Writer, p *policy.Profile) error {
 		{"Deny", p.Deny},
 		{"Blocked TLDs", p.BlockTLDs},
 		{"Clients", p.Clients},
+		{"Apps", serviceNames(p.Services)},
 	} {
 		if len(row.values) > 0 {
 			fmt.Fprintf(tw, "%s\t%s\n", row.title, strings.Join(row.values, ", "))
@@ -606,6 +611,12 @@ func printProfile(w io.Writer, p *policy.Profile) error {
 	}
 	for _, rw := range p.Rewrites {
 		fmt.Fprintf(tw, "Rewrite %s\t%s\n", rw.Name, strings.Join(rw.Addrs, ", "))
+	}
+	if p.TimeZone != "" || len(p.Schedules) > 0 {
+		fmt.Fprintf(tw, "Time zone\t%s\n", cmp.Or(p.TimeZone, "server's local time"))
+	}
+	for _, sc := range p.Schedules {
+		fmt.Fprintf(tw, "Schedule %s\t%s %s  %s\n", sc.Name, formatDays(sc.Days), formatPeriod(sc), describeBlocks(sc))
 	}
 	return tw.Flush()
 }
@@ -923,5 +934,7 @@ func clientCommands() []*cobra.Command {
 		newSetupCommand(),
 		newTenantCommand(),
 		newPeopleCommand(),
+		newServicesCommand(),
+		newScheduleCommand(),
 	}
 }

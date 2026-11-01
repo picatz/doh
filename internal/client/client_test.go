@@ -482,3 +482,37 @@ func TestClient_Tenants(t *testing.T) {
 		t.Errorf("calls = %v", calls)
 	}
 }
+
+func TestClient_ConditionalProfilePatch(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("ETag", `"v1"`)
+			writeJSON(w, 200, policy.Profile{ID: "kids"})
+		case http.MethodPatch:
+			if ct := r.Header.Get("Content-Type"); ct != api.MergePatchType {
+				t.Errorf("Content-Type = %q", ct)
+			}
+			if r.Header.Get("If-Match") != `"v1"` {
+				writeJSON(w, http.StatusPreconditionFailed, api.Error{Error: "the policy changed"})
+				return
+			}
+			writeJSON(w, 200, policy.Profile{ID: "kids", Services: []string{"tiktok"}})
+		}
+	})
+
+	p, etag, err := c.ProfileVersion(t.Context(), "kids")
+	if err != nil || p.ID != "kids" || etag != `"v1"` {
+		t.Fatalf("ProfileVersion = %+v, %q, %v", p, etag, err)
+	}
+	if p, err := c.PatchProfileIf(t.Context(), "kids", map[string]any{"services": []string{"tiktok"}}, etag); err != nil || len(p.Services) != 1 {
+		t.Errorf("PatchProfileIf = %+v, %v", p, err)
+	}
+	_, err = c.PatchProfileIf(t.Context(), "kids", map[string]any{}, `"stale"`)
+	if !IsPreconditionFailed(err) {
+		t.Errorf("stale PatchProfileIf = %v, want a precondition failure", err)
+	}
+	if IsPreconditionFailed(errors.New("other")) {
+		t.Error("IsPreconditionFailed matched an unrelated error")
+	}
+}

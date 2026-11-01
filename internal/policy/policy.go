@@ -234,7 +234,9 @@ type Schedule struct {
 	Days []string `json:"days,omitempty"`
 
 	// Start and End are times of day, as "21:00" and "07:00". A period
-	// that ends before it starts runs past midnight, into the next day.
+	// that ends before it starts runs past midnight, into the next day;
+	// one that ends when it starts, such as "00:00" to "00:00", lasts all
+	// day.
 	Start string `json:"start"`
 	End   string `json:"end"`
 
@@ -570,15 +572,10 @@ func (p *Policy) Validate() error {
 					fail("%s: day %q must be one of %s", at, d, strings.Join(Weekdays[:], ", "))
 				}
 			}
-			start, err1 := ParseClock(sc.Start)
-			end, err2 := ParseClock(sc.End)
-			switch {
-			case err1 != nil:
-				fail("%s: %v", at, err1)
-			case err2 != nil:
-				fail("%s: %v", at, err2)
-			case start == end:
-				fail("%s: starts and ends at the same time", at)
+			for _, clock := range []string{sc.Start, sc.End} {
+				if _, err := ParseClock(clock); err != nil {
+					fail("%s: %v", at, err)
+				}
 			}
 			if !sc.BlockAll && len(sc.Services) == 0 && len(sc.Lists) == 0 && len(sc.Deny) == 0 {
 				fail("%s: blocks nothing; set block_all, services, lists, or deny", at)

@@ -125,7 +125,7 @@ Profiles can block apps and sites by name, always or on a schedule.
 }
 ```
 
-A period that ends before it starts runs past midnight and belongs to the day it starts on: Thursday's bedtime lasts into Friday morning, and Friday night has none. During a period, the schedule's services, lists, and denied domains are blocked; with `block_all`, everything is, except the profile's allowed domains, the schedule's `allow`, and names local to the network, such as the router and printer. Blocked queries are logged with reason `schedule` and the schedule's name, and the block says until when, as in "Homework: YouTube is blocked until 18:00".
+A period that ends before it starts runs past midnight and belongs to the day it starts on: Thursday's bedtime lasts into Friday morning, and Friday night has none. One that ends when it starts, such as `00:00` to `00:00`, lasts all day on its days. During a period, the schedule's services, lists, and denied domains are blocked; with `block_all`, everything is, except the profile's allowed domains, the schedule's `allow`, and names local to the network, such as the router and printer. Blocked queries are logged with reason `schedule` and the schedule's name, and the block says until when, as in "Homework: YouTube is blocked until 18:00", or "today" for an all-day one. That sentence is the log entry's `detail`, shown as "Why" in the web UI.
 
 ## Profiles and devices
 

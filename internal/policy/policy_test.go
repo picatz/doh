@@ -241,7 +241,6 @@ func TestValidate_ServicesAndSchedules(t *testing.T) {
 		{"bad day", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Days: []string{"monday"}, Start: "01:00", End: "02:00", BlockAll: true}}}, `day "monday"`},
 		{"bad start", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "9pm", End: "02:00", BlockAll: true}}}, "HH:MM"},
 		{"out of range", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "24:30", End: "02:00", BlockAll: true}}}, "HH:MM"},
-		{"empty period", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "09:00", End: "09:00", BlockAll: true}}}, "same time"},
 		{"blocks nothing", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "09:00", End: "10:00"}}}, "blocks nothing"},
 		{"bad scheduled service", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "09:00", End: "10:00", Services: []string{"nope"}}}}, "unknown service"},
 		{"bad allow", Profile{ID: "a", Schedules: []Schedule{{Name: "x", Start: "09:00", End: "10:00", BlockAll: true, Allow: []string{"not a domain"}}}}, "invalid domain"},

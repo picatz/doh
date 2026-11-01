@@ -85,6 +85,10 @@ type Entry struct {
 	// Source names the list a matching rule came from.
 	Source string `json:"source,omitempty"`
 
+	// Detail explains the decision for people, such as "Homework: YouTube
+	// is blocked until 18:00".
+	Detail string `json:"detail,omitempty"`
+
 	// Answers summarizes the answer records, such as "A 192.0.2.1" or
 	// "CNAME cdn.example.".
 	Answers []string `json:"answers,omitempty"`
