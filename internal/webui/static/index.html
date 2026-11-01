@@ -130,7 +130,15 @@
           <button type="submit" id="ap-submit" class="primary">Add a passkey</button>
         </div>
       </form>
-      <div id="people" class="people" aria-live="polite"></div>
+      <h3 class="subhead" id="people-title">People</h3>
+      <div id="people" class="people" aria-live="polite" aria-labelledby="people-title"></div>
+
+      <div class="heading-row subhead">
+        <h3 id="sa-title">Service accounts</h3>
+        <button type="button" id="new-sa" class="primary">New service account</button>
+      </div>
+      <p class="muted lede">For scripts, home automation, and CI. Each acts for one tenant, as a reader or an admin, with keys that always expire. Rotate a key to replace it without downtime; revoke one to stop it at once.</p>
+      <div id="service-accounts" class="people" aria-live="polite" aria-labelledby="sa-title"></div>
     </section>
   </main>
 
@@ -148,7 +156,7 @@
     <input id="c-id" required pattern="[a-z0-9][a-z0-9\-]{0,62}" placeholder="streaming" spellcheck="false">
     <label for="c-name">Name</label>
     <input id="c-name" placeholder="Streaming sticks">
-    <div id="c-tenant-row" hidden>
+    <div id="c-tenant-row" class="field" hidden>
       <label for="c-tenant">Tenant</label>
       <select id="c-tenant"><option value="">None: yours, as the operator</option></select>
     </div>
@@ -170,11 +178,57 @@
   </form>
 </dialog>
 
-<dialog id="confirm-dialog">
+<dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-text">
   <form method="dialog">
     <h3 id="confirm-title">Are you sure?</h3>
     <p id="confirm-text" class="muted"></p>
-    <div class="actions"><button value="cancel">Cancel</button><button value="ok" class="danger">Delete</button></div>
+    <div class="actions"><button value="cancel" autofocus>Cancel</button><button value="ok" id="confirm-ok" class="danger">Delete</button></div>
+  </form>
+</dialog>
+
+<dialog id="sa-dialog" aria-labelledby="sa-dialog-title">
+  <form id="sa-form" method="dialog">
+    <h3 id="sa-dialog-title">New service account</h3>
+    <label for="sa-name">Name</label>
+    <input id="sa-name" required maxlength="64" placeholder="Home Assistant" autocomplete="off">
+    <fieldset class="choices">
+      <legend>Access</legend>
+      <label class="choice"><input type="radio" name="sa-role" value="reader" checked><span><strong>Reader</strong><span class="muted">Sees profiles, the query log, and stats.</span></span></label>
+      <label class="choice"><input type="radio" name="sa-role" value="admin"><span><strong>Admin</strong><span class="muted">Also changes profiles, such as blocking a domain.</span></span></label>
+    </fieldset>
+    <div id="sa-tenant-row" class="field" hidden>
+      <label for="sa-tenant">Tenant</label>
+      <select id="sa-tenant"><option value="">None: yours, as the operator</option></select>
+    </div>
+    <label for="sa-expires">Its first key lasts</label>
+    <select id="sa-expires"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="180">180 days</option><option value="365">1 year</option></select>
+    <div class="actions"><button type="button" id="sa-cancel">Cancel</button><button type="submit" class="primary">Create</button></div>
+  </form>
+</dialog>
+
+<dialog id="rotate-dialog" aria-labelledby="rotate-title">
+  <form id="rotate-form" method="dialog">
+    <h3 id="rotate-title">Rotate key</h3>
+    <p class="muted">A new key replaces this one. Give whatever uses the old key time to switch over.</p>
+    <label for="rotate-grace">The old key stops working</label>
+    <select id="rotate-grace"><option value="0">Right away</option><option value="3600" selected>In an hour</option><option value="86400">In a day</option><option value="604800">In a week</option></select>
+    <label for="rotate-expires">The new key lasts</label>
+    <select id="rotate-expires"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="180">180 days</option><option value="365">1 year</option></select>
+    <div class="actions"><button type="button" id="rotate-cancel">Cancel</button><button type="submit" class="primary">Rotate</button></div>
+  </form>
+</dialog>
+
+<dialog id="secret-dialog" aria-labelledby="secret-title" aria-describedby="secret-lede">
+  <form method="dialog">
+    <h3 id="secret-title">Your new key</h3>
+    <p id="secret-lede" class="muted">Shown only now. Keep it somewhere safe, such as a secret manager: doh keeps only a hash of it, so it can't show it again.</p>
+    <div class="secret-row">
+      <code id="secret-value" class="secret" tabindex="0" aria-label="Key secret"></code>
+      <button type="button" id="secret-copy" aria-describedby="secret-value">Copy</button>
+    </div>
+    <p id="secret-meta" class="muted hint"></p>
+    <label class="check"><input type="checkbox" id="secret-saved"> I've saved it somewhere safe</label>
+    <div class="actions"><button value="done" class="primary" id="secret-done" disabled>Done</button></div>
   </form>
 </dialog>
 

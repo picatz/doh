@@ -313,7 +313,7 @@ func (c *Client) PatchTenant(ctx context.Context, id string, patch any) (*policy
 }
 
 // DeleteTenant removes the tenant with id, which must have no profiles
-// left, and its people. Only the operator can.
+// left, its people, and its service accounts. Only the operator can.
 func (c *Client) DeleteTenant(ctx context.Context, id string) error {
 	_, err := c.call(ctx, http.MethodDelete, "/tenants"+segment(id), nil, nil, "", nil, nil)
 	return err

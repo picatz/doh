@@ -232,7 +232,7 @@ level=INFO msg="serving admin" metrics=http://127.0.0.1:9090/metrics vars=http:/
 | Endpoint | What it serves |
 | --- | --- |
 | `/` | The web UI, signed in to with a link from `doh ui`, or a passkey |
-| `/api/v1/` | The admin API, with the `admin.token` or `reader.token` from the data directory |
+| `/api/v1/` | The admin API, with a [service account](docs/protections.md#service-accounts) key, or the `admin.token` or `reader.token` from the data directory |
 | `/metrics` | [Prometheus](https://prometheus.io/) counters: queries by transport, responses by code, blocks by list and by reason, per-upstream queries, errors, and latency, slow queries, and Go runtime gauges |
 | `/debug/vars` | The same counters as JSON, with [runtime metrics](https://pkg.go.dev/runtime/metrics) and build information |
 | `/debug/pprof/` | [pprof](https://pkg.go.dev/net/http/pprof) profiles |

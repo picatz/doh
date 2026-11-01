@@ -211,17 +211,56 @@ input[role=switch]:checked::after { transform: translateX(1rem); }
 .add-passkey .hint { color: var(--warn); margin: 0 0 .5rem; }
 .people { display: grid; gap: .9rem; }
 .person-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
-.person-head h3 { margin: 0; flex: 1; }
+.person-head h4 { margin: 0; flex: 1; font-size: 1rem; line-height: 1.3; min-width: 0; overflow-wrap: anywhere; }
+.passkey > .row-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: .25rem; }
+.passkey.expired .passkey-name { color: var(--muted); }
+.account-meta { margin: .35rem 0 0; }
+.account-meta code { font-size: .82rem; }
+
+/* A view's second-level sections, such as People and Service accounts. */
+.subhead { margin: 2rem 0 .75rem; }
+.heading-row.subhead h3 { margin: 0; }
+h3.subhead, .heading-row.subhead h3 { font-size: 1.1rem; }
+.group-label { margin: .5rem 0 -.25rem; color: var(--muted); font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.empty { margin: 0; }
+
+/* Status said in words and a symbol, with color only as a third cue. */
+.status { white-space: nowrap; }
+.status.warn { color: var(--warn); font-weight: 600; }
+.status.bad { color: var(--bad); font-weight: 600; }
+
+/* A choice between options that each need a sentence. */
+.choices { border: 0; margin: .25rem 0; padding: 0; display: grid; gap: .4rem; }
+.choices legend { padding: 0; margin-bottom: .25rem; }
+.choice { display: flex; align-items: start; gap: .6rem; padding: .6rem .7rem; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: border-color .15s, background-color .15s; }
+.choice:hover { background: var(--surface-2); }
+.choice:has(input:checked) { border-color: var(--accent); background: var(--surface-2); }
+.choice input { margin: .2rem 0 0; accent-color: var(--accent); }
+.choice > span { display: grid; gap: .1rem; }
+.choice .muted { font-size: .88rem; }
+
+/* A secret shown once: easy to read, select, and copy. */
+.secret-row { display: flex; gap: .5rem; align-items: stretch; }
+.secret { flex: 1; min-width: 0; padding: .55rem .7rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); overflow-wrap: anywhere; user-select: all; font-size: .85rem; line-height: 1.45; }
+label.check { display: flex; align-items: center; gap: .5rem; cursor: pointer; }
+label.check input { accent-color: var(--accent); width: 1.05rem; height: 1.05rem; }
+dialog .hint { font-size: .88rem; margin: 0; }
+dialog label { font-size: .9rem; }
 .passkeys { list-style: none; margin: .6rem 0 0; padding: 0; }
 .passkey { display: grid; grid-template-columns: 1fr auto; gap: 0 1rem; align-items: center; padding: .6rem 0; border-top: 1px solid var(--border); }
 .passkey-name { font-weight: 600; }
 .passkey-meta { font-size: .85rem; grid-column: 1; }
 .passkey > button { grid-column: 2; grid-row: 1 / span 2; }
+@media (max-width: 520px) {
+  .passkey { grid-template-columns: 1fr; }
+  .passkey > button, .passkey > .row-actions { grid-column: 1; grid-row: auto; justify-self: start; margin-left: -.7rem; }
+}
 button.danger-text { color: var(--bad); }
 
 dialog { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); padding: 1.2rem; width: min(420px, calc(100vw - 2rem)); }
 dialog::backdrop { background: rgb(0 0 0 / .35); }
 dialog form { display: grid; gap: .5rem; }
+dialog h3 { margin: 0 0 .25rem; }
 
 .toasts { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); display: grid; gap: .5rem; z-index: 50; width: min(480px, calc(100vw - 2rem)); }
 .toast { background: var(--text); color: var(--bg); padding: .6rem .9rem; border-radius: 8px; box-shadow: 0 4px 16px rgb(0 0 0 / .2); }
@@ -305,3 +344,4 @@ dialog form { display: grid; gap: .5rem; }
   .schedule-actions { grid-column: 1; grid-row: auto; margin-top: .3rem; }
   .tz select { width: 100%; }
 }
+.field { display: grid; gap: .5rem; }

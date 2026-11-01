@@ -184,10 +184,10 @@ Examples:
 func newTenantDeleteCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <id>",
-		Short: "Delete a tenant and its people",
+		Short: "Delete a tenant, its people, and its service accounts",
 		Long: `Delete a tenant. It must have no profiles left: delete them, or move them to
 another tenant, first. The tenant's people and passkeys are removed too, and
-signed out.
+signed out, and its service accounts deleted, so their keys stop working.
 
 Examples:
   doh tenant delete smiths`,
