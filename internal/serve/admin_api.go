@@ -26,6 +26,7 @@ import (
 	"github.com/picatz/doh/internal/filter"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
+	"github.com/picatz/doh/internal/services"
 )
 
 // maxAPIBody bounds API request bodies.
@@ -197,7 +198,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiCatalog(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, api.Catalog{Features: filter.Features(), Presets: blocklist.Catalog})
+	writeJSON(w, http.StatusOK, api.Catalog{Features: filter.Features(), Presets: blocklist.Catalog, Services: services.Catalog})
 }
 
 func (s *Server) apiGetPolicy(w http.ResponseWriter, r *http.Request) {

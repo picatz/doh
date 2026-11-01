@@ -8,6 +8,10 @@ import (
 	"syscall"
 
 	"github.com/picatz/doh/internal/cli"
+
+	// Profiles' schedules follow IANA time zones, so carry the database:
+	// minimal containers often have none.
+	_ "time/tzdata"
 )
 
 func main() {

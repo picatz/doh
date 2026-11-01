@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -623,4 +624,33 @@ func TestPeriodicFlush(t *testing.T) {
 			t.Fatalf("entry not flushed after %v", flushInterval)
 		}
 	})
+}
+
+func TestStats_TopClientsCountDevicesOnce(t *testing.T) {
+	l, err := Open(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	for _, e := range []Entry{
+		{Client: "192.168.1.50"},                             // before its name was learned
+		{Client: "192.168.1.50", Hostname: "living-room-tv"}, // after
+		{Client: "192.168.1.50", Hostname: "living-room-tv"},
+		{Client: "192.168.1.60", Hostname: "iphone"}, // two devices with one name
+		{Client: "192.168.1.61", Hostname: "iphone"},
+		{Client: "203.0.113.9", Device: "tablet"}, // named devices behind one address
+		{Client: "203.0.113.9", Device: "laptop"},
+	} {
+		l.Append(e)
+	}
+
+	got := map[string]int{}
+	for _, c := range l.Stats(Filter{}, -1).TopClients {
+		got[c.Name] = c.Count
+	}
+	want := map[string]int{"living-room-tv": 3, "iphone": 1, "iphone (2)": 1, "tablet": 1, "laptop": 1}
+	if !maps.Equal(got, want) {
+		t.Errorf("top clients = %v, want %v", got, want)
+	}
 }

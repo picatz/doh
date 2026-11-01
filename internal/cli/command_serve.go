@@ -105,6 +105,12 @@ var serveOptions = []serveOption{
 				c.Forward[domain] = append(c.Forward[domain], up)
 			}
 		}),
+	option((*pflag.FlagSet).StringSlice, "device-names-from", nil, "DNS servers to ask for device names by reverse lookup, such as your router at 192.168.1.1 (default the forward zones, then the default gateway)",
+		func(c *serve.Config, v []string) { c.DeviceNames.Resolvers = v }),
+	option((*pflag.FlagSet).StringSlice, "dhcp-leases", nil, "DHCP lease files to read device names from: dnsmasq's, or Kea's CSV",
+		func(c *serve.Config, v []string) { c.DeviceNames.Leases = v }),
+	option((*pflag.FlagSet).Bool, "no-device-names", false, "don't learn device names from the network",
+		func(c *serve.Config, v bool) { c.DeviceNames.Disabled = v }),
 	option((*pflag.FlagSet).StringSlice, "trusted-proxy", nil, "addresses or prefixes of reverse proxies whose X-Forwarded-For names DoH clients",
 		func(c *serve.Config, v []string) { c.TrustedProxies = v }),
 	option((*pflag.FlagSet).Bool, "no-query-log", false, "don't log queries",

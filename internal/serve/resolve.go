@@ -296,11 +296,15 @@ func (s *Server) log(req request, res result, err error, elapsed time.Duration) 
 		Reason:     res.decision.Reason,
 		Rule:       res.decision.Rule,
 		Source:     res.decision.Source,
+		Detail:     res.decision.Detail,
 		Upstream:   res.upstream,
 		DurationMS: float64(elapsed.Microseconds()) / 1000,
 	}
 	if req.client.IsValid() {
 		e.Client = req.client.String()
+		if e.Device == "" {
+			e.Hostname = s.hostnames.Name(req.client)
+		}
 	}
 
 	switch {
@@ -315,7 +319,7 @@ func (s *Server) log(req request, res result, err error, elapsed time.Duration) 
 		e.Status, e.Rcode, e.Answers = querylog.StatusAllowed, dns.RcodeToString[res.resp.Rcode], answers(res.resp)
 	}
 	if e.Status == querylog.StatusAllowed {
-		e.Reason, e.Rule = "", "" // only explicit allows are worth noting
+		e.Reason, e.Rule, e.Detail = "", "", "" // only explicit allows are worth noting
 		if res.decision.Reason == filter.ReasonAllow {
 			e.Reason, e.Rule = res.decision.Reason, res.decision.Rule
 		}

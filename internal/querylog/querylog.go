@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/url"
 	"os"
 	"slices"
@@ -43,8 +44,15 @@ type Entry struct {
 	// answered, empty for the server's operator.
 	Tenant string `json:"tenant,omitempty"`
 
-	// Device is the name of the client device, if known.
+	// Device is the name of the client device, as configured in its
+	// profile or named in its DoH path or host name, if known.
 	Device string `json:"device,omitempty"`
+
+	// Hostname is the name the client device calls itself on the local
+	// network, as its router or DHCP server reports it, if known. Any
+	// device can claim any hostname, so it's a label for people, never a
+	// basis for policy.
+	Hostname string `json:"hostname,omitempty"`
 
 	// Client is the client's IP address.
 	Client string `json:"client,omitempty"`
@@ -76,6 +84,10 @@ type Entry struct {
 
 	// Source names the list a matching rule came from.
 	Source string `json:"source,omitempty"`
+
+	// Detail explains the decision for people, such as "Homework: YouTube
+	// is blocked until 18:00".
+	Detail string `json:"detail,omitempty"`
 
 	// Answers summarizes the answer records, such as "A 192.0.2.1" or
 	// "CNAME cdn.example.".
@@ -769,7 +781,8 @@ type Stats struct {
 	// TopAllowed are the most allowed names.
 	TopAllowed []Count `json:"top_allowed"`
 
-	// TopClients are the most active clients, by device name if known,
+	// TopClients are the most active clients, by device name or hostname
+	// if known,
 	// otherwise by address.
 	TopClients []Count `json:"top_clients"`
 }
@@ -784,7 +797,13 @@ type Count struct {
 // and PageToken, listing the top names in each category.
 func (l *Log) Stats(f Filter, top int) Stats {
 	stats := Stats{ByStatus: map[Status]int{}, ByReason: map[string]int{}}
-	blocked, allowed, clients := map[string]int{}, map[string]int{}, map[string]int{}
+	blocked, allowed := map[string]int{}, map[string]int{}
+
+	// Clients are counted by device name when they have one, such as from
+	// a DoH path (devices behind one address are still distinct), and
+	// otherwise by address, labelled with the latest hostname learned for
+	// it, so a device counts once however its name was known.
+	clients, labels := map[string]int{}, map[string]string{}
 
 	l.mu.RLock()
 	for i := range l.n {
@@ -808,20 +827,43 @@ func (l *Log) Stats(f Filter, top int) Stats {
 		if (e.Status == StatusBlocked || e.Status == StatusRewritten) && e.Reason != "" {
 			stats.ByReason[e.Reason]++
 		}
-		if client := cmp.Or(e.Device, e.Client); client != "" {
-			clients[client]++
+		switch {
+		case e.Device != "":
+			clients["device "+e.Device]++
+			labels["device "+e.Device] = e.Device
+		case e.Client != "":
+			key := "client " + e.Client
+			clients[key]++
+			labels[key] = cmp.Or(e.Hostname, labels[key], e.Client)
 		}
 	}
 	l.mu.RUnlock()
 
 	stats.TopBlocked = topCounts(blocked, top)
 	stats.TopAllowed = topCounts(allowed, top)
-	stats.TopClients = topCounts(clients, top)
+	stats.TopClients = topCounts(relabel(clients, labels), top)
 
 	return stats
 }
 
 // topCounts returns the top n counts, by count descending, then name.
+// relabel returns counts keyed by their labels, keeping keys distinct when
+// labels collide, as when two devices call themselves "iphone".
+func relabel(counts map[string]int, labels map[string]string) map[string]int {
+	out := make(map[string]int, len(counts))
+	for _, key := range slices.Sorted(maps.Keys(counts)) {
+		n, label := counts[key], labels[key]
+		for i := 2; ; i++ {
+			if _, taken := out[label]; !taken {
+				break
+			}
+			label = fmt.Sprintf("%s (%d)", labels[key], i)
+		}
+		out[label] = n
+	}
+	return out
+}
+
 func topCounts(m map[string]int, n int) []Count {
 	counts := make([]Count, 0, len(m))
 	for name, c := range m {

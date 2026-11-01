@@ -28,8 +28,10 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/picatz/doh/internal/blocklist"
+	"github.com/picatz/doh/internal/services"
 )
 
 // Version is the current policy file format version.
@@ -146,6 +148,18 @@ type Profile struct {
 	// "zip".
 	BlockTLDs []string `json:"block_tlds,omitempty"`
 
+	// Services blocks apps and sites by name, such as "tiktok" or
+	// "roblox": see [services.Catalog].
+	Services []string `json:"services,omitempty"`
+
+	// Schedules block more at certain times, such as social apps during
+	// homework, or everything but school sites at bedtime.
+	Schedules []Schedule `json:"schedules,omitempty"`
+
+	// TimeZone is the IANA time zone schedules follow, such as
+	// "America/New_York". It defaults to the server's local time zone.
+	TimeZone string `json:"time_zone,omitempty"`
+
 	// SafeSearch enforces the safe search modes that search engines and
 	// video sites offer at the DNS level.
 	SafeSearch bool `json:"safe_search"`
@@ -207,6 +221,52 @@ type Security struct {
 	// Firefox is always told not to enable its own DoH when a profile
 	// blocks anything.
 	Bypass bool `json:"bypass"`
+}
+
+// Schedule blocks more during a recurring period, in the profile's time
+// zone.
+type Schedule struct {
+	// Name describes it, such as "Bedtime" or "Homework".
+	Name string `json:"name"`
+
+	// Days are the days it starts on: "mon", "tue", "wed", "thu", "fri",
+	// "sat", and "sun". Empty means every day.
+	Days []string `json:"days,omitempty"`
+
+	// Start and End are times of day, as "21:00" and "07:00". A period
+	// that ends before it starts runs past midnight, into the next day;
+	// one that ends when it starts, such as "00:00" to "00:00", lasts all
+	// day.
+	Start string `json:"start"`
+	End   string `json:"end"`
+
+	// BlockAll blocks every name but the profile's allowed domains, the
+	// schedule's Allow, and names local to the network.
+	BlockAll bool `json:"block_all,omitzero"`
+
+	// Allow lists domains, with their subdomains, that BlockAll lets
+	// through, such as school sites.
+	Allow []string `json:"allow,omitempty"`
+
+	// Services, Lists, and Deny are blocked during the period, as the
+	// profile's own are always.
+	Services []string `json:"services,omitempty"`
+	Lists    []string `json:"lists,omitempty"`
+	Deny     []string `json:"deny,omitempty"`
+}
+
+// Weekdays are the day names schedules use, from Sunday, as
+// [time.Weekday] counts them.
+var Weekdays = [7]string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
+
+// ParseClock parses a time of day as "HH:MM", returning minutes since
+// midnight.
+func ParseClock(s string) (int, error) {
+	t, err := time.Parse("15:04", s)
+	if err != nil || len(s) != 5 {
+		return 0, fmt.Errorf("time %q must be HH:MM, such as 21:00", s)
+	}
+	return t.Hour()*60 + t.Minute(), nil
 }
 
 // Rewrite answers a name locally.
@@ -485,6 +545,63 @@ func (p *Policy) Validate() error {
 			for _, a := range rw.Addrs {
 				if _, err := netip.ParseAddr(a); err != nil {
 					fail("rewrite %q: invalid address %q", rw.Name, a)
+				}
+			}
+		}
+
+		for _, id := range pr.Services {
+			if _, ok := services.Lookup(id); !ok {
+				fail("unknown service %q (want one of %s)", id, strings.Join(services.IDs(), ", "))
+			}
+		}
+		if pr.TimeZone != "" {
+			if _, err := time.LoadLocation(pr.TimeZone); err != nil || pr.TimeZone == "Local" {
+				fail("time_zone %q must be an IANA time zone, such as America/New_York", pr.TimeZone)
+			}
+		}
+		for j, sc := range pr.Schedules {
+			at := fmt.Sprintf("schedule %q", sc.Name)
+			if sc.Name == "" {
+				at = fmt.Sprintf("schedules[%d]", j)
+			}
+			if n := strings.TrimSpace(sc.Name); n == "" || len(n) > 64 {
+				fail("%s: name it with 1 to 64 characters, such as Bedtime", at)
+			}
+			for _, d := range sc.Days {
+				if !slices.Contains(Weekdays[:], d) {
+					fail("%s: day %q must be one of %s", at, d, strings.Join(Weekdays[:], ", "))
+				}
+			}
+			for _, clock := range []string{sc.Start, sc.End} {
+				if _, err := ParseClock(clock); err != nil {
+					fail("%s: %v", at, err)
+				}
+			}
+			if !sc.BlockAll && len(sc.Services) == 0 && len(sc.Lists) == 0 && len(sc.Deny) == 0 {
+				fail("%s: blocks nothing; set block_all, services, lists, or deny", at)
+			}
+			for _, id := range sc.Services {
+				if _, ok := services.Lookup(id); !ok {
+					fail("%s: unknown service %q", at, id)
+				}
+			}
+			for _, d := range slices.Concat(sc.Allow, sc.Deny) {
+				if _, ok := NormalizeDomain(d); !ok {
+					fail("%s: invalid domain %q", at, d)
+				}
+			}
+			for _, l := range sc.Lists {
+				src, err := blocklist.ParseSource(l)
+				if err != nil {
+					fail("%s: %v", at, err)
+					continue
+				}
+				if tenant != nil && !isPreset(src) && (!tenant.CustomLists || !strings.HasPrefix(src.Location, "https://")) {
+					if tenant.CustomLists {
+						fail("%s: list %q: tenants' custom lists must be HTTPS URLs", at, l)
+					} else {
+						fail("%s: list %q: tenant %q may only use preset lists", at, l, tenant.ID)
+					}
 				}
 			}
 		}
