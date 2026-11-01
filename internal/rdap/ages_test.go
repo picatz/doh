@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -144,108 +145,6 @@ func TestAges_NegativeCaching(t *testing.T) {
 	a.mu.Unlock()
 	if got := e.Expires.Sub(e.Checked); got != unsupportedTTL {
 		t.Errorf("unsupported TLD cached for %v, want %v", got, unsupportedTTL)
-	}
-}
-
-func TestAges_Singleflight(t *testing.T) {
-	clock := &fakeClock{now: fakeNow}
-	release := make(chan struct{})
-	s := newRDAPServer(t, []string{"test"}, func(w http.ResponseWriter, domain string) {
-		<-release
-		registeredAt(fakeNow.Add(-time.Hour))(w, domain)
-	})
-	a := newAges(s, clock, "")
-	a.Timeout = 10 * time.Second
-
-	var wg sync.WaitGroup
-	var okCount atomic.Int64
-	for range 20 {
-		wg.Go(func() {
-			if _, ok := a.Age(context.Background(), "popular.test"); ok {
-				okCount.Add(1)
-			}
-		})
-	}
-
-	// Let the callers pile up on the in-flight lookup, then answer once.
-	for s.domainHits.Load() == 0 {
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(20 * time.Millisecond)
-	close(release)
-	wg.Wait()
-
-	if n := s.domainHits.Load(); n != 1 {
-		t.Errorf("concurrent lookups made %d requests, want 1", n)
-	}
-	if n := okCount.Load(); n != 20 {
-		t.Errorf("%d of 20 callers got an age", n)
-	}
-}
-
-func TestAges_CallerCancellationDoesNotFailLookup(t *testing.T) {
-	clock := &fakeClock{now: fakeNow}
-	release := make(chan struct{})
-	s := newRDAPServer(t, []string{"test"}, func(w http.ResponseWriter, domain string) {
-		<-release
-		registeredAt(fakeNow.Add(-time.Hour))(w, domain)
-	})
-	a := newAges(s, clock, "")
-	a.Timeout = 10 * time.Second
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan bool)
-	go func() {
-		_, ok := a.Age(ctx, "slow.test")
-		done <- ok
-	}()
-	for s.domainHits.Load() == 0 {
-		time.Sleep(time.Millisecond)
-	}
-	cancel()
-	if <-done {
-		t.Error("canceled Age reported ok")
-	}
-
-	close(release)
-	// The lookup completes in the background and is cached.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		a.mu.Lock()
-		_, cached := a.entries["slow.test"]
-		a.mu.Unlock()
-		if cached {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("lookup not cached after caller canceled")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if _, ok := a.Age(t.Context(), "slow.test"); !ok {
-		t.Error("Age after background lookup not ok")
-	}
-}
-
-func TestAges_Timeout(t *testing.T) {
-	clock := &fakeClock{now: fakeNow}
-	release := make(chan struct{})
-	defer close(release)
-	s := newRDAPServer(t, []string{"test"}, func(w http.ResponseWriter, domain string) {
-		select {
-		case <-release:
-		case <-time.After(5 * time.Second):
-		}
-	})
-	a := newAges(s, clock, "")
-	a.Timeout = 50 * time.Millisecond
-
-	start := time.Now()
-	if _, ok := a.Age(t.Context(), "hang.test"); ok {
-		t.Error("Age of hanging lookup ok")
-	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Errorf("Age took %v, want about the timeout", d)
 	}
 }
 
@@ -393,4 +292,94 @@ func TestAges_InvalidDomain(t *testing.T) {
 	if err := a.Save(); err != nil {
 		t.Errorf("Save without path = %v", err)
 	}
+}
+
+func TestAges_Singleflight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		s := newMemoryRDAPServer(t, []string{"test"}, func(w http.ResponseWriter, domain string) {
+			<-release
+			registeredAt(fakeNow.Add(-time.Hour))(w, domain)
+		})
+		a := newAges(s, &fakeClock{now: fakeNow}, "")
+		a.Timeout = 10 * time.Second
+
+		var wg sync.WaitGroup
+		var okCount atomic.Int64
+		for range 20 {
+			wg.Go(func() {
+				if _, ok := a.Age(context.Background(), "popular.test"); ok {
+					okCount.Add(1)
+				}
+			})
+		}
+
+		// Every caller is now waiting on the one in-flight lookup.
+		synctest.Wait()
+		if n := s.domainHits.Load(); n != 1 {
+			t.Errorf("concurrent lookups made %d requests, want 1", n)
+		}
+
+		close(release)
+		wg.Wait()
+		if n := okCount.Load(); n != 20 {
+			t.Errorf("%d of 20 callers got an age", n)
+		}
+	})
+}
+
+func TestAges_CallerCancellationDoesNotFailLookup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		s := newMemoryRDAPServer(t, []string{"test"}, func(w http.ResponseWriter, domain string) {
+			<-release
+			registeredAt(fakeNow.Add(-time.Hour))(w, domain)
+		})
+		a := newAges(s, &fakeClock{now: fakeNow}, "")
+		a.Timeout = 10 * time.Second
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan bool)
+		go func() {
+			_, ok := a.Age(ctx, "slow.test")
+			done <- ok
+		}()
+
+		synctest.Wait() // the lookup is in flight
+		cancel()
+		if <-done {
+			t.Error("canceled Age reported ok")
+		}
+
+		// The lookup completes in the background and is cached.
+		close(release)
+		synctest.Wait()
+		hits := s.domainHits.Load()
+		if _, ok := a.Age(t.Context(), "slow.test"); !ok {
+			t.Error("Age after background lookup not ok")
+		}
+		if n := s.domainHits.Load(); n != hits {
+			t.Errorf("background lookup wasn't cached: %d more requests", n-hits)
+		}
+	})
+}
+
+func TestAges_Timeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		defer close(release)
+		s := newMemoryRDAPServer(t, []string{"test"}, func(w http.ResponseWriter, domain string) {
+			<-release
+		})
+		a := newAges(s, &fakeClock{now: fakeNow}, "")
+		a.Timeout = 2 * time.Second
+
+		start := time.Now()
+		if _, ok := a.Age(t.Context(), "hang.test"); ok {
+			t.Error("Age of hanging lookup ok")
+		}
+		if d := time.Since(start); d != a.Timeout {
+			t.Errorf("Age gave up after %v, want exactly the timeout %v", d, a.Timeout)
+		}
+	})
 }

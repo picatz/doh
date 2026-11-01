@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -340,80 +341,6 @@ func TestStats(t *testing.T) {
 	}
 }
 
-func TestSubscribe(t *testing.T) {
-	l := open(t, Options{})
-	ctx, cancel := context.WithCancel(t.Context())
-
-	ch := l.Subscribe(ctx, Filter{Status: StatusBlocked, Limit: 1, Until: t0.Add(-time.Hour)})
-	l.Append(Entry{Name: "allowed", Status: StatusAllowed})
-	l.Append(Entry{Name: "blocked", Status: StatusBlocked})
-
-	select {
-	case e := <-ch:
-		if e.Name != "blocked" || e.ID != 2 {
-			t.Fatalf("got %+v", e)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no entry received")
-	}
-
-	cancel()
-	waitClosed(t, ch)
-}
-
-func TestSubscribeClosedOnClose(t *testing.T) {
-	l := open(t, Options{})
-	ch := l.Subscribe(t.Context(), Filter{})
-	if err := l.Close(); err != nil {
-		t.Fatal(err)
-	}
-	waitClosed(t, ch)
-
-	// Subscribing to a closed log returns a closed channel.
-	waitClosed(t, l.Subscribe(t.Context(), Filter{}))
-
-	if err := l.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-}
-
-func waitClosed(t *testing.T, ch <-chan Entry) {
-	t.Helper()
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case _, ok := <-ch:
-			if !ok {
-				return
-			}
-		case <-deadline:
-			t.Fatal("channel not closed")
-		}
-	}
-}
-
-func TestSlowSubscriberDoesNotBlock(t *testing.T) {
-	l := open(t, Options{})
-	ch := l.Subscribe(t.Context(), Filter{})
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for range subscriberBuffer * 4 {
-			l.Append(Entry{})
-		}
-	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Append blocked on a slow subscriber")
-	}
-
-	if n := len(ch); n != subscriberBuffer {
-		t.Fatalf("buffered %d entries, want %d", n, subscriberBuffer)
-	}
-}
-
 func TestFilesAndReload(t *testing.T) {
 	dir := t.TempDir()
 	c := newClock(time.Date(2026, 11, 1, 23, 0, 0, 0, time.FixedZone("x", -5*3600))) // 2026-11-02 04:00 UTC
@@ -513,25 +440,6 @@ func TestDayRollover(t *testing.T) {
 	}
 }
 
-func TestPeriodicFlush(t *testing.T) {
-	dir := t.TempDir()
-	l := open(t, Options{Dir: dir})
-	e := l.Append(Entry{Name: "flushed"})
-
-	name := filepath.Join(dir, e.Time.UTC().Format(dayLayout)+".jsonl")
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		b, _ := os.ReadFile(name)
-		if strings.Contains(string(b), "flushed") {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("entry not flushed within 5s")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
-
 func TestConcurrentAppend(t *testing.T) {
 	l := open(t, Options{Dir: t.TempDir(), Memory: 10_000})
 	ch := l.Subscribe(t.Context(), Filter{})
@@ -598,4 +506,121 @@ func dirNames(t *testing.T, dir string) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+func TestSubscribe(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := open(t, Options{})
+		ctx, cancel := context.WithCancel(t.Context())
+
+		ch := l.Subscribe(ctx, Filter{Status: StatusBlocked, Limit: 1, Until: t0.Add(-time.Hour)})
+		l.Append(Entry{Name: "allowed", Status: StatusAllowed})
+		l.Append(Entry{Name: "blocked", Status: StatusBlocked})
+
+		// Append delivers synchronously, so the entry is already waiting.
+		got := drain(t, ch)
+		if len(got) != 1 || got[0].Name != "blocked" || got[0].ID != 2 {
+			t.Fatalf("received %+v, want only the blocked entry", got)
+		}
+
+		cancel()
+		synctest.Wait()
+		assertClosed(t, ch)
+	})
+}
+
+func TestSubscribeClosedOnClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := open(t, Options{})
+		ch := l.Subscribe(t.Context(), Filter{})
+		if err := l.Close(); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		assertClosed(t, ch)
+
+		// Subscribing to a closed log returns a closed channel.
+		assertClosed(t, l.Subscribe(t.Context(), Filter{}))
+
+		if err := l.Close(); err != nil {
+			t.Fatalf("second Close: %v", err)
+		}
+	})
+}
+
+// drain returns the entries waiting in ch, without blocking.
+func drain(t *testing.T, ch <-chan Entry) []Entry {
+	t.Helper()
+	var entries []Entry
+	for {
+		select {
+		case e, ok := <-ch:
+			if !ok {
+				return entries
+			}
+			entries = append(entries, e)
+		default:
+			return entries
+		}
+	}
+}
+
+// assertClosed fails unless ch is closed once any waiting entries are
+// read. Call it after synctest.Wait, so closing has happened if it will.
+func assertClosed(t *testing.T, ch <-chan Entry) {
+	t.Helper()
+	drain(t, ch)
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("channel received an entry after draining")
+		}
+	default:
+		t.Fatal("channel not closed")
+	}
+}
+
+func TestSlowSubscriberDoesNotBlock(t *testing.T) {
+	// A blocked Append would leave the bubble deadlocked, which synctest
+	// reports at once, rather than after a timeout.
+	synctest.Test(t, func(t *testing.T) {
+		l := open(t, Options{})
+		ch := l.Subscribe(t.Context(), Filter{})
+
+		for range subscriberBuffer * 4 {
+			l.Append(Entry{})
+		}
+
+		if n := len(ch); n != subscriberBuffer {
+			t.Fatalf("buffered %d entries, want %d", n, subscriberBuffer)
+		}
+	})
+}
+
+func TestPeriodicFlush(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		l := open(t, Options{Dir: dir})
+		e := l.Append(Entry{Name: "flushed"})
+		name := filepath.Join(dir, e.Time.UTC().Format(dayLayout)+".jsonl")
+
+		contains := func() bool {
+			b, _ := os.ReadFile(name)
+			return strings.Contains(string(b), "flushed")
+		}
+
+		// Entries are buffered until the next flush...
+		time.Sleep(flushInterval - time.Nanosecond)
+		synctest.Wait()
+		if contains() {
+			t.Fatal("entry written before the flush interval")
+		}
+
+		// ...which writes them within flushInterval.
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		if !contains() {
+			t.Fatalf("entry not flushed after %v", flushInterval)
+		}
+	})
 }
