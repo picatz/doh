@@ -183,12 +183,45 @@ func (s *Server) forward(ctx context.Context, query *dns.Msg) (*dns.Msg, bool, s
 
 	resp, err := s.exchangerFor(query.Question[0].Name).Exchange(ctx, query)
 	if err != nil {
+		// Rather than fail, answer with what the name recently resolved
+		// to, if anything ([RFC 8767]), so a brief outage upstream
+		// doesn't take the whole network's DNS down with it.
+		//
+		// [RFC 8767]: https://www.rfc-editor.org/rfc/rfc8767.html
+		if s.cache != nil {
+			if stale := s.cache.GetStale(query); stale != nil {
+				s.telemetry.staleAnswers.Add(1)
+				return withStaleEDE(query, stale), true, staleUpstream, nil
+			}
+		}
 		return nil, false, "", err
 	}
 	if s.cache != nil {
 		s.cache.Put(query, resp)
 	}
 	return resp, false, answered, nil
+}
+
+// staleUpstream is reported as the upstream of stale answers.
+const staleUpstream = "stale cache"
+
+// withStaleEDE marks a stale answer with an Extended DNS Error, for EDNS
+// clients ([RFC 8914, Section 4.4]).
+//
+// [RFC 8914, Section 4.4]: https://www.rfc-editor.org/rfc/rfc8914.html#section-4.4
+func withStaleEDE(query, resp *dns.Msg) *dns.Msg {
+	opt := query.IsEdns0()
+	if opt == nil {
+		return resp
+	}
+	if resp.IsEdns0() == nil {
+		resp.SetEdns0(dns.DefaultMsgSize, opt.Do())
+	}
+	resp.IsEdns0().Option = append(resp.IsEdns0().Option, &dns.EDNS0_EDE{
+		InfoCode:  dns.ExtendedErrorCodeStaleAnswer,
+		ExtraText: "upstreams unreachable",
+	})
+	return resp
 }
 
 // upstreamKey is the context key under which [instrumented] exchangers
@@ -284,6 +317,9 @@ func (s *Server) log(req request, res result, err error, elapsed time.Duration) 
 		if res.decision.Reason == filter.ReasonAllow {
 			e.Reason, e.Rule = res.decision.Reason, res.decision.Rule
 		}
+	}
+	if res.upstream == staleUpstream {
+		e.Reason, e.Upstream = "stale", ""
 	}
 
 	s.qlog.Append(e)

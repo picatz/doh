@@ -53,6 +53,7 @@ type telemetry struct {
 	blockedReasons expvar.Map // by the check that blocked: list, rebinding, ...
 	cacheHits      expvar.Int
 	cacheMisses    expvar.Int
+	staleAnswers   expvar.Int // answered from expired cache entries
 
 	recorder *flightRecorder
 }
@@ -219,8 +220,8 @@ func (s *Server) serveVars(w http.ResponseWriter, r *http.Request) {
 
 	t := s.telemetry
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	fmt.Fprintf(w, `{"doh": {"queries": %s, "responses": %s, "blocked": %s, "blocked_reasons": %s, "cache": {"hits": %s, "misses": %s}, "upstreams": %s, "slow_queries": %s}, "runtime": %s, "build": %s}`+"\n",
-		t.queries.String(), t.responses.String(), t.blocked.String(), t.blockedReasons.String(), t.cacheHits.String(), t.cacheMisses.String(), t.upstreams.String(), t.slowQueries.String(), runtimeJSON, buildJSON)
+	fmt.Fprintf(w, `{"doh": {"queries": %s, "responses": %s, "blocked": %s, "blocked_reasons": %s, "cache": {"hits": %s, "misses": %s, "stale": %s}, "upstreams": %s, "slow_queries": %s}, "runtime": %s, "build": %s}`+"\n",
+		t.queries.String(), t.responses.String(), t.blocked.String(), t.blockedReasons.String(), t.cacheHits.String(), t.cacheMisses.String(), t.staleAnswers.String(), t.upstreams.String(), t.slowQueries.String(), runtimeJSON, buildJSON)
 }
 
 // serveMetrics writes the server's counters in the Prometheus text
@@ -254,6 +255,7 @@ func (s *Server) serveMetrics(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Fprintf(&b, "# HELP doh_cache_hits_total Queries answered from the cache.\n# TYPE doh_cache_hits_total counter\ndoh_cache_hits_total %s\n", t.cacheHits.String())
 	fmt.Fprintf(&b, "# HELP doh_cache_misses_total Queries the cache couldn't answer.\n# TYPE doh_cache_misses_total counter\ndoh_cache_misses_total %s\n", t.cacheMisses.String())
+	fmt.Fprintf(&b, "# HELP doh_stale_answers_total Queries answered stale, from expired cache entries, because upstreams couldn't be reached.\n# TYPE doh_stale_answers_total counter\ndoh_stale_answers_total %s\n", t.staleAnswers.String())
 	fmt.Fprintf(&b, "# HELP doh_slow_queries_total Queries slower than the slow query threshold.\n# TYPE doh_slow_queries_total counter\ndoh_slow_queries_total %s\n", t.slowQueries.String())
 
 	for _, sample := range runtimeMetrics() {

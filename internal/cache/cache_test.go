@@ -78,8 +78,8 @@ func TestCache_GetPut(t *testing.T) {
 		if c.Get(q) != nil {
 			t.Error("hit after the TTL expired")
 		}
-		if c.Len() != 0 {
-			t.Errorf("got %d entries, want the expired one evicted", c.Len())
+		if c.Len() != 1 || c.GetStale(q) == nil {
+			t.Errorf("got %d entries, want the expired one kept for serving stale", c.Len())
 		}
 	})
 }
@@ -282,5 +282,48 @@ func BenchmarkCache_Get(b *testing.B) {
 
 	for b.Loop() {
 		c.Get(q)
+	}
+}
+
+func TestCache_Stale(t *testing.T) {
+	c, clk := newTestCache(10)
+	q := query("example.com.", dns.TypeA)
+	c.Put(q, answer(q, 300))
+
+	if c.GetStale(q) != nil {
+		t.Fatal("a fresh answer was served stale")
+	}
+
+	clk.advance(300 * time.Second)
+	if c.Get(q) != nil {
+		t.Fatal("an expired answer was served fresh")
+	}
+	q.Id = 4242
+	stale := c.GetStale(q)
+	if stale == nil {
+		t.Fatal("no stale answer just after expiry")
+	}
+	if stale.Id != 4242 || stale.Answer[0].Header().Ttl != StaleTTL {
+		t.Errorf("stale answer = %v, want the query's ID and TTL %d", stale, StaleTTL)
+	}
+
+	// Serving stale doesn't change the stored answer.
+	if again := c.GetStale(q); again.Answer[0].Header().Ttl != StaleTTL {
+		t.Error("stale answer changed")
+	}
+
+	// A fresh answer replaces the stale one.
+	c.Put(q, answer(q, 60))
+	if c.Get(q) == nil || c.GetStale(q) != nil {
+		t.Error("a fresh answer didn't replace the stale one")
+	}
+
+	clk.advance(60*time.Second + MaxStale)
+	if c.GetStale(q) != nil {
+		t.Error("served an answer stale for longer than MaxStale")
+	}
+	c.Get(q) // evicts it
+	if c.Len() != 0 {
+		t.Errorf("Len = %d after the stale window, want 0", c.Len())
 	}
 }
