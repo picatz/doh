@@ -464,6 +464,61 @@ func (c *Client) DeleteTrustRule(ctx context.Context, account, rule string) erro
 	return err
 }
 
+// tenantQuery names the tenant whose alerts a request is about, if any.
+func tenantQuery(tenant string) url.Values {
+	if tenant == "" {
+		return nil
+	}
+	return url.Values{"tenant": {tenant}}
+}
+
+// Alerts returns the alert settings, destinations, and recent deliveries
+// of the caller's tenant, or, for the operator, of tenant, or with tenant
+// empty, the operator's own.
+func (c *Client) Alerts(ctx context.Context, tenant string) (*api.Alerts, error) {
+	var out api.Alerts
+	if _, err := c.get(ctx, "/alerts", tenantQuery(tenant), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PatchAlerts changes alert settings with a JSON merge patch, such as
+// {"kinds": ["threat"]}.
+func (c *Client) PatchAlerts(ctx context.Context, tenant string, patch any) (*api.Alerts, error) {
+	var out api.Alerts
+	if _, err := c.call(ctx, http.MethodPatch, "/alerts", tenantQuery(tenant), patch, api.MergePatchType, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// AddAlertDestination adds a place to send alerts. A webhook's signing
+// secret is returned only this once.
+func (c *Client) AddAlertDestination(ctx context.Context, tenant string, req api.AlertDestinationRequest) (*api.NewAlertDestination, error) {
+	var out api.NewAlertDestination
+	if _, err := c.call(ctx, http.MethodPost, "/alerts/destinations", tenantQuery(tenant), req, "application/json", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveAlertDestination removes a place alerts are sent.
+func (c *Client) RemoveAlertDestination(ctx context.Context, tenant, id string) error {
+	_, err := c.call(ctx, http.MethodDelete, "/alerts/destinations"+segment(id), tenantQuery(tenant), nil, "", nil, nil)
+	return err
+}
+
+// TestAlerts sends a test alert to every destination, reporting how each
+// delivery went.
+func (c *Client) TestAlerts(ctx context.Context, tenant string) (*api.AlertTest, error) {
+	var out api.AlertTest
+	if _, err := c.call(ctx, http.MethodPost, "/alerts/test", tenantQuery(tenant), nil, "", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ExchangeToken trades a workload's identity token for a service
 // account's short-lived access token ([RFC 8693, Section 2]). It sends no
 // API token of its own. Since the identity token is a credential, it's

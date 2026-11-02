@@ -22,11 +22,18 @@ func TestRegistry(t *testing.T) {
 
 	r := NewRegistry(&Loader{}, nil)
 	defer r.Close()
+	var failed []string
+	r.OnFailure(func(src Source, err error) { failed = append(failed, src.Name) }) // called with r.mu held, so serialized
 
 	r.Sync([]Source{a, b, missing})
 	if err := r.Wait(t.Context(), a, b, missing); err != nil {
 		t.Fatal(err)
 	}
+	r.mu.Lock()
+	if len(failed) != 1 || failed[0] != "missing" {
+		t.Errorf("OnFailure saw %q, want only the missing list", failed)
+	}
+	r.mu.Unlock()
 
 	if _, ok := r.List(a).Block("x.ads.example"); !ok {
 		t.Error("list a not loaded")

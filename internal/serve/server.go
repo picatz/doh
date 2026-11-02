@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/picatz/doh/internal/alerts"
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/cache"
 	"github.com/picatz/doh/internal/federation"
@@ -86,6 +87,9 @@ type Server struct {
 
 	// hostnames learns devices' names for the query log, unless disabled.
 	hostnames *hostnames.Directory
+
+	// alerts tells tenants and the operator when something needs them.
+	alerts *alerts.Engine
 
 	// tokens authorize admin API requests, and signin signs browsers in
 	// to the web UI, once the admin listener knows its address.
@@ -169,13 +173,20 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		s.cache = cache.New(config.Cache.Size)
 	}
 
+	// Alerts start first, so a blocklist that fails to load is reported.
+	if err := s.configureAlerts(); err != nil {
+		return nil, err
+	}
+
 	if err := s.configurePolicy(context.Background()); err != nil {
 		s.lists.Close()
+		s.alerts.Close()
 		return nil, err
 	}
 
 	if err := s.configureQueryLog(); err != nil {
 		s.lists.Close()
+		s.alerts.Close()
 		return nil, err
 	}
 
@@ -276,6 +287,11 @@ func requestHost(r *http.Request) string {
 func (s *Server) Close() error {
 	s.lists.Close()
 	s.hostnames.Close()
+	if s.alerts != nil {
+		if err := s.alerts.Close(); err != nil {
+			s.logger.Warn("saving alerts", slog.Any("error", err))
+		}
+	}
 	if s.ages != nil {
 		if err := s.ages.Save(); err != nil {
 			s.logger.Warn("saving registration cache", slog.Any("error", err))

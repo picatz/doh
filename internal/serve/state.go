@@ -37,6 +37,7 @@ func (s *Server) configurePolicy(ctx context.Context) error {
 		CacheDir: s.config.Blocklist.CacheDir,
 		Logger:   s.logger,
 	}, s.logger)
+	s.lists.OnFailure(s.listFailed)
 
 	b := s.config.Blocklist
 	s.baseline = filter.Baseline{Lists: b.Sources, Allow: b.Allow, Deny: b.Block}

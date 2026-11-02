@@ -220,6 +220,100 @@ $ doh log -f --profile kids         # follow live
 $ doh log --json -q google | jq .   # JSON lines
 ```
 
+## Alerts
+
+Alerts tell someone when something on the network needs them, without opening the web UI: on a phone, through [ntfy](https://ntfy.sh), or to anything that takes a webhook, such as Home Assistant.
+
+```sh
+doh alerts add-ntfy https://ntfy.sh/smith-family-7f3a --name "Family phones"
+doh alerts add-webhook https://hooks.example.com/doh --name "Home Assistant"   # prints its signing secret, once
+doh alerts set kinds=threat,new-device quiet=22:00-07:00 tz=America/New_York
+doh alerts test                                                                # one test alert to each destination
+doh alerts show                                                                # settings, destinations, recent deliveries
+doh alerts remove 3f2a9c0d1e4b5a67
+```
+
+| Kind | Sent when | For example |
+| --- | --- | --- |
+| `threat` | A query is blocked by a security protection (look-alike name, tunneling, rebinding, newly registered domain, bypass service) or by a list in the security category, such as `threat-intel` or `scams` | **Threat blocked on kids-ipad.** doh blocked evil-c2.example, a known malware, phishing, or command-and-control domain (Threat intelligence list), for Kids' tablets. Nothing reached it. |
+| `new-device` | A device, by its configured name or its address, uses doh for the first time | **New device: living-room-tv.** living-room-tv started using doh, with the Home profile. Its address is 192.168.1.50. |
+| `failing` | At least 20 lookups, and at least 10% of them, fail within about five minutes | **Lookups are failing.** In the last 5 minutes, 34 of 120 lookups (28%) failed, so some sites and apps may not load. |
+| `list-failed` | A blocklist fails to load (the operator's only) | **Blocklist didn't load: Threat intelligence.** doh couldn't load the Threat intelligence list (threat-intel): … |
+
+Every kind is on once there's a destination. Blocks by privacy and parental lists, apps, and schedules aren't threats, and neither are the canaries Firefox and iCloud Private Relay look up to ask whether they may bypass the network's resolver: blocking them is the answer. With `--admin-origin` set, each alert links to what it's about in the web UI.
+
+- **Calm by default.** The same alert (the same threat on the same device, the same new device, failing lookups, the same list) is sent at most once an hour. After three alerts of a kind about one device (or, for new devices, about the network) in an hour, the rest are held and summarized when the hour is up: "12 more threats blocked on kids-ipad in the last hour", with a few of their names.
+- **New devices are learned first.** For the first hour after doh starts seeing devices, they're recorded without alerts, so turning alerts on doesn't report every device already there. The devices seen, up to 2,048 per tenant (forgetting the least recently seen beyond that), are kept in `alerts.json`, so restarts don't report them again.
+- **Quiet hours** hold every alert but threats, in the time zone given (or the first profile's, or UTC), and send what was held when they end: one alert as itself, several as "3 new device alerts during quiet hours", listing them. A period like `22:00-07:00` runs past midnight.
+- **Tenants get only their own.** A tenant's alerts are only ever about its own profiles' queries. The operator's cover every query outside tenants, failing lookups across the whole server (how it's run is the operator's concern; tenants' failing alerts count only their own queries and leave out the server's errors), and lists that fail to load.
+- **Managing alerts takes an admin person, or the operator's token.** Destinations receive query names, and a destination's URL can be enough to read them, so readers can't see alert settings, and service accounts, even admin ones, are refused. The operator manages any tenant's with `--tenant`. Changes are logged as `admin: alert ...` lines.
+
+### Webhooks
+
+Each alert is a JSON `POST`:
+
+```json
+{
+  "id": "msg_9c41f0b2d7e35a68",
+  "type": "alert.threat",
+  "scope": "smiths",
+  "kind": "threat",
+  "title": "Threat blocked on kids-ipad",
+  "body": "doh blocked evil-c2.example, a known malware, phishing, or command-and-control domain (Threat intelligence list), for Kids' tablets. Nothing reached it. See it: https://admin.dns.example.com/#/logs?device=kids-ipad&profile=kids&q=evil-c2.example&status=blocked",
+  "time": "2026-11-02T19:04:05Z",
+  "details": {
+    "profile": "kids",
+    "device": "kids-ipad",
+    "client": "192.168.1.20",
+    "name": "evil-c2.example",
+    "reason": "list",
+    "list": "threat-intel",
+    "detail": "blocked by threat-intel",
+    "link": "https://admin.dns.example.com/#/logs?device=kids-ipad&profile=kids&q=evil-c2.example&status=blocked"
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | The alert's ID, also its `webhook-id`, the same across retries, so receivers can ignore duplicates |
+| `type` | `alert.` and the kind: `alert.threat`, `alert.new-device`, `alert.failing`, `alert.list-failed`, or `alert.test` |
+| `scope` | The tenant, or `""` for the server's operator |
+| `kind`, `title`, `body`, `time` | What happened, for people, and when (RFC 3339, UTC) |
+| `details` | The facts, for programs; fields that don't apply are left out: `profile`, `device`, `hostname`, `client`, `name`, `reason`, `list`, `detail` (as in the query log), `queries` and `errors` (failing lookups), `error` (the operator's failing lookups and lists), `count` and `names` (summaries), and `link` |
+
+Deliveries are signed as the [Standard Webhooks](https://www.standardwebhooks.com/) specification describes, so its libraries verify them. Adding a webhook shows its secret, `whsec_` and a base64 key, once; doh keeps it to sign with, and never shows it again. Each request has these headers:
+
+- `webhook-id`: the alert's ID.
+- `webhook-timestamp`: when it was sent, in seconds since the Unix epoch.
+- `webhook-signature`: `v1,` and the base64 HMAC-SHA256, keyed with the secret's decoded key, of `<webhook-id>.<webhook-timestamp>.<body>`.
+
+To verify one by hand, recompute the signature over the raw body, compare in constant time, and reject timestamps more than five minutes off, so a captured delivery can't be replayed:
+
+```python
+import base64, hashlib, hmac, time
+
+def verify(secret: str, headers, body: bytes) -> None:
+    key = base64.b64decode(secret.removeprefix("whsec_"))
+    msg_id, timestamp = headers["webhook-id"], headers["webhook-timestamp"]
+    if abs(time.time() - int(timestamp)) > 300:
+        raise ValueError("stale webhook")
+    mac = hmac.new(key, f"{msg_id}.{timestamp}.".encode() + body, hashlib.sha256).digest()
+    expected = "v1," + base64.b64encode(mac).decode()
+    if not any(hmac.compare_digest(expected, sig) for sig in headers["webhook-signature"].split()):
+        raise ValueError("invalid signature")
+```
+
+### ntfy
+
+An ntfy destination gets the alert's body as plain text, with its title, a tag (shown as an emoji), a priority (high for threats and failing lookups), and its web UI link in ntfy's `Title`, `Tags`, `Priority`, and `Click` headers ([publishing](https://docs.ntfy.sh/publish/)). Subscribe to the topic in the ntfy app on each phone. Anyone who knows a topic's name on a public ntfy server can read it, so choose one that's hard to guess, or run a server with access control and give its credentials in the URL (`https://user:password@ntfy.example.com/topic`); passwords in URLs are never shown.
+
+### Delivery
+
+- **Destinations use HTTPS.** The operator may use plain HTTP only to a loopback address, for testing. A tenant's destinations must be on the internet: doh refuses, when they're added and again for every address it connects to, loopback, private, link-local (including cloud metadata services), shared, and other special-purpose addresses, so a tenant can't make the server reach services on its own network. Redirects are never followed, and nothing about an alert is ever added to a URL.
+- **Each alert is tried up to four times**, waiting 2, 10, and 30 seconds between tries, each with a 10-second timeout. A `2xx` response delivers it; `408`, `429`, `5xx`, and network errors are retried; other responses, and redirects, fail at once.
+- **Every delivery is recorded**: `doh alerts show` lists the last 20 since the server started, and each destination's last success and last error. Failures are also logged, as `alerts: delivery failed`.
+
 ## Admin API and web UI
 
 With `--admin-listen`, the admin listener serves a web UI at `/` and a JSON API at `/api/v1`, alongside metrics and profiling. The UI toggles every protection and list, edits allow and deny lists, devices, and rewrites, connects devices (and sends a device a [setup link](#setup-links) to open itself), searches and follows the query log (its **Activity** view), allows or blocks a name from any log entry in one click, and explains any decision.
@@ -379,7 +473,7 @@ Without doh, any RFC 9449 client works: make a P-256 key (`openssl genpkey -algo
 
 The API is documented in [`internal/api`](../internal/api/api.go). Policy changes are conditional on the `ETag` with `If-Match`, so two people editing at once can't overwrite each other's changes (`412 Precondition Failed`). Profiles are changed with JSON merge patches.
 
-The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `setup`, `people`, `service-account`, `token`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory), and for [bound credentials](#binding-credentials-with-dpop), `DOH_DPOP_KEY_FILE`. They refuse to send a token over plain HTTP to anything but a loopback address.
+The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `setup`, `people`, `service-account`, `token`, `alerts`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory), and for [bound credentials](#binding-credentials-with-dpop), `DOH_DPOP_KEY_FILE`. They refuse to send a token over plain HTTP to anything but a loopback address.
 
 > [!WARNING]
 > The admin listener also serves metrics and profiling. On a loopback listener that isn't published with `--admin-origin`, profiling stays open to the machine's own users, so `go tool pprof` works; once published, `/debug` needs the operator's credentials. Metrics stay open for scrapers. Treat both tokens, and service account keys, as secrets.
@@ -460,4 +554,8 @@ Common findings:
 - DPoP proofs are fresh to within a minute either way of the server's clock, and each is accepted once by the server process that saw it; the server doesn't hand out nonces ([RFC 9449, Section 8](https://www.rfc-editor.org/rfc/rfc9449.html#section-8)), so a client with a fast clock could pre-sign proofs up to a minute ahead. Replay caches are in memory, per process, so a proof captured just before a restart could be replayed once in what's left of its minute, with the credential it was sent with; bound access tokens end with the restart anyway. Proofs cover the method and URL, not the query, headers, or body ([Section 11](https://www.rfc-editor.org/rfc/rfc9449.html#section-11)); TLS still protects those.
 - Workload identity federation trusts the identity provider: anyone who can get it to issue a token with a rule's issuer, audience, subject, and claims can act as the account. Write rules as narrowly as the provider allows. Access tokens don't survive a restart, and a provider's rotated keys are picked up only when a token names a key the cached set lacks, or within the hour.
 - Profile IDs in DoH paths are identifiers, not credentials. To keep strangers off a public server, remove the `default` profile and use unguessable profile IDs, or restrict who can reach it.
+- Alerts are best effort. Deliveries waiting or being retried are lost on restart, and when too many queries arrive at once for alerts to keep up, the excess are skipped (and counted in the server's log) rather than slow down answering. Coalescing, bursts, quiet hours' held alerts, failing-lookup windows (one-minute buckets, so "five minutes" is four to five), and recent deliveries are kept in memory, so a restart starts them afresh.
+- Alerts come from the query log: profiles with logging off, and servers run with `--no-query-log`, get no threat, new-device, or failing alerts. A threat repeated within the hour is in the query log, not another alert.
+- New devices are as distinct as their names and addresses: behind NAT, a household is one device; a device that changes its address (private Wi-Fi addresses, IPv6 privacy addresses) can look new; a hostname is whatever the device calls itself. On a server open to the internet, every new client address is a new device, so the operator may want `new-device` off.
+- Webhook secrets are kept in `alerts.json`, readable only by the server's user, since doh needs them to sign. Tenants' deliveries connect directly, never through `HTTPS_PROXY`; the operator's https deliveries use it.
 - Client addresses identify devices only as well as the network does. Behind NAT, a whole network shares one address; over DoH, use per-device paths instead. Apps on the same device can't be told apart.

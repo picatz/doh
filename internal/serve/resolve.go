@@ -328,7 +328,8 @@ func (s *Server) log(req request, res result, err error, elapsed time.Duration) 
 		e.Reason, e.Upstream = "stale", ""
 	}
 
-	s.qlog.Append(e)
+	e = s.qlog.Append(e)
+	s.alerts.Observe(e) // never blocks
 }
 
 // maxLoggedAnswers bounds the answers logged per query.

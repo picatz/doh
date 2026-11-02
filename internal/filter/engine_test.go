@@ -521,3 +521,18 @@ func TestFeatures(t *testing.T) {
 		}
 	}
 }
+
+func TestCanary(t *testing.T) {
+	for name, want := range map[string]bool{
+		"use-application-dns.net":      true,
+		"mask.icloud.com":              true,
+		"mask-h2.icloud.com":           true,
+		"dns.google":                   false,
+		"icloud.com":                   false,
+		"use-application-dns.net.evil": false,
+	} {
+		if got := Canary(name); got != want {
+			t.Errorf("Canary(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
