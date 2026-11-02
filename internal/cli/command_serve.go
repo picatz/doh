@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/doh/internal/alerts"
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/serve"
 	"github.com/picatz/doh/pkg/doh"
@@ -119,6 +120,12 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v time.Duration) { c.QueryLog.Retention = serve.Duration(v) }),
 	option((*pflag.FlagSet).StringSlice, "admin-origin", nil, "origins the web UI is opened at, such as https://admin.dns.example.com, for browser sign-in and passkeys (default http://localhost:{port} on a loopback --admin-listen)",
 		func(c *serve.Config, v []string) { c.Admin.Origins = v }),
+	option((*pflag.FlagSet).String, "smtp-url", "", "mail server for email alerts: smtp://user@host:587 (STARTTLS required) or smtps://user@host:465; the password goes in --smtp-password-file or $"+serve.SMTPPasswordEnv+", never here",
+		func(c *serve.Config, v string) { c.Alerts.SMTP.URL = v }),
+	option((*pflag.FlagSet).String, "smtp-password-file", "", "file holding the --smtp-url user's password",
+		func(c *serve.Config, v string) { c.Alerts.SMTP.PasswordFile = v }),
+	option((*pflag.FlagSet).String, "smtp-from", "", `sender of email alerts, such as "doh <alerts@example.com>"`,
+		func(c *serve.Config, v string) { c.Alerts.SMTP.From = v }),
 	option((*pflag.FlagSet).String, "admin-token-file", "", "file holding the admin API token (default admin.token in --data-dir, generated)",
 		func(c *serve.Config, v string) { c.Admin.TokenFile = v }),
 	option((*pflag.FlagSet).String, "admin-listen", "", "serve metrics, pprof, and flight recorder snapshots on this address, such as localhost:9090",
@@ -282,6 +289,14 @@ func (f serveFlags) load() (serve.Config, error) {
 		if f.fs.Changed(o.name) {
 			f.apply[o.name](&config)
 		}
+	}
+
+	// The SMTP password has no flag, so it never shows in a process
+	// listing: it's read once from the environment, and removed from it,
+	// so nothing the server starts inherits it.
+	if p, ok := os.LookupEnv(serve.SMTPPasswordEnv); ok {
+		config.Alerts.SMTP.Password = alerts.Secret(p)
+		_ = os.Unsetenv(serve.SMTPPasswordEnv)
 	}
 
 	return config, nil

@@ -101,6 +101,9 @@ type Server struct {
 
 	// selfAddrs finds the server's own addresses, for setup files.
 	selfAddrs selfAddrs
+	// alertPageLimiter slows down clients trying wrong codes and tokens
+	// on the pages alert emails link to.
+	alertPageLimiter *ratelimit.Limiter
 
 	// federation verifies workloads' identity tokens for token exchange,
 	// and exchangeLimiter slows down clients whose exchanges fail.
@@ -148,11 +151,12 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		state:     filter.NewState(),
 		listeners: make(map[string]string),
 
-		signinLimiter:   newSigninLimiter(),
-		exchangeLimiter: newExchangeLimiter(),
-		proofs:          newProofVerifier(),
-		exchangeProofs:  newProofVerifier(),
-		setupLinks:      newSetupLinks(),
+		signinLimiter:    newSigninLimiter(),
+		exchangeLimiter:  newExchangeLimiter(),
+		proofs:           newProofVerifier(),
+		exchangeProofs:   newProofVerifier(),
+		setupLinks:       newSetupLinks(),
+		alertPageLimiter: newAlertPageLimiter(),
 	}
 
 	if config.Admin.flightRecorder() {

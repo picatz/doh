@@ -117,7 +117,7 @@ func TestWebhook_SignedDelivery(t *testing.T) {
 	defer srv.Close()
 
 	e := startPosting(t, nil)
-	d, secret, err := e.AddDestination("", NewDestination{Type: Webhook, URL: srv.URL + "/hook", Name: "Home Assistant"})
+	d, secret, err := e.AddDestination(context.Background(), "", NewDestination{Type: Webhook, URL: srv.URL + "/hook", Name: "Home Assistant"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestNtfy_Delivery(t *testing.T) {
 
 	e := startPosting(t, nil)
 	e.words.origin = "https://admin.dns.example"
-	d, secret, err := e.AddDestination("", NewDestination{Type: Ntfy, URL: srv.URL + "/family-alerts"})
+	d, secret, err := e.AddDestination(context.Background(), "", NewDestination{Type: Ntfy, URL: srv.URL + "/family-alerts"})
 	if err != nil || secret != "" {
 		t.Fatalf("add = %+v, %q, %v", d, secret, err)
 	}
@@ -244,7 +244,7 @@ func TestDelivery_RetriesAndRedirects(t *testing.T) {
 // addAt adds the operator's ntfy destination at url.
 func addAt(t *testing.T, e *Engine, url string) {
 	t.Helper()
-	if _, _, err := e.AddDestination("", NewDestination{Type: Ntfy, URL: url}); err != nil {
+	if _, _, err := e.AddDestination(context.Background(), "", NewDestination{Type: Ntfy, URL: url}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -273,11 +273,11 @@ func TestDestinations_RefuseNonPublicForTenants(t *testing.T) {
 		"https://ntfy.sh",
 		"ntfy.sh/topic",
 	} {
-		if _, _, err := e.AddDestination("smiths", NewDestination{Type: Ntfy, URL: u}); !errors.Is(err, ErrInvalid) {
+		if _, _, err := e.AddDestination(context.Background(), "smiths", NewDestination{Type: Ntfy, URL: u}); !errors.Is(err, ErrInvalid) {
 			t.Errorf("tenant added %s: %v", u, err)
 		}
 	}
-	if _, _, err := e.AddDestination("smiths", NewDestination{Type: Ntfy, URL: "https://ntfy.sh/smith-family"}); err != nil {
+	if _, _, err := e.AddDestination(context.Background(), "smiths", NewDestination{Type: Ntfy, URL: "https://ntfy.sh/smith-family"}); err != nil {
 		t.Errorf("tenant can't add a public URL: %v", err)
 	}
 
@@ -290,7 +290,7 @@ func TestDestinations_RefuseNonPublicForTenants(t *testing.T) {
 		"http://10.1.2.3/hook":       false,
 		"http://ntfy.sh/topic":       false,
 	} {
-		_, _, err := e.AddDestination("", NewDestination{Type: Webhook, URL: u})
+		_, _, err := e.AddDestination(context.Background(), "", NewDestination{Type: Webhook, URL: u})
 		if (err == nil) != ok {
 			t.Errorf("operator adding %s: %v, want ok %v", u, err, ok)
 		}
@@ -399,7 +399,7 @@ func TestPublic(t *testing.T) {
 
 func TestDestinations_SecretShownOnce(t *testing.T) {
 	e := startPosting(t, nil)
-	d, secret, err := e.AddDestination("", NewDestination{Type: Webhook, URL: "https://user:hunter2@hooks.example/doh?token=abc"})
+	d, secret, err := e.AddDestination(context.Background(), "", NewDestination{Type: Webhook, URL: "https://user:hunter2@hooks.example/doh?token=abc"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,11 +432,11 @@ func TestStore_RoundTrip(t *testing.T) {
 	if want := []Kind{KindThreat, KindNewDevice}; len(settings.Kinds) != 2 || settings.Kinds[0] != want[0] || settings.Kinds[1] != want[1] {
 		t.Errorf("kinds kept as %q, want %q", settings.Kinds, want)
 	}
-	hook, secret, err := e.AddDestination("smiths", NewDestination{Type: Webhook, URL: "https://hooks.example/doh", Name: "Hub", CreatedBy: "Ann"})
+	hook, secret, err := e.AddDestination(context.Background(), "smiths", NewDestination{Type: Webhook, URL: "https://hooks.example/doh", Name: "Hub", CreatedBy: "Ann"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := e.AddDestination("", NewDestination{Type: Ntfy, URL: "https://ntfy.sh/ops"}); err != nil {
+	if _, _, err := e.AddDestination(context.Background(), "", NewDestination{Type: Ntfy, URL: "https://ntfy.sh/ops"}); err != nil {
 		t.Fatal(err)
 	}
 	e.store.seeDevice("smiths", "client:192.168.1.5", time.Now())

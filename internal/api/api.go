@@ -66,6 +66,8 @@
 //	POST   /api/v1/alerts/destinations?tenant=    AlertDestinationRequest → 201 NewAlertDestination (admin)
 //	DELETE /api/v1/alerts/destinations/{id}?tenant=   204 (admin)
 //	POST   /api/v1/alerts/test?tenant=            AlertTest (admin)
+//	POST   /api/v1/alerts/confirm?tenant=         AlertConfirmRequest → alerts.Destination (admin)
+//	GET    /api/v1/alerts/push-key                PushKey (admin)
 //
 // POST /token is the exception to needing a credential: it's an OAuth 2.0
 // token exchange ([RFC 8693]), where a workload trades an identity token
@@ -82,7 +84,11 @@
 // for managing people. Each request is about the caller's own tenant, or
 // the operator's own alerts; the operator may name a tenant with
 // ?tenant=. A webhook's signing secret is returned only when it's
-// created.
+// created. An email address starts pending: the code that confirms it is
+// sent only to the address, never returned, and it's confirmed with
+// POST /alerts/confirm, or the page the email links to. A push
+// destination is a browser's PushSubscription, made with the key from
+// GET /alerts/push-key.
 //
 // The logs, stream, and stats endpoints take the filter parameters that
 // querylog.ParseFilter reads: profile, device, client, status, reason, q,
@@ -108,6 +114,7 @@ import (
 	"github.com/picatz/doh/internal/services"
 	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
+	"github.com/picatz/doh/internal/webpush"
 )
 
 // Prefix is the path prefix of every API endpoint.
@@ -582,6 +589,10 @@ type Alerts struct {
 	// can turn on.
 	AvailableKinds []alerts.Kind `json:"available_kinds"`
 
+	// AvailableTypes are the destination types that can be added: email
+	// only if the server's operator has set up a mail server.
+	AvailableTypes []alerts.DestinationType `json:"available_types"`
+
 	// Destinations are where alerts are sent, without their secrets, and
 	// with any password in their URLs hidden.
 	Destinations []alerts.Destination `json:"destinations"`
@@ -593,12 +604,22 @@ type Alerts struct {
 
 // AlertDestinationRequest adds a place to send alerts.
 type AlertDestinationRequest struct {
-	// Type is "webhook" or "ntfy".
+	// Type is "webhook", "ntfy", "email", or "push".
 	Type alerts.DestinationType `json:"type"`
 
-	// URL is where alerts are posted: https, and for a tenant, a service
-	// on the internet. Nothing is ever added to it.
-	URL string `json:"url"`
+	// URL is where a webhook's or ntfy topic's alerts are posted: https,
+	// and for a tenant, a service on the internet. Nothing is ever added
+	// to it.
+	URL string `json:"url,omitempty"`
+
+	// Address is an email destination's address. It's sent a code to
+	// confirm it, and gets nothing else until it's confirmed.
+	Address string `json:"address,omitempty"`
+
+	// Subscription is a push destination's browser subscription, as its
+	// PushSubscription.toJSON() gives it. Its endpoint must be on a known
+	// browser push service.
+	Subscription *webpush.Subscription `json:"subscription,omitempty"`
 
 	// Name says what it is, such as "Mom's phone".
 	Name string `json:"name,omitempty"`
@@ -610,6 +631,20 @@ type AlertDestinationRequest struct {
 type NewAlertDestination struct {
 	Destination alerts.Destination `json:"destination"`
 	Secret      string             `json:"secret,omitempty"`
+}
+
+// AlertConfirmRequest confirms an email address with the code it was
+// sent.
+type AlertConfirmRequest struct {
+	Code string `json:"code"`
+}
+
+// PushKey is the server's VAPID public key, which browsers subscribe
+// with, as PushManager.subscribe's applicationServerKey.
+type PushKey struct {
+	// PublicKey is the uncompressed P-256 public key, as unpadded
+	// base64url.
+	PublicKey string `json:"public_key"`
 }
 
 // AlertTest reports how a test alert to each destination went.

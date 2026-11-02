@@ -177,5 +177,6 @@ try {
   ws?.close();
   proc.kill();
   await sleep(100);
-  rmSync(dir, { recursive: true, force: true });
+  // Chrome may still be writing its profile as it exits.
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

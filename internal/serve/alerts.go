@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/picatz/doh/internal/alerts"
 	"github.com/picatz/doh/internal/api"
@@ -33,10 +35,21 @@ func (s *Server) configureAlerts() error {
 	if len(s.config.Admin.Origins) > 0 {
 		origin = s.config.Admin.Origins[0]
 	}
+	mail, err := s.config.Alerts.SMTP.mailConfig()
+	if err != nil {
+		return err
+	}
+	pushKey := ""
+	if s.config.DataDir != "" {
+		pushKey = filepath.Join(s.config.DataDir, PushKeyFile)
+	}
 	engine, err := alerts.New(alerts.Options{
-		Path:   path,
-		Logger: s.logger,
-		Origin: origin,
+		Path:        path,
+		Logger:      s.logger,
+		Origin:      origin,
+		Mail:        mail,
+		PushKeyPath: pushKey,
+		PushSubject: pushSubject(origin, s.config.Alerts.SMTP.From),
 		ProfileName: func(id string) string {
 			if engine := s.engine.Load(); engine != nil {
 				if p := engine.Policy().Profile(id); p != nil {
@@ -52,6 +65,23 @@ func (s *Server) configureAlerts() error {
 	}
 	s.alerts = engine
 	return nil
+}
+
+// PushKeyFile is where the VAPID key that signs Web Push messages is
+// kept in the data directory, generated the first time a browser
+// subscribes.
+const PushKeyFile = "push-vapid.pem"
+
+// pushSubject is how push services may reach the operator: the web UI's
+// origin, if it's https, or the address alerts are emailed from.
+func pushSubject(origin, from string) string {
+	if strings.HasPrefix(origin, "https://") {
+		return origin
+	}
+	if a, err := mail.ParseAddress(from); err == nil {
+		return "mailto:" + a.Address
+	}
+	return ""
 }
 
 // listFailed reports a blocklist that failed to load, for the operator's
@@ -98,7 +128,8 @@ func (s *Server) alertScope(w http.ResponseWriter, r *http.Request) (string, boo
 // alertsView returns scope's alerts, as the API shows them.
 func (s *Server) alertsView(scope string) api.Alerts {
 	settings, dests, deliveries := s.alerts.Get(scope)
-	return api.Alerts{Tenant: scope, Settings: settings, AvailableKinds: alerts.KindsFor(scope), Destinations: dests, Deliveries: deliveries}
+	return api.Alerts{Tenant: scope, Settings: settings, AvailableKinds: alerts.KindsFor(scope), AvailableTypes: s.alerts.AvailableTypes(),
+		Destinations: dests, Deliveries: deliveries}
 }
 
 func (s *Server) apiAlerts(w http.ResponseWriter, r *http.Request) {
@@ -174,15 +205,27 @@ func (s *Server) apiAddAlertDestination(w http.ResponseWriter, r *http.Request) 
 	if !decode(w, r, &req) {
 		return
 	}
-	d, secret, err := s.alerts.AddDestination(scope, alerts.NewDestination{Type: req.Type, URL: req.URL, Name: req.Name, CreatedBy: principalOf(r).by})
+	d, secret, err := s.alerts.AddDestination(r.Context(), scope, alerts.NewDestination{
+		Type: req.Type, URL: req.URL, Address: req.Address, Subscription: req.Subscription,
+		Name: req.Name, CreatedBy: principalOf(r).by,
+	})
 	if s.writeAlertsError(w, err) {
 		return
 	}
+	// The audit log names where alerts go, by host or email domain, not
+	// whom: addresses and push endpoints are personal.
 	host := ""
 	if u, err := url.Parse(d.URL); err == nil {
 		host = u.Host
+		if u.Scheme == "mailto" {
+			_, host, _ = strings.Cut(u.Opaque, "@")
+		}
 	}
-	s.audit(r, "alert destination added", append(alertsAttrs(r, scope), slog.String("destination", d.ID), slog.String("type", string(d.Type)), slog.String("host", host))...)
+	attrs := append(alertsAttrs(r, scope), slog.String("destination", d.ID), slog.String("type", string(d.Type)), slog.String("host", host))
+	if d.State == alerts.Pending {
+		attrs = append(attrs, slog.String("state", string(d.State)))
+	}
+	s.audit(r, "alert destination added", attrs...)
 	w.Header().Set("Location", api.Prefix+"/alerts/destinations/"+d.ID)
 	writeJSON(w, http.StatusCreated, api.NewAlertDestination{Destination: d, Secret: secret})
 }
@@ -198,6 +241,33 @@ func (s *Server) apiDeleteAlertDestination(w http.ResponseWriter, r *http.Reques
 	}
 	s.audit(r, "alert destination removed", append(alertsAttrs(r, scope), slog.String("destination", id))...)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) apiConfirmAlerts(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.alertScope(w, r)
+	if !ok {
+		return
+	}
+	var req api.AlertConfirmRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	d, err := s.alerts.Confirm(scope, req.Code)
+	if s.writeAlertsError(w, err) {
+		return
+	}
+	s.audit(r, "alert destination confirmed", append(alertsAttrs(r, scope), slog.String("destination", d.ID))...)
+	writeJSON(w, http.StatusOK, d)
+}
+
+func (s *Server) apiPushKey(w http.ResponseWriter, r *http.Request) {
+	key, err := s.alerts.PushKey()
+	if err != nil {
+		s.logger.Error("admin: alerts push key", slog.Any("error", err))
+		writeError(w, http.StatusInternalServerError, "the push key couldn't be loaded")
+		return
+	}
+	writeJSON(w, http.StatusOK, api.PushKey{PublicKey: key})
 }
 
 func (s *Server) apiTestAlerts(w http.ResponseWriter, r *http.Request) {
@@ -231,8 +301,15 @@ func (s *Server) writeAlertsError(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, alerts.ErrInvalid):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, alerts.ErrLimit), errors.Is(err, alerts.ErrNoDestinations):
+	case errors.Is(err, alerts.ErrLimit), errors.Is(err, alerts.ErrNoDestinations), errors.Is(err, alerts.ErrUnavailable):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, alerts.ErrExpired):
+		writeError(w, http.StatusGone, err.Error())
+	case errors.Is(err, alerts.ErrRateLimited):
+		w.Header().Set("Retry-After", "3600")
+		writeError(w, http.StatusTooManyRequests, err.Error())
+	case errors.Is(err, alerts.ErrNotSent):
+		writeError(w, http.StatusBadGateway, err.Error())
 	default:
 		s.logger.Error("admin: alerts", slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "saving alerts failed")

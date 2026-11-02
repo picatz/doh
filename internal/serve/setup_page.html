@@ -29,7 +29,9 @@ p { margin: .4rem 0; }
 .files { display: grid; gap: .5rem; margin: .8rem 0 .2rem; }
 .files a { display: flex; align-items: center; min-height: 2.75rem; padding: .4rem .9rem; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--glaze-ink); font-weight: 600; text-decoration: none; }
 .files a:first-child { background: var(--glaze); border-color: var(--glaze); color: var(--on-glaze); }
-code { display: block; margin-top: .4rem; padding: .55rem .7rem; border-radius: 8px; background: var(--surface-2); font: .9rem/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; user-select: all; -webkit-user-select: all; }
+button.button { width: 100%; border: 0; font: inherit; font-weight: 650; cursor: pointer; }
+.button:focus-visible { outline: 3px solid var(--glaze-ink); outline-offset: 2px; }
+code { display: block; margin-top: .4rem; padding: .55rem .7rem; border-radius: 8px; background: var(--surface-2); font: .9rem/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
 .muted { color: var(--muted); font-size: .9rem; }
 .foot { text-align: center; margin-top: 1.5rem; }
 details summary { cursor: pointer; font-weight: 600; min-height: 2.75rem; display: flex; align-items: center; justify-content: space-between; gap: .75rem; list-style: none; }
@@ -92,6 +94,37 @@ details[open] summary { margin-bottom: .4rem; }
 {{define "expired"}}{{template "head" "Link expired"}}
 <h1>This link has expired</h1>
 <p class="lede">Setup links work for 30 minutes. Ask whoever sent it for a new one.</p>
+</main>
+</body>
+</html>{{end}}
+
+{{define "alerts-confirm"}}{{template "head" "Confirm alerts"}}
+<h1>Get doh's alerts here?</h1>
+<p class="lede">Someone who manages a doh server asked to send its alerts, about threats it blocks, new devices, and lookups that fail, to your email address.</p>
+<form method="post"><button class="button" type="submit">Confirm alerts</button></form>
+<p class="foot muted">If you didn't expect this, close this page. Nothing is sent unless you confirm.</p>
+</main>
+</body>
+</html>{{end}}
+
+{{define "alerts-unsubscribe"}}{{template "head" "Unsubscribe"}}
+<h1>Stop doh's alerts?</h1>
+<p class="lede">No more alerts will be sent to this address.</p>
+<form method="post"><button class="button" type="submit">Unsubscribe</button></form>
+</main>
+</body>
+</html>{{end}}
+
+{{define "alerts-done"}}{{template "head" .Title}}
+<h1>{{.Title}}</h1>
+<p class="lede">{{.Text}} <strong>{{.Address}}</strong>.</p>
+</main>
+</body>
+</html>{{end}}
+
+{{define "alerts-invalid"}}{{template "head" "Link not working"}}
+<h1>This link doesn't work</h1>
+<p class="lede">{{.}}</p>
 </main>
 </body>
 </html>{{end}}

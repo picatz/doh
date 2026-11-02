@@ -80,7 +80,7 @@ func startEngine(t *testing.T, opts Options) (*Engine, *recorder) {
 // addDestination adds an ntfy destination to scope.
 func addDestination(t *testing.T, e *Engine, scope string) Destination {
 	t.Helper()
-	d, _, err := e.AddDestination(scope, NewDestination{Type: Ntfy, URL: "https://ntfy.example/" + scope + "-alerts"})
+	d, _, err := e.AddDestination(context.Background(), scope, NewDestination{Type: Ntfy, URL: "https://ntfy.example/" + scope + "-alerts"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,7 +520,7 @@ func TestEngine_TestAlert(t *testing.T) {
 		e, rec := startEngine(t, Options{})
 		defer e.Close()
 		a := addDestination(t, e, "smiths")
-		b, _, err := e.AddDestination("smiths", NewDestination{Type: Webhook, URL: "https://hooks.example/doh"})
+		b, _, err := e.AddDestination(context.Background(), "smiths", NewDestination{Type: Webhook, URL: "https://hooks.example/doh"})
 		if err != nil {
 			t.Fatal(err)
 		}

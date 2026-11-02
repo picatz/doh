@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/doh/internal/alerts"
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/upstream"
@@ -111,6 +113,10 @@ type Config struct {
 	// TrustedProxies are the addresses or prefixes of reverse proxies whose
 	// X-Forwarded-For headers are trusted to name DoH clients' addresses.
 	TrustedProxies []string `json:"trusted_proxies,omitempty"`
+
+	// Alerts configures how alerts may be sent, beyond webhooks, ntfy,
+	// and Web Push, which need nothing configured.
+	Alerts AlertsConfig `json:"alerts,omitzero"`
 
 	// RDAP configures domain registration lookups, for newly registered
 	// domain protection.
@@ -246,6 +252,67 @@ func (b BlocklistConfig) enabled() bool {
 
 // DefaultBlocklistRefresh is how often blocklists are reloaded by default.
 const DefaultBlocklistRefresh = 24 * time.Hour
+
+// AlertsConfig configures how alerts may be sent.
+type AlertsConfig struct {
+	// SMTP, if its URL is set, lets tenants and the operator send alerts
+	// to email addresses that confirm they want them.
+	SMTP SMTPConfig `json:"smtp,omitzero"`
+}
+
+// SMTPConfig is the mail server alerts are sent through.
+type SMTPConfig struct {
+	// URL is the server: smtp://user@host:587, with STARTTLS required, or
+	// smtps://user@host:465, with implicit TLS. It never holds the
+	// password.
+	URL string `json:"url,omitempty"`
+
+	// PasswordFile holds the user's password.
+	PasswordFile string `json:"password_file,omitempty"`
+
+	// From is the sender, such as "doh <alerts@example.com>".
+	From string `json:"from,omitempty"`
+
+	// Password is the user's password, if it isn't in PasswordFile: the
+	// CLI reads it once from DOH_SMTP_PASSWORD. It's never in the config
+	// file, and never shown.
+	Password alerts.Secret `json:"-"`
+}
+
+// enabled reports whether email is configured.
+func (c SMTPConfig) enabled() bool { return c.URL != "" }
+
+// SMTPPasswordEnv is the environment variable the CLI reads the SMTP
+// password from, once, if there's no password file.
+const SMTPPasswordEnv = "DOH_SMTP_PASSWORD"
+
+// maxPasswordFile bounds a password file.
+const maxPasswordFile = 4 << 10
+
+// mailConfig returns the alerts engine's mail configuration, reading the
+// password file, if there is one.
+func (c SMTPConfig) mailConfig() (*alerts.MailConfig, error) {
+	if !c.enabled() {
+		return nil, nil
+	}
+	password := c.Password
+	if c.PasswordFile != "" {
+		f, err := os.Open(c.PasswordFile)
+		if err != nil {
+			return nil, fmt.Errorf("smtp password file: %w", err)
+		}
+		defer f.Close()
+		b, err := io.ReadAll(io.LimitReader(f, maxPasswordFile+1))
+		if err != nil {
+			return nil, fmt.Errorf("smtp password file: %w", err)
+		}
+		if len(b) > maxPasswordFile {
+			return nil, errors.New("smtp password file: too large")
+		}
+		password = alerts.Secret(strings.TrimRight(string(b), "\r\n"))
+	}
+	return &alerts.MailConfig{URL: c.URL, Password: password, From: c.From}, nil
+}
 
 // AdminConfig configures the admin listener, which serves Prometheus
 // metrics, expvar-style variables, pprof profiles, and flight recorder
@@ -626,6 +693,21 @@ func (c Config) Validate() error {
 		if u, err := url.Parse(o); err != nil || u.Host == "" || u.Path != "" || (u.Scheme != "https" && u.Scheme != "http") {
 			errs = append(errs, fmt.Errorf("admin origin %q must be a scheme and host, such as https://admin.dns.example.com", o))
 		}
+	}
+
+	if smtp := c.Alerts.SMTP; smtp.enabled() {
+		check := alerts.MailConfig{URL: smtp.URL, Password: smtp.Password, From: smtp.From}
+		switch {
+		case smtp.PasswordFile != "" && smtp.Password != "":
+			errs = append(errs, errors.New("alerts smtp: give the password in a file or "+SMTPPasswordEnv+", not both"))
+		case smtp.PasswordFile != "":
+			check.Password = "set" // read when the server starts
+		}
+		if err := alerts.CheckMailConfig(check); err != nil {
+			errs = append(errs, err)
+		}
+	} else if smtp.From != "" || smtp.PasswordFile != "" || smtp.Password != "" {
+		errs = append(errs, errors.New("alerts smtp: a sender or password needs an SMTP URL (--smtp-url)"))
 	}
 
 	switch {

@@ -1,6 +1,7 @@
 package alerts_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +40,7 @@ func TestSecurityListReasons(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer e.Close()
-	if _, _, err := e.AddDestination("", alerts.NewDestination{Type: alerts.Ntfy, URL: srv.URL + "/ops"}); err != nil {
+	if _, _, err := e.AddDestination(context.Background(), "", alerts.NewDestination{Type: alerts.Ntfy, URL: srv.URL + "/ops"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.SetSettings("", alerts.Settings{Kinds: []alerts.Kind{alerts.KindThreat}}); err != nil {

@@ -248,13 +248,15 @@ $ doh log --json -q google | jq .   # JSON lines
 
 ## Alerts
 
-Alerts tell someone when something on the network needs them, without opening the web UI: on a phone, through [ntfy](https://ntfy.sh), or to anything that takes a webhook, such as Home Assistant.
+Alerts tell someone when something on the network needs them, without opening the web UI: as a notification from the web UI installed on a phone or computer ([Web Push](#web-push)), by [email](#email), through [ntfy](https://ntfy.sh), or to anything that takes a webhook, such as Home Assistant.
 
 Set them up in the web UI's **Security** view (Alerts: what to hear about, quiet hours, where they go, and a test), or from the command line:
 
 ```sh
 doh alerts add-ntfy https://ntfy.sh/smith-family-7f3a --name "Family phones"
 doh alerts add-webhook https://hooks.example.com/doh --name "Home Assistant"   # prints its signing secret, once
+doh alerts add-email alex@example.com --name "Alex"                            # sends a code to confirm it
+doh alerts confirm 7KQ2M-X9D4H                                                 # or the address's owner opens the emailed link
 doh alerts set kinds=threat,new-device quiet=22:00-07:00 tz=America/New_York
 doh alerts test                                                                # one test alert to each destination
 doh alerts show                                                                # settings, destinations, recent deliveries
@@ -331,6 +333,31 @@ def verify(secret: str, headers, body: bytes) -> None:
     if not any(hmac.compare_digest(expected, sig) for sig in headers["webhook-signature"].split()):
         raise ValueError("invalid signature")
 ```
+
+### Web Push
+
+The web UI can show alerts as notifications, on phones and computers, with no app or account elsewhere: doh sends them itself, through the push service each browser already uses (Google's for Chrome and Edge on Android, Mozilla's, Apple's, Microsoft's). [Install the app](#installing-the-app); the UI's `push.js` asks the browser to allow notifications, subscribes it, and adds it as a `push` destination. (The Security view's button for this is still being added to the redesigned UI; until then, nothing in the UI calls it.) `doh alerts show` lists browsers like any destination, and `doh alerts remove` removes one.
+
+- **Encrypted end to end.** Each notification is encrypted for the one browser ([RFC 8291](https://www.rfc-editor.org/rfc/rfc8291.html), aes128gcm), so the push service carries it without reading it, and signed with the server's VAPID key ([RFC 8292](https://www.rfc-editor.org/rfc/rfc8292.html)), which doh makes the first time it's needed and keeps in `push-vapid.pem` in the data directory, readable only by the server's user. `GET /api/v1/alerts/push-key` returns its public half. Replacing the file ends every subscription; each browser must subscribe again.
+- **Only to push services.** A subscription's endpoint must be https on `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `web.push.apple.com` or another `*.push.apple.com`, or `*.notify.windows.com`, on the default port, and tenants' still go through the same address checks as every other destination. The endpoint and keys are never shown: the API shows the push service, and `subscription`, the SHA-256 of the endpoint, which the browser can compute to recognize itself.
+- **What's sent.** The title, body, a tag (so a newer alert about the same device replaces the last), and a link into the UI, which the service worker opens only on the UI's own origin. Threats are sent with high urgency; push services keep alerts for an offline browser for a day (failing lookups and tests, an hour). A push service's `404` or `410` means the browser unsubscribed, so it's marked `gone` and sent nothing more until it subscribes again; a `429` is retried after its `Retry-After`, up to two minutes.
+
+### Email
+
+With a mail server set up by the server's operator, alerts can go to email addresses, as a short text and HTML email (no images, nothing loaded from elsewhere) with a link into the UI.
+
+```sh
+doh serve ... --smtp-url smtp://alerts@mail.example.com:587 --smtp-password-file /etc/doh/smtp.password --smtp-from "doh <alerts@example.com>"
+```
+
+- **The connection is encrypted.** `smtp://` requires STARTTLS, and `smtps://` (port 465) uses TLS from the start; certificates are verified, and only a mail server on loopback may be spoken to in the clear. The password is read from `--smtp-password-file`, or once from `DOH_SMTP_PASSWORD`, which doh then removes from its environment; there's no flag for it, a password in the URL is refused, and it's never logged or shown.
+- **Addresses confirm first.** Adding one sends it a code, `XXXXX-XXXXX`, that works once, for 24 hours; the address gets nothing else until the code is given back with `doh alerts confirm` (or `POST /api/v1/alerts/confirm`), or its owner opens the link in the email (with `--admin-origin`) and presses Confirm. The code is never shown to whoever added the address, and only its hash is kept. The confirmation email names the server, not the tenant, so tenants can't put their own words in strangers' inboxes. Adding a pending address again sends a new code.
+- **Limits.** Each tenant (and the operator) may have 3 addresses, confirmed or not; send 5 confirmation emails an hour; and try 10 wrong codes an hour. Each address is sent at most 3 confirmation emails a day, from every tenant together, and 20 alerts an hour. The confirmation page allows 20 wrong codes per client, then one every three minutes.
+- **Unsubscribing.** With `--admin-origin`, each alert email has a one-click unsubscribe link ([RFC 8058](https://www.rfc-editor.org/rfc/rfc8058.html)) for whoever reads it, which needn't be someone who can sign in. Opening the confirm or unsubscribe link changes nothing by itself (mail scanners open links); the page asks for a button press.
+
+### Installing the app
+
+The web UI is an installable web app: in Chrome or Edge, use Install in the address bar or menu; on Android, Add to Home screen; on iPhone and iPad, Share, then Add to Home Screen (iOS delivers web notifications only to apps added this way). It opens in its own window, with doh's icon. Its service worker, at `/sw.js`, only shows notifications and opens them; it caches nothing, so query logs never sit on the device, and every page load is fresh. Notifications need the UI on https (or `localhost`), so set `--admin-origin` to the https origin it's opened at.
 
 ### ntfy
 
@@ -594,4 +621,6 @@ Common findings:
 - Alerts come from the query log: profiles with logging off, and servers run with `--no-query-log`, get no threat, new-device, or failing alerts. A threat repeated within the hour is in the query log, not another alert.
 - New devices are as distinct as their names and addresses: behind NAT, a household is one device; a device that changes its address (private Wi-Fi addresses, IPv6 privacy addresses) can look new; a hostname is whatever the device calls itself. On a server open to the internet, every new client address is a new device, so the operator may want `new-device` off.
 - Webhook secrets are kept in `alerts.json`, readable only by the server's user, since doh needs them to sign. Tenants' deliveries connect directly, never through `HTTPS_PROXY`; the operator's https deliveries use it.
+- Push subscriptions' keys and email unsubscribe tokens are kept in `alerts.json` too, and the VAPID key in `push-vapid.pem`. Push services see when a browser is sent something, and how large it is, though not what. Email goes through the operator's mail server in whatever way it delivers onward; the confirmation and alert rate limits are kept in memory, so a restart resets them.
+- Web Push and email are tested against RFC 8291's example, RFC 8292's example token, and a fake SMTP server; delivery through real push services and mail providers hasn't been verified by tests.
 - Client addresses identify devices only as well as the network does. Behind NAT, a whole network shares one address; over DoH, use per-device paths instead. Apps on the same device can't be told apart.
