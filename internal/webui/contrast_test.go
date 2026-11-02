@@ -86,6 +86,8 @@ func TestContrast(t *testing.T) {
 		{"glaze-ink", "bg", text, "links on the page"},
 		{"glaze-ink", "glaze-soft", text, "the current place, such as the selected view"},
 		{"accent-text", "glaze", text, "primary buttons"},
+		{"accent-text", "glaze-strong", text, "primary buttons under the pointer"},
+		{"glaze-ink", "surface-2", text, "pink text on raised surfaces"},
 		{"ok", "ok-bg", text, "good news"},
 		{"bad", "bad-bg", text, "bad news"},
 		{"warn", "warn-bg", text, "warnings"},

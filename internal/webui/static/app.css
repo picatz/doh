@@ -59,7 +59,7 @@
     --bg: #0e0e12; --surface: #16161c; --surface-2: #1e1e26; --surface-3: #292932;
     --border: #2a2a33; --border-strong: #3d3d49; --field-border: #70707f;
     --text: #ececf1; --muted: #a3a3b1;
-    --glaze: #d6336c; --glaze-ink: #ff8fb6; --glaze-strong: #e5487f; --glaze-soft: #3a1527; --dough: #d9a35e; --sprinkle: #fff6f9;
+    --glaze: #d6336c; --glaze-ink: #ff8fb6; --glaze-strong: #c42a60; --glaze-soft: #3a1527; --dough: #d9a35e; --sprinkle: #fff6f9;
     --accent-text: #ffffff;
     --ok: #4cc38a; --ok-bg: #0f2a1f; --bad: #ff7b6b; --bad-bg: #36160f;
     --info: #7da8ff; --info-bg: #16223d; --warn: #f2c35b; --warn-bg: #33270e;
@@ -72,7 +72,7 @@
   --bg: #0e0e12; --surface: #16161c; --surface-2: #1e1e26; --surface-3: #292932;
   --border: #2a2a33; --border-strong: #3d3d49; --field-border: #70707f;
   --text: #ececf1; --muted: #a3a3b1;
-  --glaze: #d6336c; --glaze-ink: #ff8fb6; --glaze-strong: #e5487f; --glaze-soft: #3a1527; --dough: #d9a35e; --sprinkle: #fff6f9;
+  --glaze: #d6336c; --glaze-ink: #ff8fb6; --glaze-strong: #c42a60; --glaze-soft: #3a1527; --dough: #d9a35e; --sprinkle: #fff6f9;
   --accent-text: #ffffff;
   --ok: #4cc38a; --ok-bg: #0f2a1f; --bad: #ff7b6b; --bad-bg: #36160f;
   --info: #7da8ff; --info-bg: #16223d; --warn: #f2c35b; --warn-bg: #33270e;
@@ -141,7 +141,7 @@ button:hover:not(:disabled), .button:hover { background: var(--surface-3); }
 button:active:not(:disabled) { transform: translateY(.5px); }
 button:disabled, input:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
 button.primary, .button.primary { background: var(--glaze); border-color: var(--glaze); color: var(--accent-text); font-weight: 600; }
-button.primary:hover:not(:disabled), .button.primary:hover { background: var(--glaze-ink); border-color: var(--glaze-ink); }
+button.primary:hover:not(:disabled), .button.primary:hover { background: var(--glaze-strong); border-color: var(--glaze-strong); }
 button.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
 /* It names what it deletes, which can be long: wrap, don't overflow. */
 button.danger { white-space: normal; text-wrap: balance; text-align: center; }

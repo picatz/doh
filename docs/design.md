@@ -56,7 +56,7 @@ do what it can't, and nothing else is pink:
 | `--glaze` | `#d6336c` | `#d6336c` | the brand: the mark, actions, focus, the current place |
 | `--glaze-ink` | `#b0245a` | `#ff8fb6` | pink text and links, which need 4.5:1 on every surface |
 | `--glaze-soft` | `#fdebf2` | `#3a1527` | tints: the current place's background, selection, bars behind numbers |
-| `--glaze-strong` | `#bd2a5f` | `#e5487f` | a primary action under the pointer |
+| `--glaze-strong` | `#bd2a5f` | `#c42a60` | a primary action under the pointer |
 | `--dough`, `--sprinkle` | | | the donut's base and sprinkles, nowhere else |
 | `--text`, `--muted`, `--bg`, `--surface…` | | | cool neutrals |
 | `--ok`, `--warn`, `--bad`, `--info` | | | status, each with a background |
