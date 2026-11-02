@@ -186,8 +186,20 @@ try {
   console.log(JSON.stringify([...new Set(problems)], null, 1));
 } finally {
   ws?.close();
-  proc.kill();
-  await sleep(100);
-  // Chrome may still be writing its profile as it exits.
-  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  // Wait for Chrome to exit before removing its profile, which it writes
+  // until it does; if it won't, force it.
+  if (!exited) {
+    const gone = new Promise((resolve) => proc.once("exit", resolve));
+    proc.kill();
+    if (await Promise.race([gone.then(() => true), sleep(5000).then(() => false)]) === false) {
+      proc.kill("SIGKILL");
+      await Promise.race([gone, sleep(2000)]);
+    }
+  }
+  // A temporary directory left behind is no reason to fail the check.
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (err) {
+    console.error(`layout.mjs: couldn't remove ${dir}: ${err.message}`);
+  }
 }
