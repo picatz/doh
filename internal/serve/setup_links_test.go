@@ -2,6 +2,7 @@ package serve
 
 import (
 	"encoding/json"
+	"github.com/picatz/doh/internal/httpsec"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -61,6 +62,13 @@ func TestSetupLinks(t *testing.T) {
 	}
 	if csp := page.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") || strings.Contains(csp, "script-src") {
 		t.Errorf("CSP = %q, want no scripts at all", csp)
+	}
+	// The page's one stylesheet is allowed by its hash, as rendered: no
+	// inline style is allowed otherwise.
+	csp := page.Header().Get("Content-Security-Policy")
+	css, ok := httpsec.InlineStyle(page.Body.String())
+	if !ok || !strings.Contains(csp, "style-src "+httpsec.StyleHash(css)+";") || strings.Contains(csp, "unsafe-inline") {
+		t.Errorf("CSP = %q, want the hash of the page's own style", csp)
 	}
 	cfg := get(u.Path + "/apple.mobileconfig")
 	if cfg.Code != http.StatusOK || cfg.Header().Get("Content-Type") != api.MobileConfigType || !strings.Contains(cfg.Body.String(), "/dns-query/kids/tablet") {

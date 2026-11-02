@@ -349,6 +349,14 @@ Passkeys are verified by a native WebAuthn relying party ([`internal/webauthn`](
 
 If everyone loses their passkeys, an operator with the admin token removes them (`doh people remove`), and sign-in links work on their own again.
 
+**In the browser**, every response from the admin listener and the setup pages carries the same defenses ([`internal/httpsec`](../internal/httpsec)), each backing up something the code already avoids:
+
+- A Content-Security-Policy with no inline code, nothing from other origins, no framing, and **Trusted Types**: the browser itself refuses to turn a string into HTML or script, so the UI's rule of building pages from elements and text is enforced rather than only followed. API responses get a policy that renders nothing, even if opened directly; the setup page's one stylesheet is allowed by its hash.
+- Cross-site requests that change anything are refused by their `Sec-Fetch-Site` and `Origin` headers ([Go's `CrossOriginProtection`](https://pkg.go.dev/net/http#CrossOriginProtection)), on top of `SameSite=Strict` cookies, so another site can't act with your session.
+- `Permissions-Policy` turns off every powerful feature but passkeys and the clipboard; `Cross-Origin-Resource-Policy` and `-Opener-Policy` keep other sites from loading responses or reaching into the UI's window; `nosniff` and `no-referrer` throughout; and over HTTPS, `Strict-Transport-Security`.
+
+Tests check each surface's headers, and `TestLayout` runs the UI in Chrome with all of them on, failing on any violation the browser reports.
+
 Passkeys need the UI opened at a host name: on a loopback admin listener that's `http://localhost:{port}`, where page loads at `127.0.0.1` are redirected. Elsewhere, put the admin listener behind a TLS-terminating proxy and set `--admin-origin https://admin.dns.example.com`. Without an origin, browser sign-in is off, and only API tokens work.
 
 ### API tokens
