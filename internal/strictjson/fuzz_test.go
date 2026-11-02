@@ -225,7 +225,11 @@ func FuzzUnmarshalExtra(f *testing.F) {
 		if err != nil {
 			t.Fatalf("round trip %q refused: %v", out, err)
 		}
-		if !reflect.DeepEqual(back, got) || len(again) != len(extra) {
+		// Compare the structs as JSON: omitempty drops an empty "aud":[],
+		// which then reads back as nil, the same value as far as JSON goes.
+		gotJSON, _ := json.Marshal(got)
+		backJSON, _ := json.Marshal(back)
+		if !bytes.Equal(gotJSON, backJSON) || len(again) != len(extra) {
 			t.Fatalf("round trip changed %+v/%v into %+v/%v via %q", got, extra, back, again, out)
 		}
 		for name, raw := range extra {

@@ -23,6 +23,44 @@ makes it stale.
 Every change runs `gofmt`, `go vet ./...`, and `go test -race ./...` in CI
 (`make check` locally), against the oldest supported Go and the latest.
 
+## Fuzzing
+
+Every parser of untrusted input has a native Go fuzz target, with seeds
+and invariants beyond "doesn't panic". `make fuzz` runs each for
+`FUZZTIME` (10s by default); inputs that once failed are kept in each
+package's `testdata/fuzz` and run with every `go test`. The audit of
+November 2026 ran each new target for 60 seconds (30 for `doq` after its
+fix) on 2 workers, locally:
+
+| Untrusted input | Fuzz targets | Run | Findings |
+| --- | --- | --- | --- |
+| DoH GET and POST requests (`pkg/doh`) | `FuzzHandler_Get`, `FuzzHandler_Post`: 200 exactly for one-question queries, answers that unpack and match the query's ID | 60s each | none |
+| DoQ streams (`internal/doq`) | `FuzzReadMessage`: exactly one length-prefixed message, framing round-trips | 60s, then 30s | miekg/dns v1.1.73 packs some NSEC3 records it unpacked into bytes it can't unpack; a library asymmetry, not a doh bug; the target now checks framing only, and keeps the input as a seed |
+| Query names and types from clients, upstream answers (`internal/filter`) | `FuzzCheck` (decisions are well-formed, blocks and rewrites pack), `FuzzCheckResponse` (a public name answered with 127.0.0.1 is always blocked), `FuzzHomograph`, `FuzzRegistrable` | 60s each | none |
+| Blocklists: hosts, Adblock Plus, domain lists (`internal/blocklist`) | `FuzzRules` (normalized domains, a built list blocks what was parsed), `FuzzParseSource` | 60s each | none |
+| Policy JSON from files, the API, and followed servers (`internal/policy`, `internal/filter`) | `FuzzUnmarshal` (round-trips), `FuzzCompile` (every valid policy compiles), `FuzzNormalizeDomain`, `FuzzParsePrefix`, `FuzzParseClock` | 60s each | none |
+| RDAP bootstrap and domain responses (`internal/rdap`) | `FuzzParseBootstrap`, `FuzzParseRegistration` (plausible dates only), `FuzzNormalize` | 60s each | none |
+| Identity tokens for token exchange (`internal/federation`) | `FuzzVerify`: only tokens the provider signed, with the rule's claims, are accepted | 60s | none |
+| DPoP proofs and Authorization headers (`internal/serve`) | `FuzzVerifyProof` (only the bound key's proofs, each once), `FuzzCredential` | 60s each | none |
+| Service account secrets (`internal/serviceaccount`) | `FuzzLookup`: only the exact secret finds its key | 60s | none |
+| Alert destinations, webhook signatures, alert settings (`internal/alerts`) | `FuzzCheckURL` (tenants reach only public https), `FuzzVerify` (only what was signed verifies), `FuzzSettingsNormalize` | 60s each | none |
+| DHCP leases, device names, routes (`internal/hostnames`) | `FuzzParseLeases`, `FuzzNormalize` (always a valid device name), `FuzzParseRoutes` | 60s each | none |
+| Activity filters and page tokens (`internal/querylog`) | `FuzzParseFilter`, `FuzzDecodeToken` | 60s each | none |
+| Server-sent events and DPoP key files (`internal/client`) | `FuzzEvents`, `FuzzParseDPoPKey` | 60s each | none; a lone carriage return isn't treated as a line ending, which doh's server never sends |
+| Upstream URLs (`internal/upstream`) | `FuzzParse` | 60s | none |
+| Configuration profiles (`internal/plist`) | `FuzzMarshal`: well-formed XML whatever the strings, which read back exactly | 60s | none |
+| QR codes (`internal/qr`) | `FuzzEncode`: smallest version, finder patterns, deterministic, well-formed SVG | 60s | an SVG label with invalid UTF-8 or control characters made malformed XML; labels are now escaped with `encoding/xml`, replacing such characters (doh's own labels were never affected) |
+| Signed profiles (`internal/cms`) | `FuzzSign`: decodes back to the content and time, and verifies | 60s | none |
+| WebAuthn, COSE keys, CBOR (`internal/webauthn`, `internal/cose`) | 8 and 2 existing targets | seeds, and 4s each where reached | none |
+| Strict JSON (`internal/strictjson`) | 3 existing targets | 4s, `FuzzUnmarshalExtra` 20s | the oracle of `FuzzUnmarshalExtra` mistook `"aud":[]`, dropped by `omitempty`, for a change; it now compares as JSON |
+
+Not fuzzed here, since they're third-party, trusted, or don't parse:
+DNS wire format itself (miekg/dns, reached through the targets above), JWS
+and JWT (picatz/jose, reached through `FuzzVerify` and `FuzzVerifyProof`),
+CBOR (picatz/cbor, through the WebAuthn and COSE targets), the server's
+own config file and the state files it writes, `/etc/resolv.conf` for
+`doh doctor`, and session cookies, which are only hashed and looked up.
+
 ## Limits
 
 These are also stated where each feature is documented; see

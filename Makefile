@@ -15,6 +15,17 @@ test: ## Run tests
 test-live: ## Run tests, including those that query public DoH resolvers
 	@DOH_LIVE_TESTS=1 go test -v ./...
 
+FUZZTIME ?= 10s
+
+.PHONY: fuzz
+fuzz: ## Run every fuzz target for FUZZTIME (default 10s) each
+	@for pkg in $$(go list ./...); do \
+		for target in $$(go test -list '^Fuzz' "$$pkg" | grep '^Fuzz'); do \
+			echo "fuzzing $$target in $$pkg for $(FUZZTIME)"; \
+			go test -run '^$$' -fuzz "^$$target\$$" -fuzztime $(FUZZTIME) "$$pkg" || exit 1; \
+		done; \
+	done
+
 .PHONY: build
 build: ## Build binary
 	@go build -o doh

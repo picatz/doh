@@ -30,7 +30,7 @@ type provider struct {
 	jwks      atomic.Int64
 }
 
-func newProvider(t *testing.T) *provider {
+func newProvider(t testing.TB) *provider {
 	t.Helper()
 	p := &provider{key: josetest.Key(t, jwa.ES256)}
 	value, err := jwk.PublicValue(p.key.Public())
