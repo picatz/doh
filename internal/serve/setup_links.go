@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/base64"
+	"github.com/picatz/doh/internal/httpsec"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -145,11 +146,9 @@ func (s *Server) setupBase() (string, bool) {
 // profile, on the public listener.
 func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
+	httpsec.Page(h, r, setupCSP)
 	h.Set("Cache-Control", "no-store")
-	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("X-Robots-Tag", "noindex")
-	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 	link, ok := s.setupLinks.lookup(r.PathValue("code"))
 	pr := s.engine.Load().Policy().Profile(link.profile)
@@ -198,3 +197,18 @@ type setupPageData struct {
 var setupFS embed.FS
 
 var setupTemplate = template.Must(template.ParseFS(setupFS, "setup_page.html"))
+
+// setupCSP is the setup page's content security policy: no scripts at
+// all, and only its own stylesheet, allowed by its hash rather than any
+// inline style.
+var setupCSP = func() string {
+	page, err := setupFS.ReadFile("setup_page.html")
+	if err != nil {
+		panic(err)
+	}
+	css, ok := httpsec.InlineStyle(string(page))
+	if !ok {
+		panic("setup_page.html has no <style>")
+	}
+	return "default-src 'none'; style-src " + httpsec.StyleHash(css) + "; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; " + httpsec.TrustedTypes
+}()

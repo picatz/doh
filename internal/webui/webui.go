@@ -10,6 +10,7 @@ package webui
 
 import (
 	"embed"
+	"github.com/picatz/doh/internal/httpsec"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -22,8 +23,10 @@ var static embed.FS
 
 // ContentSecurityPolicy is the policy sent with every response. It allows
 // only same-origin scripts, styles, and API calls, and no framing, inline
-// code, or plugins.
-const ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+// code, or plugins; and with Trusted Types, the browser refuses to parse
+// any string as HTML or script, so the UI's rule of building the DOM from
+// elements and text is enforced, not only followed.
+const ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; " + httpsec.TrustedTypes
 
 // AssetPrefix is the path prefix of the UI's assets.
 const AssetPrefix = "/ui/"
@@ -51,12 +54,8 @@ func Handler() http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", ContentSecurityPolicy)
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("X-Frame-Options", "DENY")
+		httpsec.Page(h, r, ContentSecurityPolicy)
 		h.Set("Cache-Control", "no-cache")
-		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		mux.ServeHTTP(w, r)
 	})
 }

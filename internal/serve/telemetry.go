@@ -6,6 +6,7 @@ import (
 	"errors"
 	"expvar"
 	"fmt"
+	"github.com/picatz/doh/internal/httpsec"
 	"io"
 	"log/slog"
 	"net"
@@ -204,7 +205,10 @@ func (s *Server) adminHandler() http.Handler {
 	// Refuse cross-origin browser requests that change state, so a page
 	// on another site can't act with a signed-in session. API clients
 	// such as the CLI send no browser fetch headers, and are unaffected.
-	return http.NewCrossOriginProtection().Handler(mux)
+	//
+	// Everything on the admin listener is data unless it says otherwise,
+	// as the web UI's pages do.
+	return http.NewCrossOriginProtection().Handler(httpsec.DataHandler(mux))
 }
 
 // serveVars writes the server's counters, runtime metrics, and build
