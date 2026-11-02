@@ -750,7 +750,7 @@ dialog h3 { margin: 0 0 .25rem; }
 .ask-field button { min-height: 2.75rem; padding-inline: 1.1rem; border-radius: calc(var(--r-lg) - 4px); }
 .ask .more-filters { justify-self: start; }
 
-button.link { min-height: 0; padding: 0; border: 0; background: none; color: var(--glaze-ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+button.link { min-height: 1.5rem; padding: 0; border: 0; background: none; color: var(--glaze-ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
 button.link:hover:not(:disabled) { background: none; text-decoration-color: currentColor; }
 
 .explain-empty { display: grid; justify-items: center; gap: var(--s-2); padding: var(--s-7) var(--s-4); text-align: center; }

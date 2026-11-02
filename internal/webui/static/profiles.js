@@ -131,7 +131,7 @@ export function sectionHint(p, id) {
   const n = (k) => (p[k] || []).length;
   const join = (...parts) => parts.filter(Boolean).join(" · ");
   switch (id) {
-    case "connect": return "A setup link and QR code, or settings by hand";
+    case "connect": return "Setup link, QR code, or by hand";
     case "protection": {
       const level = PRESETS.find((x) => x.id === matchPreset(p));
       return join(level ? level.name : "Your own mix", count(n("lists"), "list"), p.safe_search ? "safe search" : "");
