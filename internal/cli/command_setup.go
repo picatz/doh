@@ -6,8 +6,10 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/qr"
 	"github.com/spf13/cobra"
 )
 
@@ -28,6 +30,10 @@ Naming the device with --device makes the server's query log show its name.
 For Apple devices, --mobileconfig writes a configuration profile to open on
 the device, which sets up encrypted DNS in one step.
 
+With --link, it makes a setup link instead: a page to open on the device
+itself, with one-tap install on Apple devices, shown as a QR code to scan
+with its camera. It works for 30 minutes.
+
 Encrypted settings need the server's public host name (doh serve --hostname,
 or an ACME domain); DNS-over-TLS, which Android uses, needs --dot-listen too.
 
@@ -35,7 +41,8 @@ Examples:
   doh setup default
   doh setup kids --device tablet --platform android
   doh setup kids --device ipad --mobileconfig ipad.mobileconfig
-  doh setup kids --device mac --protocol tls --mobileconfig - > mac.mobileconfig`,
+  doh setup kids --device mac --protocol tls --mobileconfig - > mac.mobileconfig
+  doh setup kids --device ipad --link`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 	}
@@ -46,6 +53,7 @@ Examples:
 	platform := fs.String("platform", "", "show only this platform: apple, android, windows, linux, browser, or router")
 	mobileconfig := fs.String("mobileconfig", "", `write an Apple configuration profile to this file ("-" for standard output)`)
 	protocol := fs.String("protocol", "", "protocol for --mobileconfig: https or tls (default https if the server serves it)")
+	link := fs.Bool("link", false, "make a setup link to open on the device, shown as a QR code")
 
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		profile := args[0]
@@ -57,12 +65,26 @@ Examples:
 		if *protocol != "" && *mobileconfig == "" {
 			return fmt.Errorf("--protocol only applies with --mobileconfig")
 		}
+		if *link && (*mobileconfig != "" || *platform != "") {
+			return fmt.Errorf("--link makes a link for any platform, so it can't be used with --mobileconfig or --platform")
+		}
 
 		c, err := f.client()
 		if err != nil {
 			return err
 		}
 		out := cmd.OutOrStdout()
+
+		if *link {
+			l, err := c.CreateSetupLink(cmd.Context(), profile, *device)
+			if err != nil {
+				return err
+			}
+			if f.json {
+				return printJSON(out, l)
+			}
+			return printSetupLink(out, l)
+		}
 
 		if *mobileconfig != "" {
 			b, err := c.MobileConfig(cmd.Context(), profile, *device, *protocol)
@@ -109,6 +131,19 @@ Examples:
 		return printSetup(out, setup)
 	}
 	return cmd
+}
+
+// printSetupLink writes a setup link, and the QR code to scan for it.
+func printSetupLink(w io.Writer, l *api.SetupLink) error {
+	fmt.Fprintf(w, "Open this on the device, or scan it with its camera. It works until %s.\n\n", l.Expires.Local().Format(time.Kitchen))
+	if code, err := qr.Encode([]byte(l.URL), qr.M); err == nil {
+		if err := code.WriteText(w, 2); err != nil {
+			return err
+		}
+		fmt.Fprintln(w)
+	}
+	_, err := fmt.Fprintf(w, "  %s\n", l.URL)
+	return err
 }
 
 // printSetup writes setup's settings and instructions for people.

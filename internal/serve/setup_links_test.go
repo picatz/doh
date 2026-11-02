@@ -11,6 +11,7 @@ import (
 
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/policy"
+	"github.com/picatz/doh/internal/qr"
 )
 
 func TestSetupLinks(t *testing.T) {
@@ -28,6 +29,14 @@ func TestSetupLinks(t *testing.T) {
 	}
 	if d := time.Until(link.Expires); d < SetupLinkTTL-time.Minute || d > SetupLinkTTL {
 		t.Errorf("expires in %v, want %v", d, SetupLinkTTL)
+	}
+	// The QR code is the link's, with a quiet zone.
+	code, err := qr.Encode([]byte(link.URL), qr.M)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.QR == nil || link.QR.Size != code.Size()+8 || link.QR.Path != code.SVGPath(4) {
+		t.Errorf("QR = %+v, want the link's code", link.QR)
 	}
 
 	// On the public listener: the page, then the profile it installs.

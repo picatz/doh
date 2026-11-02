@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/picatz/doh/internal/api"
 )
@@ -154,6 +155,28 @@ func TestWrap(t *testing.T) {
 	} {
 		if got := wrap(tt.in, tt.width, "  "); got != tt.want {
 			t.Errorf("wrap(%q, %d) = %q, want %q", tt.in, tt.width, got, tt.want)
+		}
+	}
+}
+
+func TestSetupCommand_Link(t *testing.T) {
+	link := api.SetupLink{URL: "https://dns.example.com/setup/RfcDwNWF3WMikylWanaHcg", Expires: time.Now().Add(30 * time.Minute)}
+	responses := map[string]any{"POST /api/v1/profiles/kids/setup-links": link}
+
+	out, f, err := runClient(t, newSetupCommand(), responses, "setup", "kids", "--device", "ipad", "--link")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.requests[0]; got != "POST /api/v1/profiles/kids/setup-links?device=ipad" {
+		t.Errorf("request = %q", got)
+	}
+	if !strings.Contains(out, link.URL) || !strings.Contains(out, "scan it with its camera") || !strings.Contains(out, "▀") {
+		t.Errorf("output lacks the link, its explanation, or a QR code:\n%s", out)
+	}
+
+	for _, args := range [][]string{{"--mobileconfig", "x.mobileconfig"}, {"--platform", "apple"}} {
+		if _, _, err := runClient(t, newSetupCommand(), responses, append([]string{"setup", "kids", "--link"}, args...)...); err == nil {
+			t.Errorf("--link with %v was accepted", args)
 		}
 	}
 }

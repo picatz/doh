@@ -947,6 +947,26 @@ function connectSection(p) {
     sendSection(p, () => (validDevice(device.value.trim().toLowerCase()) ? device.value.trim().toLowerCase() : "")));
 }
 
+// qrCode draws a QR code from the server's path data, dark on light in
+// every theme, so cameras read it.
+function qrCode(q, label) {
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("viewBox", `0 0 ${q.size} ${q.size}`);
+  svg.setAttribute("class", "qr");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", label);
+  svg.setAttribute("shape-rendering", "crispEdges");
+  const bg = document.createElementNS(SVG, "rect");
+  bg.setAttribute("width", String(q.size));
+  bg.setAttribute("height", String(q.size));
+  bg.setAttribute("fill", "#fff");
+  const path = document.createElementNS(SVG, "path");
+  path.setAttribute("d", q.path);
+  path.setAttribute("fill", "#000");
+  svg.append(bg, path);
+  return svg;
+}
+
 // sendSection makes a short-lived link to a setup page for the device to
 // open itself: shared over AirDrop or a message, or copied.
 function sendSection(p, deviceName) {
@@ -965,8 +985,15 @@ function sendSection(p, deviceName) {
         ? h("button", { type: "button", class: "primary" }, icon("arrow"), "Share")
         : null;
       share?.addEventListener("click", () => navigator.share({ title: `Set up ${p.name || p.id}`, url: link.url }).catch(() => {}));
-      clear(out).append(url, h("div", { class: "send-actions" }, share, copy),
-        h("p", { class: "muted hint", text: `Open it on the device itself. It works until ${new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(link.expires))}.` }));
+      const until = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(link.expires));
+      // Node.append would write a missing part as the text "null".
+      clear(out).append(...[
+        link.qr && h("div", { class: "send-qr" }, qrCode(link.qr, `QR code for the setup link for ${p.name || p.id}`),
+          h("p", {}, h("strong", { text: "Scan it with the device's camera" }), h("span", { class: "muted", text: ` or open the link there. It works until ${until}.` }))),
+        url,
+        h("div", { class: "send-actions" }, share, copy),
+        !link.qr && h("p", { class: "muted hint", text: `Open it on the device itself. It works until ${until}.` }),
+      ].filter(Boolean));
     } catch (err) {
       clear(out).append(h("p", { class: "muted", text: err.status === 409
         ? (isOperator() ? "Setup links need this server's public name and DoH: start it with --hostname and a certificate." : "Setup links aren't available on this server yet. Ask its operator.")
