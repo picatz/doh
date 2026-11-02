@@ -224,6 +224,8 @@ $ doh log --json -q google | jq .   # JSON lines
 
 Alerts tell someone when something on the network needs them, without opening the web UI: on a phone, through [ntfy](https://ntfy.sh), or to anything that takes a webhook, such as Home Assistant.
 
+Set them up in the web UI's **Security** view (Alerts: what to hear about, quiet hours, where they go, and a test), or from the command line:
+
 ```sh
 doh alerts add-ntfy https://ntfy.sh/smith-family-7f3a --name "Family phones"
 doh alerts add-webhook https://hooks.example.com/doh --name "Home Assistant"   # prints its signing secret, once

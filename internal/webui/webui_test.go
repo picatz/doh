@@ -180,7 +180,11 @@ func TestScript_NoUnsafeDOMOrDynamicCode(t *testing.T) {
 	// is a name, never fetched.
 	urls := regexp.MustCompile(`https?://[^\s"'`+"`"+`]*`).FindAllString(js, -1)
 	for _, u := range urls {
-		if u != "https://${host}/dns-query/${id}" && u != "https://example.com/list.txt" && u != "http://www.w3.org/2000/svg" {
+		switch u {
+		case "https://${host}/dns-query/${id}", "https://example.com/list.txt", "http://www.w3.org/2000/svg":
+		case "https://ntfy.sh/", "https://example.com/hooks/doh":
+			// Suggested and example destinations for alerts, never fetched.
+		default:
 			t.Errorf("app.js contains URL %q", u)
 		}
 	}
