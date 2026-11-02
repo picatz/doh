@@ -18,8 +18,9 @@ func newAlertsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "alerts",
 		Short: "Get told when a threat is blocked, a device appears, or lookups fail",
-		Long: `Send alerts to a webhook, or to an ntfy topic for push notifications on phones,
-when something on the network needs someone:
+		Long: `Send alerts to a webhook, an ntfy topic, an email address, or a browser (the web
+UI, installed on a phone or computer, gets them as notifications), when
+something on the network needs someone:
 
   threat        a query was blocked by a security protection or list
   new-device    a device doh hasn't seen before started using it
@@ -39,9 +40,18 @@ person who's an admin, or the operator's token, never a service account.
 Destinations must use https. A tenant's must be on the internet: doh won't
 send them to its own network. Webhook deliveries are signed as the Standard
 Webhooks specification describes (https://www.standardwebhooks.com/), with a
-secret shown once, when the webhook is added.`,
+secret shown once, when the webhook is added.
+
+An email address gets a code first, and nothing else until it's confirmed,
+with the link in the email or "doh alerts confirm CODE". Email needs the
+server's operator to set up a mail server (doh serve --smtp-url).
+
+Browsers subscribe themselves, from the web UI's Security view; "doh alerts
+show" lists them, and "doh alerts remove" removes one.`,
 		Example: `  doh alerts add-ntfy https://ntfy.sh/smith-family-7f3a
   doh alerts add-webhook https://hooks.example.com/doh --name "Home Assistant"
+  doh alerts add-email alex@example.com --name "Alex"
+  doh alerts confirm 7KQ2M-X9D4H
   doh alerts set kinds=threat,new-device quiet=22:00-07:00 tz=America/New_York
   doh alerts test
   doh alerts show
@@ -53,6 +63,8 @@ secret shown once, when the webhook is added.`,
 		newAlertsSetCommand(),
 		newAlertsAddCommand(alerts.Webhook),
 		newAlertsAddCommand(alerts.Ntfy),
+		newAlertsAddEmailCommand(),
+		newAlertsConfirmCommand(),
 		newAlertsRemoveCommand(),
 		newAlertsTestCommand(),
 	)
@@ -118,19 +130,26 @@ func printAlerts(w io.Writer, a *api.Alerts, now time.Time) {
 
 	fmt.Fprintln(w)
 	if len(a.Destinations) == 0 {
-		fmt.Fprintln(w, `No destinations yet, so nothing is sent. Add one with "doh alerts add-ntfy https://ntfy.sh/<topic>" or "doh alerts add-webhook <url>".`)
+		fmt.Fprintln(w, `No destinations yet, so nothing is sent. Add one with "doh alerts add-ntfy https://ntfy.sh/<topic>", "doh alerts add-webhook <url>", or "doh alerts add-email <address>", or turn on notifications in the web UI's Security view.`)
 		return
 	}
 	tw = newTable(w)
-	fmt.Fprintln(tw, "ID\tTYPE\tNAME\tURL\tLAST SENT\tLAST FAILED")
+	fmt.Fprintln(tw, "ID\tTYPE\tNAME\tWHERE\tSTATE\tLAST SENT\tLAST FAILED")
+	pending := false
 	for _, d := range a.Destinations {
 		failed := "-"
 		if !d.LastFailure.IsZero() {
 			failed = ago(d.LastFailure, now) + ": " + d.LastError
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", d.ID, d.Type, cmp.Or(d.Name, "-"), d.URL, ago(d.LastSuccess, now), failed)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.ID, d.Type, cmp.Or(d.Name, "-"), strings.TrimPrefix(d.URL, "mailto:"), destinationState(d, now), ago(d.LastSuccess, now), failed)
+		pending = pending || d.State == alerts.Pending
 	}
 	_ = tw.Flush()
+	if pending {
+		fmt.Fprintln(w, `
+Pending addresses get nothing until they're confirmed, with the link in the
+email doh sent them, or "doh alerts confirm CODE".`)
+	}
 
 	if len(a.Deliveries) == 0 {
 		return
@@ -142,6 +161,20 @@ func printAlerts(w io.Writer, a *api.Alerts, now time.Time) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", ago(d.Time, now), d.Kind, d.Summary, d.Destination, deliveryResult(d))
 	}
 	_ = tw.Flush()
+}
+
+// destinationState says whether a destination gets alerts.
+func destinationState(d alerts.Destination, now time.Time) string {
+	switch d.State {
+	case alerts.Pending:
+		if !d.ConfirmBy.IsZero() && !now.Before(d.ConfirmBy) {
+			return "pending: code expired (add it again)"
+		}
+		return "pending: not confirmed"
+	case alerts.Gone:
+		return "gone: subscribe again"
+	}
+	return "active"
 }
 
 // deliveryResult says how a delivery went.
@@ -323,6 +356,75 @@ server of your own with access control: https://user:password@... works.`
 			fmt.Fprintf(w, "\nIts signing secret, shown only now:\n\n  %s\n\nVerify each delivery's webhook-signature with it, as the Standard Webhooks\nspecification describes.\n", d.Secret)
 		}
 		fmt.Fprintln(w, `Send a test with "doh alerts test".`)
+		return nil
+	}
+	return cmd
+}
+
+func newAlertsAddEmailCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "add-email ADDRESS",
+		Short: "Send alerts to an email address, once it confirms",
+		Long: `Send alerts to an email address. doh first sends it a code, which works once,
+for 24 hours, and sends it nothing else until the code is given back, with the
+link in the email or "doh alerts confirm CODE". Adding a pending address again
+sends a new code.
+
+Email needs the server's operator to set up a mail server (doh serve
+--smtp-url). Each tenant may have a few addresses, and doh limits how many
+codes it sends, to each tenant and to each address.`,
+		Example:      `  doh alerts add-email alex@example.com --name "Alex"`,
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+	}
+	f := addClientFlags(cmd)
+	tenant := addTenantFlag(cmd)
+	name := cmd.Flags().String("name", "", "whose address it is, such as \"Alex\"")
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		c, err := f.client()
+		if err != nil {
+			return err
+		}
+		d, err := c.AddAlertDestination(cmd.Context(), *tenant, api.AlertDestinationRequest{Type: alerts.Email, Address: args[0], Name: *name})
+		if err != nil {
+			return err
+		}
+		w := cmd.OutOrStdout()
+		if f.json {
+			return printJSON(w, d)
+		}
+		fmt.Fprintf(w, "Sent a confirmation code to %s (%s).\n", strings.TrimPrefix(d.Destination.URL, "mailto:"), d.Destination.ID)
+		fmt.Fprintln(w, `Nothing else is sent there until it's confirmed: with the link in the email,
+or "doh alerts confirm CODE" with the code from it.`)
+		return nil
+	}
+	return cmd
+}
+
+func newAlertsConfirmCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "confirm CODE",
+		Short:        "Confirm an email address with the code doh sent it",
+		Long:         "Confirm an email address with the code doh sent it, such as 7KQ2M-X9D4H. Each code works once, for 24 hours.",
+		Example:      `  doh alerts confirm 7KQ2M-X9D4H`,
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+	}
+	f := addClientFlags(cmd)
+	tenant := addTenantFlag(cmd)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		c, err := f.client()
+		if err != nil {
+			return err
+		}
+		d, err := c.ConfirmAlerts(cmd.Context(), *tenant, args[0])
+		if err != nil {
+			return err
+		}
+		if f.json {
+			return printJSON(cmd.OutOrStdout(), d)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Confirmed: alerts go to %s now. Send a test with \"doh alerts test\".\n", strings.TrimPrefix(d.URL, "mailto:"))
 		return nil
 	}
 	return cmd

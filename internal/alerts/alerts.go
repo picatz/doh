@@ -8,8 +8,10 @@
 // repeats (the same thing at most once an hour) and summarizing bursts
 // ("12 more threats blocked on kids-ipad in the last hour"), and delivers
 // them to each scope's destinations: webhooks signed as the
-// [Standard Webhooks] specification describes, or [ntfy] topics, for push
-// notifications on phones.
+// [Standard Webhooks] specification describes, [ntfy] topics, browsers
+// subscribed to Web Push (encrypted as RFC 8291 describes, and signed with
+// the server's VAPID key, RFC 8292), or email addresses that have
+// confirmed, with a single-use code, that they want them.
 //
 // Alerts have a scope: a tenant, whose alerts only ever concern its own
 // profiles' queries, or the server's operator (the empty scope), whose
@@ -33,6 +35,7 @@ import (
 	"time"
 
 	"github.com/picatz/doh/internal/policy"
+	"github.com/picatz/doh/internal/webpush"
 )
 
 // Kind is what an alert is about.
@@ -126,8 +129,32 @@ const (
 	FailingMinErrors  = 20
 	FailingMinPercent = 10
 
-	// MaxDestinations bounds each scope's destinations.
-	MaxDestinations = 5
+	// MaxDestinations bounds each scope's destinations, of every type:
+	// enough for a few phones' browsers, an ntfy topic, and a webhook.
+	MaxDestinations = 10
+
+	// MaxEmailDestinations bounds each scope's email addresses, whether
+	// they've been confirmed or not.
+	MaxEmailDestinations = 3
+
+	// ConfirmTTL is how long the code sent to confirm an email address
+	// works.
+	ConfirmTTL = 24 * time.Hour
+
+	// ConfirmEmailsPerScope and ConfirmEmailsPerAddress bound the
+	// confirmation emails sent: each scope may send so many an hour, and
+	// each address may be sent so many a day, by every scope together,
+	// so doh can't be used to flood someone's inbox.
+	ConfirmEmailsPerScope   = 5
+	ConfirmEmailsPerAddress = 3
+
+	// ConfirmAttemptsPerScope bounds the wrong codes a scope may try in
+	// an hour.
+	ConfirmAttemptsPerScope = 10
+
+	// EmailsPerAddress bounds the alert emails sent to one address in an
+	// hour; beyond it, they're recorded as failed, not sent.
+	EmailsPerAddress = 20
 
 	// RecentDeliveries is how many deliveries are remembered per scope.
 	RecentDeliveries = 20
@@ -142,6 +169,20 @@ var (
 	ErrNotFound = errors.New("not found")
 	ErrInvalid  = errors.New("invalid")
 	ErrLimit    = errors.New("limit reached")
+
+	// ErrExpired reports a confirmation code past its time.
+	ErrExpired = errors.New("expired")
+
+	// ErrRateLimited reports something done too often; try again later.
+	ErrRateLimited = errors.New("too many requests")
+
+	// ErrUnavailable reports a destination type the server isn't set up
+	// for, such as email without an SMTP server.
+	ErrUnavailable = errors.New("unavailable")
+
+	// ErrNotSent reports an email, such as a confirmation, that the mail
+	// server didn't take.
+	ErrNotSent = errors.New("not sent")
 )
 
 // Settings are a scope's alert settings.
@@ -273,10 +314,40 @@ const (
 
 	// Ntfy is a plain-text POST to an ntfy topic, for push notifications.
 	Ntfy DestinationType = "ntfy"
+
+	// Email is an email to an address that has confirmed it wants them,
+	// through the operator's SMTP server.
+	Email DestinationType = "email"
+
+	// Push is a Web Push notification to a browser that subscribed, such
+	// as the web UI installed on a phone.
+	Push DestinationType = "push"
 )
 
+// DestinationTypes are every destination type, in the order they're
+// presented.
+var DestinationTypes = []DestinationType{Push, Email, Ntfy, Webhook}
+
 // Valid reports whether t is a known destination type.
-func (t DestinationType) Valid() bool { return t == Webhook || t == Ntfy }
+func (t DestinationType) Valid() bool { return slices.Contains(DestinationTypes, t) }
+
+// DestinationState is whether alerts are sent to a destination.
+type DestinationState string
+
+// Destination states.
+const (
+	// Active destinations get alerts.
+	Active DestinationState = "active"
+
+	// Pending email addresses are waiting to be confirmed, with the code
+	// sent to them, and get nothing until they are.
+	Pending DestinationState = "pending"
+
+	// Gone push destinations are browsers whose subscriptions the push
+	// service says have ended; they get nothing until they subscribe
+	// again.
+	Gone DestinationState = "gone"
+)
 
 // Destination is where a scope's alerts are sent.
 type Destination struct {
@@ -287,8 +358,21 @@ type Destination struct {
 	Type DestinationType `json:"type"`
 
 	// URL is where alerts are posted, with any password replaced by
-	// "xxxxx".
+	// "xxxxx"; for an email address, mailto: and the address; and for a
+	// browser, its push service and "/…", since the rest of its endpoint
+	// is the browser's.
 	URL string `json:"url"`
+
+	// State is whether alerts are sent there.
+	State DestinationState `json:"state"`
+
+	// ConfirmBy is when a pending email address's code expires.
+	ConfirmBy time.Time `json:"confirm_by,omitzero"`
+
+	// Subscription identifies a browser's push subscription without
+	// revealing it: the SHA-256 of its endpoint, as unpadded base64url,
+	// which the browser can compute to recognize itself.
+	Subscription string `json:"subscription,omitempty"`
 
 	// Name says what the destination is, such as "Mom's phone".
 	Name string `json:"name,omitempty"`
@@ -306,8 +390,19 @@ type Destination struct {
 
 // NewDestination describes a destination to add.
 type NewDestination struct {
-	Type      DestinationType
-	URL       string
+	Type DestinationType
+
+	// URL is a webhook's or an ntfy topic's.
+	URL string
+
+	// Address is an email destination's address.
+	Address string
+
+	// Subscription is a push destination's browser subscription, as the
+	// browser gives it.
+	Subscription *webpush.Subscription
+
+	// Name says what it is, and CreatedBy who added it.
 	Name      string
 	CreatedBy string
 }

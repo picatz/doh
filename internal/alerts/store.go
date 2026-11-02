@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"crypto/subtle"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/picatz/doh/internal/atomicfile"
+	"github.com/picatz/doh/internal/webpush"
 )
 
 // fileVersion is the version of the persisted store.
@@ -42,20 +44,46 @@ type scopeData struct {
 	deliveries []Delivery // newest last
 }
 
-// destination is a destination with what's never shown: its full URL and
-// its webhook secret.
+// destination is a destination with what's never shown: its full URL, its
+// webhook secret, a push subscription's keys, and an email address's
+// confirmation and unsubscribe tokens.
 type destination struct {
 	Destination
 	url    string
-	secret string
+	secret string // a webhook's signing secret
+
+	p256dh, auth string // a push subscription's keys, base64url
+
+	unsubscribe string        // an email address's one-click unsubscribe token
+	confirm     *confirmation // an email address's pending confirmation
+}
+
+// confirmation is an email address's pending confirmation: the SHA-256 of
+// the code sent to it, never the code, and when it expires.
+type confirmation struct {
+	hash    string // hex
+	expires time.Time
 }
 
 // view returns d as it's shown.
 func (d *destination) view() Destination {
 	v := d.Destination
 	v.URL = redactURL(d.url)
+	if d.Type == Push {
+		v.URL = pushURLView(d.url)
+		v.Subscription = SubscriptionID(d.url)
+	}
+	if d.confirm != nil {
+		v.ConfirmBy = d.confirm.expires
+	}
+	if v.State == "" {
+		v.State = Active
+	}
 	return v
 }
+
+// active reports whether alerts are sent to d.
+func (d *destination) active() bool { return d.State == "" || d.State == Active }
 
 // openStore opens the store persisted at path, which needn't exist yet.
 // With an empty path, the store is kept only in memory.
@@ -118,8 +146,9 @@ func (s *store) view(scope string) (Settings, []Destination, []Delivery) {
 	return d.currentSettings(scope), dests, deliveries
 }
 
-// destinations returns copies of scope's destinations, with their URLs
-// and secrets, for delivery.
+// destinations returns copies of scope's active destinations, with their
+// URLs and secrets, for delivery: not email addresses waiting to be
+// confirmed, nor browsers whose subscriptions have ended.
 func (s *store) destinations(scope string) []destination {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -127,11 +156,196 @@ func (s *store) destinations(scope string) []destination {
 	if d == nil {
 		return nil
 	}
-	out := make([]destination, len(d.destinations))
-	for i, dest := range d.destinations {
-		out[i] = *dest
+	var out []destination
+	for _, dest := range d.destinations {
+		if dest.active() {
+			out = append(out, *dest)
+		}
 	}
 	return out
+}
+
+// find returns scope's destination of type t at url, if there is one.
+// s.mu must be held.
+func (s *store) find(scope string, t DestinationType, url string) *destination {
+	d := s.scopes[scope]
+	if d == nil {
+		return nil
+	}
+	i := slices.IndexFunc(d.destinations, func(dest *destination) bool { return dest.Type == t && dest.url == url })
+	if i < 0 {
+		return nil
+	}
+	return d.destinations[i]
+}
+
+// prepareEmail checks that scope may add the email address at url,
+// returning the destination already waiting for it to be confirmed, if
+// there is one, to send a new code to.
+func (s *store) prepareEmail(scope, url string) (*Destination, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if dest := s.find(scope, Email, url); dest != nil {
+		if dest.confirm == nil {
+			return nil, fmt.Errorf("%w: %s already gets alerts", ErrInvalid, strings.TrimPrefix(url, "mailto:"))
+		}
+		v := dest.view()
+		return &v, nil
+	}
+	return nil, s.checkLimits(scope, Email)
+}
+
+// checkLimits reports whether scope may add a destination of type t.
+// s.mu must be held.
+func (s *store) checkLimits(scope string, t DestinationType) error {
+	d := s.scopes[scope]
+	if d == nil {
+		return nil
+	}
+	if len(d.destinations) >= MaxDestinations {
+		return fmt.Errorf("%w: at most %d destinations; remove one first", ErrLimit, MaxDestinations)
+	}
+	if t == Email {
+		n := 0
+		for _, dest := range d.destinations {
+			if dest.Type == Email {
+				n++
+			}
+		}
+		if n >= MaxEmailDestinations {
+			return fmt.Errorf("%w: at most %d email addresses, confirmed or not; remove one first", ErrLimit, MaxEmailDestinations)
+		}
+	}
+	return nil
+}
+
+// setConfirmation replaces the pending confirmation of scope's email
+// destination id.
+func (s *store) setConfirmation(scope, id string, c *confirmation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := s.scopes[scope]
+	if d == nil {
+		return fmt.Errorf("destination %q: %w", id, ErrNotFound)
+	}
+	i := slices.IndexFunc(d.destinations, func(dest *destination) bool { return dest.ID == id })
+	if i < 0 || d.destinations[i].confirm == nil {
+		return fmt.Errorf("destination %q: %w", id, ErrNotFound)
+	}
+	dest := d.destinations[i]
+	before := dest.confirm
+	dest.confirm = c
+	if err := s.save(); err != nil {
+		dest.confirm = before
+		return err
+	}
+	return nil
+}
+
+// confirm confirms the pending email destination, in a scope allows
+// accepts, whose code hashes to hash, at now, giving it unsubscribe as its
+// unsubscribe token. Each code works once: a code that was used, or never
+// sent, is not found; one past its time has expired.
+func (s *store) confirm(allows func(scope string) bool, hash string, now time.Time, unsubscribe string) (string, Destination, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var (
+		found      *destination
+		foundScope string
+	)
+	// Compare with every pending code, in constant time, so how long it
+	// takes says nothing about how close a guess was.
+	for _, scope := range slices.Sorted(maps.Keys(s.scopes)) {
+		if !allows(scope) {
+			continue
+		}
+		for _, dest := range s.scopes[scope].destinations {
+			if dest.confirm != nil && subtle.ConstantTimeCompare([]byte(dest.confirm.hash), []byte(hash)) == 1 {
+				found, foundScope = dest, scope
+			}
+		}
+	}
+	switch {
+	case found == nil:
+		return "", Destination{}, fmt.Errorf("%w: no email address is waiting for that code; it may have been used already", ErrNotFound)
+	case !now.Before(found.confirm.expires):
+		return "", Destination{}, fmt.Errorf("%w: that code has expired; add the address again for a new one", ErrExpired)
+	}
+	before := found.Destination
+	pending := found.confirm
+	found.confirm, found.State, found.unsubscribe = nil, Active, unsubscribe
+	if err := s.save(); err != nil {
+		found.Destination, found.confirm, found.unsubscribe = before, pending, ""
+		return "", Destination{}, err
+	}
+	return foundScope, found.view(), nil
+}
+
+// unsubscribe removes the email destination whose unsubscribe token is
+// token, returning its scope and what it was.
+func (s *store) unsubscribe(token string) (string, Destination, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, scope := range slices.Sorted(maps.Keys(s.scopes)) {
+		d := s.scopes[scope]
+		for i, dest := range d.destinations {
+			if dest.unsubscribe == "" || subtle.ConstantTimeCompare([]byte(dest.unsubscribe), []byte(token)) != 1 {
+				continue
+			}
+			before := d.destinations
+			d.destinations = slices.Delete(slices.Clone(d.destinations), i, i+1)
+			if err := s.save(); err != nil {
+				d.destinations = before
+				return "", Destination{}, err
+			}
+			return scope, dest.view(), nil
+		}
+	}
+	return "", Destination{}, fmt.Errorf("%w: that unsubscribe link isn't for any address; it may have been used already", ErrNotFound)
+}
+
+// upsertPush adds a push destination to scope, or, if the browser is
+// already subscribed, renews its keys, returning the destination.
+func (s *store) upsertPush(scope string, dest *destination) (Destination, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if old := s.find(scope, Push, dest.url); old != nil {
+		before := *old
+		old.p256dh, old.auth, old.State, old.LastError = dest.p256dh, dest.auth, Active, ""
+		if dest.Name != "" {
+			old.Name = dest.Name
+		}
+		if err := s.save(); err != nil {
+			*old = before
+			return Destination{}, err
+		}
+		return old.view(), nil
+	}
+	if err := s.checkLimits(scope, Push); err != nil {
+		return Destination{}, err
+	}
+	d := s.scope(scope)
+	d.destinations = append(d.destinations, dest)
+	if err := s.save(); err != nil {
+		d.destinations = d.destinations[:len(d.destinations)-1]
+		return Destination{}, err
+	}
+	return dest.view(), nil
+}
+
+// markGone records that scope's push destination id's subscription has
+// ended, so nothing more is sent to it.
+func (s *store) markGone(scope, id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := s.scopes[scope]
+	if d == nil {
+		return
+	}
+	if i := slices.IndexFunc(d.destinations, func(dest *destination) bool { return dest.ID == id }); i >= 0 {
+		d.destinations[i].State = Gone
+		s.dirty = true
+	}
 }
 
 // setSettings replaces scope's settings.
@@ -152,10 +366,10 @@ func (s *store) setSettings(scope string, settings Settings) error {
 func (s *store) addDestination(scope string, dest *destination) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	d := s.scope(scope)
-	if len(d.destinations) >= MaxDestinations {
-		return fmt.Errorf("%w: at most %d destinations; remove one first", ErrLimit, MaxDestinations)
+	if err := s.checkLimits(scope, dest.Type); err != nil {
+		return err
 	}
+	d := s.scope(scope)
 	d.destinations = append(d.destinations, dest)
 	if err := s.save(); err != nil {
 		d.destinations = d.destinations[:len(d.destinations)-1]
@@ -297,6 +511,43 @@ type fileDestination struct {
 	LastSuccess time.Time       `json:"last_success,omitzero"`
 	LastFailure time.Time       `json:"last_failure,omitzero"`
 	LastError   string          `json:"last_error,omitempty"`
+
+	// State is "pending" or "gone", or empty for active.
+	State DestinationState `json:"state,omitempty"`
+
+	// P256DH and Auth are a push subscription's keys.
+	P256DH string `json:"p256dh,omitempty"`
+	Auth   string `json:"auth,omitempty"`
+
+	// Unsubscribe is an email address's unsubscribe token, and
+	// ConfirmHash and ConfirmExpires its pending confirmation.
+	Unsubscribe    string    `json:"unsubscribe,omitempty"`
+	ConfirmHash    string    `json:"confirm_hash,omitempty"`
+	ConfirmExpires time.Time `json:"confirm_expires,omitzero"`
+}
+
+// valid reports whether fd has what its type needs, and nothing it
+// doesn't: a webhook its secret, a push subscription its keys, and an
+// email address either a pending confirmation or an active state.
+func (fd fileDestination) valid() bool {
+	pending := fd.State == Pending
+	switch {
+	case fd.State != "" && fd.State != Active && fd.State != Pending && fd.State != Gone:
+		return false
+	case (fd.Type == Webhook) != strings.HasPrefix(fd.Secret, SecretPrefix):
+		return false
+	case (fd.Type == Push) != (fd.P256DH != "" && fd.Auth != ""):
+		return false
+	case pending != (fd.ConfirmHash != ""), pending && fd.Type != Email, fd.State == Gone && fd.Type != Push:
+		return false
+	case fd.Unsubscribe != "" && (fd.Type != Email || pending):
+		return false
+	}
+	if fd.Type == Push {
+		_, _, err := (webpush.Subscription{Endpoint: fd.URL, Keys: webpush.SubscriptionKeys{P256DH: fd.P256DH, Auth: fd.Auth}}).Decode()
+		return err == nil
+	}
+	return true
 }
 
 type fileDevices struct {
@@ -340,19 +591,26 @@ func (s *store) load() error {
 			return fmt.Errorf("alerts: %s: scope %q has too many destinations", s.path, sc.Scope)
 		}
 		for _, fd := range sc.Destinations {
-			if fd.ID == "" || !fd.Type.Valid() || fd.Type == Webhook && !strings.HasPrefix(fd.Secret, SecretPrefix) ||
+			if fd.ID == "" || !fd.Type.Valid() || !fd.valid() ||
 				slices.ContainsFunc(d.destinations, func(dest *destination) bool { return dest.ID == fd.ID }) {
 				return fmt.Errorf("alerts: %s: scope %q: invalid destination %q", s.path, sc.Scope, fd.ID)
 			}
-			if _, err := checkURL(sc.Scope, fd.Type, fd.URL); err != nil {
+			if err := checkDestination(sc.Scope, fd.Type, fd.URL); err != nil {
 				return fmt.Errorf("alerts: %s: scope %q: destination %q: %w", s.path, sc.Scope, fd.ID, err)
 			}
-			d.destinations = append(d.destinations, &destination{
+			dest := &destination{
 				Destination: Destination{ID: fd.ID, Type: fd.Type, Name: fd.Name, Created: fd.Created, CreatedBy: fd.CreatedBy,
-					LastSuccess: fd.LastSuccess, LastFailure: fd.LastFailure, LastError: fd.LastError},
-				url:    fd.URL,
-				secret: fd.Secret,
-			})
+					LastSuccess: fd.LastSuccess, LastFailure: fd.LastFailure, LastError: fd.LastError, State: fd.State},
+				url:         fd.URL,
+				secret:      fd.Secret,
+				p256dh:      fd.P256DH,
+				auth:        fd.Auth,
+				unsubscribe: fd.Unsubscribe,
+			}
+			if fd.ConfirmHash != "" {
+				dest.confirm = &confirmation{hash: fd.ConfirmHash, expires: fd.ConfirmExpires}
+			}
+			d.destinations = append(d.destinations, dest)
 		}
 		if sc.Devices != nil {
 			d.devicesSince = sc.Devices.Since
@@ -381,11 +639,16 @@ func (s *store) save() error {
 		d := s.scopes[scope]
 		sc := fileScope{Scope: scope, Settings: d.settings}
 		for _, dest := range d.destinations {
-			sc.Destinations = append(sc.Destinations, fileDestination{
+			fd := fileDestination{
 				ID: dest.ID, Type: dest.Type, URL: dest.url, Secret: dest.secret, Name: dest.Name,
 				Created: dest.Created, CreatedBy: dest.CreatedBy,
 				LastSuccess: dest.LastSuccess, LastFailure: dest.LastFailure, LastError: dest.LastError,
-			})
+				State: dest.State, P256DH: dest.p256dh, Auth: dest.auth, Unsubscribe: dest.unsubscribe,
+			}
+			if dest.confirm != nil {
+				fd.ConfirmHash, fd.ConfirmExpires = dest.confirm.hash, dest.confirm.expires
+			}
+			sc.Destinations = append(sc.Destinations, fd)
 		}
 		if !d.devicesSince.IsZero() {
 			sc.Devices = &fileDevices{Since: d.devicesSince, Seen: d.devices}

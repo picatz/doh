@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/doh/internal/alerts"
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
@@ -532,6 +533,16 @@ func (c *Client) RemoveAlertDestination(ctx context.Context, tenant, id string) 
 func (c *Client) TestAlerts(ctx context.Context, tenant string) (*api.AlertTest, error) {
 	var out api.AlertTest
 	if _, err := c.call(ctx, http.MethodPost, "/alerts/test", tenantQuery(tenant), nil, "", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ConfirmAlerts confirms a pending email destination with the code that
+// was sent to it.
+func (c *Client) ConfirmAlerts(ctx context.Context, tenant, code string) (*alerts.Destination, error) {
+	var out alerts.Destination
+	if _, err := c.call(ctx, http.MethodPost, "/alerts/confirm", tenantQuery(tenant), api.AlertConfirmRequest{Code: code}, "application/json", nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

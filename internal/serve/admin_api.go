@@ -83,6 +83,8 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("POST "+p+"/alerts/destinations", alertsAccess(s.apiAddAlertDestination))
 	mux.HandleFunc("DELETE "+p+"/alerts/destinations/{id}", alertsAccess(s.apiDeleteAlertDestination))
 	mux.HandleFunc("POST "+p+"/alerts/test", alertsAccess(s.apiTestAlerts))
+	mux.HandleFunc("POST "+p+"/alerts/confirm", alertsAccess(s.apiConfirmAlerts))
+	mux.HandleFunc("GET "+p+"/alerts/push-key", alertsAccess(s.apiPushKey))
 	mux.HandleFunc("GET "+p+"/profiles/{id}/setup", s.apiSetup)
 	mux.HandleFunc("POST "+p+"/profiles/{id}/setup-links", s.apiSetupLink)
 	mux.HandleFunc("GET "+p+"/profiles/{id}/"+mobileConfigFile, s.apiMobileConfig)

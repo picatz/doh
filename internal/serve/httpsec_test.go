@@ -25,6 +25,9 @@ func TestAdmin_SecurityHeaders(t *testing.T) {
 	}{
 		{"/", true},
 		{"/ui/app.js", true},
+		{"/sw.js", true},
+		{"/ui/manifest.webmanifest", true},
+		{"/alerts/confirm/ABCDEFGHJK", true},
 		{"/api/v1/status", false},
 		{"/api/v1/no-such-thing", false},
 		{"/healthz", false},
@@ -45,7 +48,7 @@ func TestAdmin_SecurityHeaders(t *testing.T) {
 		}
 		csp := h.Get("Content-Security-Policy")
 		switch {
-		case tt.page && (!strings.Contains(csp, httpsec.TrustedTypes) || !strings.Contains(csp, "frame-ancestors 'none'")):
+		case tt.page && (!strings.Contains(csp, "require-trusted-types-for 'script'") || !strings.Contains(csp, "frame-ancestors 'none'")):
 			t.Errorf("%s: CSP = %q, want the UI's, with Trusted Types", tt.path, csp)
 		case !tt.page && csp != httpsec.DataCSP:
 			t.Errorf("%s: CSP = %q, want %q", tt.path, csp, httpsec.DataCSP)

@@ -15,8 +15,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/picatz/doh/internal/querylog"
+	"github.com/picatz/doh/internal/ratelimit"
 )
 
 // ErrNoDestinations reports a test of a scope with nowhere to send it.
@@ -83,6 +85,21 @@ type Options struct {
 	// QueueSize is how many query log entries may wait to be examined
 	// before more are dropped. It defaults to [DefaultQueueSize].
 	QueueSize int
+
+	// Mail, if set, is how alerts are sent by email. Without it, email
+	// addresses can't be added.
+	Mail *MailConfig
+
+	// PushKeyPath is the file the server's VAPID key, which signs Web
+	// Push messages, is kept in, generated the first time it's needed.
+	// If empty, the key is kept in memory, and browsers must subscribe
+	// again after a restart.
+	PushKeyPath string
+
+	// PushSubject is how push services may reach the server's operator,
+	// as a mailto: or https: URL, sent in every VAPID token. It may be
+	// empty, though some push services prefer one.
+	PushSubject string
 }
 
 // Engine turns query log entries and server events into alerts, and
@@ -102,6 +119,16 @@ type Engine struct {
 	loopbackClient               *http.Client
 	send                         func(ctx context.Context, scope string, d destination, a Alert) error
 	backoff                      []time.Duration
+
+	mailer      *mailer
+	push        *pushKeys
+	pushSubject string
+
+	// Rate limits on confirmation emails, by scope and by address, on
+	// wrong confirmation codes, by scope, and on alert emails, by
+	// address.
+	confirmScopeRate, confirmAddressRate *ratelimit.Limiter
+	confirmTries, emailRate              *ratelimit.Limiter
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -179,6 +206,15 @@ func newEngine(opts Options) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	var m *mailer
+	if opts.Mail != nil {
+		if m, err = newMailer(*opts.Mail); err != nil {
+			return nil, err
+		}
+	}
+	if opts.PushSubject != "" && !strings.HasPrefix(opts.PushSubject, "mailto:") && !strings.HasPrefix(opts.PushSubject, "https://") {
+		return nil, errors.New("alerts: the push subject is a mailto: or https: URL")
+	}
 	lookup := lookupFunc(defaultLookup)
 	if opts.LookupNetIP != nil {
 		lookup = opts.LookupNetIP
@@ -198,6 +234,15 @@ func newEngine(opts Options) (*Engine, error) {
 		operatorClient: newClient(anyAddr, lookup, true),
 		loopbackClient: newClient(loopbackOnly, lookup, false),
 		backoff:        defaultBackoff,
+
+		mailer:      m,
+		push:        &pushKeys{path: opts.PushKeyPath},
+		pushSubject: opts.PushSubject,
+
+		confirmScopeRate:   perHour(ConfirmEmailsPerScope),
+		confirmAddressRate: &ratelimit.Limiter{Rate: ConfirmEmailsPerAddress / (24 * time.Hour).Seconds(), Burst: ConfirmEmailsPerAddress},
+		confirmTries:       perHour(ConfirmAttemptsPerScope),
+		emailRate:          perHour(EmailsPerAddress),
 
 		ctx:    ctx,
 		cancel: cancel,
@@ -272,26 +317,52 @@ func (e *Engine) SetSettings(scope string, s Settings) (Settings, error) {
 	return s.clone(), nil
 }
 
-// maxNameLength bounds destinations' names.
+// perHour returns a limiter allowing n events an hour per key, all at
+// once if need be.
+func perHour(n int) *ratelimit.Limiter {
+	return &ratelimit.Limiter{Rate: float64(n) / time.Hour.Seconds(), Burst: n}
+}
+
+// maxNameLength bounds destinations' names, in characters.
 const maxNameLength = 64
+
+// AvailableTypes returns the destination types scopes can add: email only
+// if the server has a mail server.
+func (e *Engine) AvailableTypes() []DestinationType {
+	return slices.DeleteFunc(slices.Clone(DestinationTypes), func(t DestinationType) bool { return t == Email && e.mailer == nil })
+}
 
 // AddDestination adds a destination to scope, returning it and, for a
 // webhook, its signing secret, which is shown only this once.
-func (e *Engine) AddDestination(scope string, n NewDestination) (Destination, string, error) {
+//
+// An email address starts pending: doh sends it a code, and nothing else
+// until the code is given to [Engine.Confirm] or the page it links to.
+// Adding a pending address again sends a new code. A push destination is
+// a browser's subscription; subscribing the same browser again renews
+// it.
+func (e *Engine) AddDestination(ctx context.Context, scope string, n NewDestination) (Destination, string, error) {
 	if !n.Type.Valid() {
-		return Destination{}, "", fmt.Errorf("%w: a destination's type is %s or %s", ErrInvalid, Webhook, Ntfy)
+		return Destination{}, "", fmt.Errorf("%w: a destination's type is one of %s", ErrInvalid, typeList(DestinationTypes))
+	}
+	name := strings.TrimSpace(n.Name)
+	if utf8.RuneCountInString(name) > maxNameLength || !utf8.ValidString(name) || strings.ContainsFunc(name, func(r rune) bool { return r < ' ' || r == 0x7f }) {
+		return Destination{}, "", fmt.Errorf("%w: name a destination with at most %d printable characters", ErrInvalid, maxNameLength)
+	}
+	switch n.Type {
+	case Email:
+		d, err := e.addEmail(ctx, scope, n, name)
+		return d, "", err
+	case Push:
+		d, err := e.addPush(scope, n, name)
+		return d, "", err
 	}
 	u, err := checkURL(scope, n.Type, strings.TrimSpace(n.URL))
 	if err != nil {
 		return Destination{}, "", err
 	}
-	name := strings.TrimSpace(n.Name)
-	if len(name) > maxNameLength || strings.ContainsFunc(name, func(r rune) bool { return r < ' ' || r == 0x7f }) {
-		return Destination{}, "", fmt.Errorf("%w: name a destination with at most %d printable characters", ErrInvalid, maxNameLength)
-	}
 
 	d := &destination{
-		Destination: Destination{ID: newID(""), Type: n.Type, Name: name, Created: time.Now().UTC(), CreatedBy: n.CreatedBy},
+		Destination: Destination{ID: newID(""), Type: n.Type, Name: name, Created: time.Now().UTC(), CreatedBy: n.CreatedBy, State: Active},
 		url:         u.String(),
 	}
 	if n.Type == Webhook {
@@ -665,8 +736,17 @@ func (e *Engine) deliver(j job) {
 		if err == nil || isPermanent(err) || attempts > len(e.backoff) {
 			break
 		}
+		wait := e.backoff[attempts-1]
+		var ra retryAfterError
+		if errors.As(err, &ra) {
+			if ra.after > maxRetryAfter {
+				err = fmt.Errorf("%w, and asked doh to wait %s before trying again", err, ra.after)
+				break
+			}
+			wait = max(wait, ra.after)
+		}
 		select {
-		case <-time.After(e.backoff[attempts-1]):
+		case <-time.After(wait):
 		case <-e.ctx.Done():
 			return // closing: abandoned
 		}

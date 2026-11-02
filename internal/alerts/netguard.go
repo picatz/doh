@@ -240,6 +240,34 @@ func checkURL(scope string, t DestinationType, raw string) (*url.URL, error) {
 	return u, nil
 }
 
+// checkDestination checks a destination of type t, as it's kept: an
+// email address as mailto: and the address, a push endpoint on a known
+// push service, or a URL [checkURL] allows.
+func checkDestination(scope string, t DestinationType, raw string) error {
+	switch t {
+	case Email:
+		addr, err := parseAddress(raw)
+		if err != nil {
+			return err
+		}
+		if raw != "mailto:"+addr {
+			return fmt.Errorf("%w: an email destination is kept as mailto:address", ErrInvalid)
+		}
+		return nil
+	case Push:
+		if len(raw) > maxURLLength {
+			return fmt.Errorf("%w: push endpoint too long", ErrInvalid)
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("%w: invalid push endpoint", ErrInvalid)
+		}
+		return checkPushEndpoint(u)
+	}
+	_, err := checkURL(scope, t, raw)
+	return err
+}
+
 // redactURL returns u with any password replaced, for showing.
 func redactURL(raw string) string {
 	u, err := url.Parse(raw)

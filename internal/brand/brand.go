@@ -24,6 +24,12 @@ var (
 // Donut draws the mark centered at (cx, cy), r units from its center to
 // its farthest edge: the icon's dough and glaze rings, with sprinkles.
 func Donut(d *qr.Drawing, cx, cy, r float64) {
+	donut(d, cx, cy, r, Dough, Glaze, &Sprinkle)
+}
+
+// donut draws the mark in the colors given, with sprinkles if sprinkle
+// isn't nil.
+func donut(d *qr.Drawing, cx, cy, r float64, dough, glaze color.RGBA, sprinkle *color.RGBA) {
 	// The icon is drawn on a 32-unit grid: dough a ring of radius 10 and
 	// width 9 around (16, 16.8), glaze one of width 8 around (16, 15.4).
 	// Its extent is 1.4 to 31.3 down and 1.5 to 30.5 across, so its
@@ -32,9 +38,12 @@ func Donut(d *qr.Drawing, cx, cy, r float64) {
 	at := func(x, y float64) (float64, float64) { return cx + (x-16)*s, cy + (y-16.35)*s }
 
 	x, y := at(16, 16.8)
-	d.Ring(x, y, 5.5*s, 14.5*s, Dough)
+	d.Ring(x, y, 5.5*s, 14.5*s, dough)
 	gx, gy := at(16, 15.4)
-	d.Ring(gx, gy, 6*s, 14*s, Glaze)
+	d.Ring(gx, gy, 6*s, 14*s, glaze)
+	if sprinkle == nil {
+		return
+	}
 
 	// Sprinkles around the glaze, each at its own tilt, like the ones the
 	// Overview's ring scatters for blocked queries.
@@ -43,7 +52,7 @@ func Donut(d *qr.Drawing, cx, cy, r float64) {
 		mx, my := gx+math.Cos(a)*sp.radius*s, gy+math.Sin(a)*sp.radius*s
 		t := (sp.angle + sp.tilt) * math.Pi / 180
 		hx, hy := math.Cos(t)*1.6*s, math.Sin(t)*1.6*s
-		d.Capsule(mx-hx, my-hy, mx+hx, my+hy, 0.62*s, Sprinkle)
+		d.Capsule(mx-hx, my-hy, mx+hx, my+hy, 0.62*s, *sprinkle)
 	}
 }
 

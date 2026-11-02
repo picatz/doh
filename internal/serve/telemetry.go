@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/picatz/doh/internal/alerts"
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
@@ -170,6 +171,11 @@ func (s *Server) adminHandler() http.Handler {
 	mux.Handle(signin.Prefix+"/", s.signinHandler())
 	mux.Handle("GET /{$}", s.canonicalHost(webui.Handler()))
 	mux.Handle("GET "+webui.AssetPrefix, webui.Handler())
+	mux.Handle("GET "+webui.ServiceWorkerPath, webui.Handler())
+	mux.HandleFunc("GET "+alerts.ConfirmPath+"{code}", s.alertConfirmPage)
+	mux.HandleFunc("POST "+alerts.ConfirmPath+"{code}", s.alertConfirmPage)
+	mux.HandleFunc("GET "+alerts.UnsubscribePath+"{token}", s.alertUnsubscribePage)
+	mux.HandleFunc("POST "+alerts.UnsubscribePath+"{token}", s.alertUnsubscribePage)
 
 	mux.HandleFunc("GET "+MetricsPath, s.serveMetrics)
 	// Variables, profiles, and traces describe the whole process, so only

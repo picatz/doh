@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -50,14 +51,20 @@ func (e *Engine) client(scope string, u *url.URL) *http.Client {
 // Webhooks get the alert as JSON, signed as Standard Webhooks
 // (https://www.standardwebhooks.com/) describes; ntfy topics get its body
 // as plain text, with its title, tags, priority, and link in headers
-// (https://docs.ntfy.sh/publish/). Nothing about the alert is ever added
-// to the URL.
+// (https://docs.ntfy.sh/publish/); browsers get it encrypted for them as
+// a Web Push message (RFC 8291), signed with the server's VAPID key (RFC
+// 8292); and email addresses get it as an email. Nothing about the alert
+// is ever added to the URL.
 func (e *Engine) post(ctx context.Context, scope string, d destination, a Alert) error {
+	if d.Type == Email {
+		return e.sendEmail(ctx, d, a)
+	}
 	u, err := url.Parse(d.url)
 	if err != nil {
 		return permanentError{err}
 	}
 
+	var req *http.Request
 	header := http.Header{"User-Agent": {userAgent}}
 	var body []byte
 	switch d.Type {
@@ -85,15 +92,24 @@ func (e *Engine) post(ctx context.Context, scope string, d destination, a Alert)
 		if a.Details.Link != "" {
 			header.Set("Click", a.Details.Link)
 		}
+	case Push:
+		// Checked again, in case the file was edited by hand.
+		if err := checkPushEndpoint(u); err != nil {
+			return permanentError{err}
+		}
+		if req, err = e.pushRequest(ctx, d, a); err != nil {
+			return err
+		}
 	default:
 		return permanentError{fmt.Errorf("unknown destination type %q", d.Type)}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
-	if err != nil {
-		return permanentError{err}
+	if req == nil {
+		if req, err = http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body)); err != nil {
+			return permanentError{err}
+		}
+		req.Header = header
 	}
-	req.Header = header
 
 	resp, err := e.client(scope, u).Do(req)
 	if err != nil {
@@ -115,11 +131,41 @@ func (e *Engine) post(ctx context.Context, scope string, d destination, a Alert)
 		return nil
 	case code >= 300 && code < 400:
 		return permanentError{fmt.Errorf("the destination redirected (%s); doh doesn't follow redirects, so use the URL it redirects to", resp.Status)}
+	case d.Type == Push && (code == http.StatusNotFound || code == http.StatusGone):
+		// The browser unsubscribed, or its subscription expired (RFC 8030,
+		// Section 7.3): nothing more is sent to it.
+		e.store.markGone(scope, d.ID)
+		return permanentError{fmt.Errorf("%w (%s)", errGone, resp.Status)}
 	case code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500:
-		return fmt.Errorf("the destination answered %s", resp.Status)
+		err := fmt.Errorf("the destination answered %s", resp.Status)
+		if after := retryAfter(resp.Header.Get("Retry-After"), time.Now()); after > 0 {
+			return retryAfterError{err: err, after: after}
+		}
+		return err
 	default:
 		return permanentError{fmt.Errorf("the destination answered %s", resp.Status)}
 	}
+}
+
+// sendEmail sends a to the email address d, unless it has had
+// [EmailsPerAddress] this hour.
+func (e *Engine) sendEmail(ctx context.Context, d destination, a Alert) error {
+	if e.mailer == nil {
+		return permanentError{fmt.Errorf("%w: email isn't set up on this server", ErrUnavailable)}
+	}
+	to := strings.TrimPrefix(d.url, "mailto:")
+	if !e.emailRate.Allow(strings.ToLower(to)) {
+		return permanentError{fmt.Errorf("%w: more than %d emails to this address this hour, so this one wasn't sent", ErrRateLimited, EmailsPerAddress)}
+	}
+	unsubscribe := ""
+	if e.words.origin != "" && d.unsubscribe != "" {
+		unsubscribe = strings.TrimSuffix(e.words.origin, "/") + UnsubscribePath + d.unsubscribe
+	}
+	msg, err := e.alertEmail(to, unsubscribe, a).bytes()
+	if err != nil {
+		return permanentError{err}
+	}
+	return e.mailer.send(ctx, to, msg)
 }
 
 // ntfyTags are an alert's ntfy tags, which ntfy shows as emoji
