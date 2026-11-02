@@ -23,12 +23,14 @@ if (!chrome || !signInURL) {
   process.exit(2);
 }
 
-// Where to look: every view, and every tab of a profile.
+// Where to look: every view, every section of a profile and of Settings,
+// the setup guide, and a link to where something used to be.
 const ROUTES = [
-  "#/overview", "#/profiles", "#/profiles/kids",
-  "#/profiles/kids?tab=protection", "#/profiles/kids?tab=apps", "#/profiles/kids?tab=lists",
-  "#/profiles/kids?tab=devices", "#/profiles/kids?tab=settings",
-  "#/logs", "#/explain", "#/security", "#/tenants",
+  "#/overview", "#/setup", "#/profiles", "#/profiles/kids",
+  ...["connect", "protection", "apps", "rules", "devices", "settings"].map((tab) => `#/profiles/kids?tab=${tab}`),
+  "#/logs", "#/explain", "#/settings",
+  ...["account", "people", "alerts", "api", "tenants", "server"].map((s) => `#/settings/${s}`),
+  "#/security",
 ];
 
 // How: the smallest phone people still use, a common one in dark mode, a

@@ -1,35 +1,46 @@
-import { PRESETS, matchPreset, presetPatch, undoPatch } from "./presets.js";
 import { api, report } from "./api.js";
 import { appsSection, schedulesSection } from "./apps.js";
 import { connectSection } from "./connect.js";
-import { $, h, count, icon, clear, edit, toast, fmtNum, confirmDialog } from "./dom.js";
+import { $, badge, clear, confirmDialog, count, edit, emptyState, fmtNum, h, icon, toast } from "./dom.js";
+import { matchPreset, presetPatch, PRESETS, undoPatch } from "./presets.js";
 import { go, setRoute } from "./router.js";
+import { PROFILE_SECTIONS, routeHash } from "./routes.js";
 import { fillProfileSelects } from "./session.js";
-import { state, isOperator, tenantOf, tenantName, profile, replaceProfile } from "./state.js";
+import { isOperator, profile, replaceProfile, state, tenantName, tenantOf } from "./state.js";
 
+// renderProfiles shows the profiles as cards, or one profile's page when
+// one is chosen: a list, then its detail, at every width.
 export function renderProfiles() {
+  const p = profile();
+  $("profiles-index").hidden = !!p;
+  if (p) { renderEditor(); return; }
+  $("profile-editor").hidden = true;
   const cards = clear($("profile-cards"));
   for (const p of state.profiles) {
     const name = p.name || p.id;
-    const initial = (name.match(/\p{L}|\p{N}/u)?.[0] || "?").toUpperCase();
     cards.append(
-      h("button", { type: "button", class: "card profile-card", "aria-pressed": String(p.id === state.selected), onClick: () => selectProfile(p.id) },
-        h("span", { class: "profile-initial", "aria-hidden": "true", text: initial }),
+      h("a", { class: "card profile-card", href: routeHash("profiles", p.id) },
+        badge(name),
         h("span", { class: "profile-card-body" },
           h("span", { class: "profile-card-name" }, name, isOperator() && p.tenant ? h("span", { class: "badge tenant", text: tenantName(p.tenant) }) : null),
           h("span", { class: "profile-meta", text: profileSummary(p) }),
           p.name ? h("span", { class: "profile-meta mono", text: p.id }) : null,
         ),
+        icon("chevron-right", "chevron"),
       ),
     );
   }
-  if (!state.profiles.length) cards.append(h("p", { class: "muted", text: "No profiles: every client is refused. Create a profile named \"default\" to serve everyone else." }));
-  renderEditor();
+  if (!state.profiles.length) {
+    cards.append(emptyState({
+      mood: "alert", title: "No profiles, so every device is refused.",
+      body: "Create one named default to protect everyone not in another profile.",
+      action: state.readOnly ? null : h("button", { type: "button", class: "primary", onClick: openCreate }, icon("plus"), "New profile"),
+    }));
+  }
 }
 
 export function selectProfile(id) {
-  go("profiles", state.selected === id ? "" : id);
-  if (state.selected) requestAnimationFrame(() => $("profile-editor").scrollIntoView({ behavior: "smooth", block: "start" }));
+  go("profiles", id);
 }
 
 // patchProfile applies a merge patch, re-rendering on success or failure.
@@ -53,8 +64,9 @@ export async function domainAction(id, kind, domain, remove) {
   return p;
 }
 
+// section is a titled part of a panel; with no title, only its hint.
 export function section(title, hint, ...body) {
-  return h("div", { class: "section" }, h("h3", { text: title }), hint && h("p", { class: "muted hint", text: hint }), ...body);
+  return h("div", { class: "section" }, title ? h("h4", { text: title }) : null, hint && h("p", { class: "muted hint", text: hint }), ...body);
 }
 
 // switchControl renders a switch that applies makePatch(on) immediately.
@@ -83,7 +95,7 @@ export function toggleRow(title, desc, checked, makePatch, extra) {
 export function chipEditor(values, placeholder, label, add, remove) {
   const chips = h("div", { class: "chips" });
   for (const v of values || []) {
-    chips.append(h("span", { class: "chip" }, v, edit(h("button", { type: "button", "aria-label": `Remove ${v}`, text: "✕", onClick: () => remove(v).catch(report) }))));
+    chips.append(h("span", { class: "chip" }, v, edit(h("button", { type: "button", class: "chip-remove", "aria-label": `Remove ${v}`, onClick: () => remove(v).catch(report) }, icon("x")))));
   }
   if (!values?.length) chips.append(h("span", { class: "muted", text: "None." }));
   const input = edit(h("input", { placeholder, "aria-label": label, spellcheck: "false" }));
@@ -96,21 +108,9 @@ export function chipEditor(values, placeholder, label, add, remove) {
   return h("div", {}, chips, form);
 }
 
-// ---------- connecting devices ----------
 
-// PROFILE_TABS are the profile editor's tabs: what each holds, and how
-// many things it has turned on, for its badge.
-export const PROFILE_TABS = [
-  { id: "connect", title: "Connect", icon: "arrow", count: () => 0 },
-  { id: "protection", title: "Protection", icon: "security", count: (p) => Object.values(p.security || {}).filter((v) => v === true).length + (p.lists || []).length + (p.safe_search ? 1 : 0) },
-  { id: "apps", title: "Apps & schedules", icon: "block", count: (p) => (p.services || []).length + (p.schedules || []).length },
-  { id: "rules", title: "Allow & deny", icon: "allow", count: (p) => (p.allow || []).length + (p.deny || []).length + (p.block_tlds || []).length },
-  { id: "devices", title: "Devices", icon: "system", count: (p) => (p.devices || []).length + (p.clients || []).length + (p.rewrites || []).length },
-  { id: "settings", title: "Settings", icon: "profiles", count: () => 0 },
-];
-
-// defaultTab is where a profile opens: how to connect a device, for one
-// no device uses yet, and otherwise its protection.
+// defaultTab is where a profile opens on a wide screen: how to connect a
+// device, for one no device uses yet, and otherwise its protection.
 export const defaultTab = (p) => (!(p.devices || []).length && !(p.clients || []).length && p.id !== "default" ? "connect" : "protection");
 
 // profileSummary says in a line what a profile does.
@@ -125,6 +125,28 @@ export function profileSummary(p) {
   ].filter(Boolean).join(" · ");
 }
 
+// sectionHint says in a few words what one of a profile's sections holds,
+// for the list of them.
+export function sectionHint(p, id) {
+  const n = (k) => (p[k] || []).length;
+  const join = (...parts) => parts.filter(Boolean).join(" · ");
+  switch (id) {
+    case "connect": return "A setup link and QR code, or settings by hand";
+    case "protection": {
+      const level = PRESETS.find((x) => x.id === matchPreset(p));
+      return join(level ? level.name : "Your own mix", count(n("lists"), "list"), p.safe_search ? "safe search" : "");
+    }
+    case "apps": return join(n("services") && `${count(n("services"), "app")} blocked`, n("schedules") && count(n("schedules"), "schedule")) || "Nothing blocked by name";
+    case "rules": return join(n("allow") && `${fmtNum(n("allow"))} allowed`, n("deny") && `${fmtNum(n("deny"))} denied`, n("block_tlds") && count(n("block_tlds"), "TLD")) || "No exceptions";
+    case "devices": return join(n("devices") && count(n("devices"), "device"), n("clients") && count(n("clients"), "network"), n("rewrites") && count(n("rewrites"), "rewrite")) || "None named yet";
+    case "settings": return join(p.block_response === "null" ? "Null answers" : "NXDOMAIN", p.logging?.disabled ? "not logged" : "logged");
+    default: return "";
+  }
+}
+
+// renderEditor shows one profile: its sections as a list, and the chosen
+// one beside it on a wide screen, or in its place, with a way back, on a
+// narrow one. Which applies is the editor's own width, not the window's.
 export function renderEditor() {
   const box = $("profile-editor");
   const p = profile();
@@ -132,52 +154,42 @@ export function renderEditor() {
   clear(box);
   if (!p) return;
 
-  const tab = PROFILE_TABS.some((t) => t.id === state.profileTab) ? state.profileTab : defaultTab(p);
-  const card = h("div", { class: "card editor" });
-  box.append(card);
+  const chosen = PROFILE_SECTIONS.some((t) => t.id === state.profileTab) ? state.profileTab : "";
+  const tab = chosen || defaultTab(p);
+  const name = p.name || p.id;
+  const meta = PROFILE_SECTIONS.find((t) => t.id === tab);
 
-  card.append(h("div", { class: "editor-head" },
+  const head = h("div", { class: "editor-head" },
+    h("a", { class: "back", href: routeHash("profiles") }, icon("chevron-left"), "Profiles"),
     h("div", { class: "editor-title" },
-      h("h2", { text: p.name || p.id }),
-      h("p", { class: "muted editor-sub" },
-        h("span", { class: "mono", text: p.id }),
-        isOperator() && p.tenant ? h("span", { class: "badge tenant", text: tenantName(p.tenant) }) : null,
-        h("span", { text: profileSummary(p) })),
-    ),
-  ));
+      badge(name),
+      h("div", {},
+        h("h2", { id: "profile-title", tabindex: -1, text: name }),
+        h("p", { class: "muted editor-sub" },
+          h("span", { class: "mono", text: p.id }),
+          isOperator() && p.tenant ? h("span", { class: "badge tenant", text: tenantName(p.tenant) }) : null,
+          h("span", { text: profileSummary(p) })))));
 
-  // The tabs: a tablist with arrow keys between tabs, each a URL.
-  const tabs = h("div", { class: "tabs-strip", role: "tablist", "aria-label": `${p.name || p.id} settings` });
-  for (const t of PROFILE_TABS) {
-    const n = t.count(p);
-    const b = h("button", {
-      type: "button", role: "tab", id: `tab-${t.id}`, "aria-selected": String(t.id === tab), "aria-controls": "profile-panel",
-      tabindex: t.id === tab ? 0 : -1, onClick: () => openTab(p.id, t.id),
-    }, icon(t.icon), h("span", { text: t.title }), n ? h("span", { class: "tab-count", text: fmtNum(n), "aria-label": `, ${n} on` }) : null);
-    tabs.append(b);
-  }
-  tabs.addEventListener("keydown", (e) => {
-    const all = [...tabs.querySelectorAll("[role=tab]")];
-    const i = all.indexOf(document.activeElement);
-    const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: all.length - 1 }[e.key];
-    if (next === undefined || i < 0) return;
-    e.preventDefault();
-    const t = all[(next + all.length) % all.length];
-    t.focus();
-    t.click();
-  });
-  const panel = h("div", { class: "tab-panel", id: "profile-panel", role: "tabpanel", "aria-labelledby": `tab-${tab}` });
-  card.append(tabs, panel);
-  panel.append(...{ connect: connectTab, protection: protectionTab, apps: appsTab, rules: rulesTab, devices: devicesTab, settings: settingsTab }[tab](p));
-  requestAnimationFrame(() => tabs.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+  const nav = h("nav", { class: "subnav profile-nav", "aria-label": `${name}: sections` },
+    PROFILE_SECTIONS.map((t) => h("a", {
+      class: "subnav-item", href: routeHash("profiles", p.id, { tab: t.id }),
+      "aria-current": t.id === tab ? "page" : null,
+    }, icon(t.icon), h("span", { class: "subnav-text" }, h("span", { text: t.title }), h("span", { class: "subnav-hint", text: sectionHint(p, t.id) })),
+    icon("chevron-right", "chevron"))));
+
+  const panel = h("section", { class: "profile-panel", "aria-labelledby": "panel-title" },
+    h("a", { class: "back panel-back", href: routeHash("profiles", p.id) }, icon("chevron-left"), name),
+    h("h3", { id: "panel-title", class: "panel-title", tabindex: -1, text: meta.title }),
+    ...{ connect: connectTab, protection: protectionTab, apps: appsTab, rules: rulesTab, devices: devicesTab, settings: settingsTab }[tab](p));
+
+  box.append(h("div", { class: "editor" }, head,
+    h("div", { class: "editor-body", "data-open": chosen ? "" : null }, nav, panel)));
 }
 
-// openTab shows one of a profile's tabs, in the URL too.
+// openTab shows one of a profile's sections, in the URL and history too,
+// so back returns to the list on a phone.
 export function openTab(id, tab) {
-  state.profileTab = tab;
-  setRoute("profiles", id, { tab });
-  renderEditor();
-  document.getElementById(`tab-${tab}`)?.focus({ preventScroll: true });
+  go("profiles", id, { tab });
 }
 
 export function connectTab(p) {
@@ -303,7 +315,7 @@ export function devicesTab(p) {
   const rwRows = h("div", { class: "rows" });
   for (const rw of rewrites) {
     rwRows.append(h("div", { class: "row-item" },
-      h("span", { class: "mono", text: rw.name }), h("span", { class: "muted", text: "→" }), h("span", { class: "mono", text: (rw.addrs || []).join(", ") }),
+      h("span", { class: "mono", text: rw.name }), icon("arrow", "muted"), h("span", { class: "mono", text: (rw.addrs || []).join(", ") }),
       edit(h("button", { type: "button", class: "small", text: "Remove", onClick: () => patchProfile(id, { rewrites: rewrites.filter((x) => x !== rw) }) })),
     ));
   }
@@ -354,7 +366,6 @@ export function settingsTab(p) {
   ];
 }
 
-// ---------- apps and schedules ----------
 
 // customListsSection edits a profile's lists by URL or path. A tenant's
 // profiles may only use presets, unless the operator allows HTTPS lists,
@@ -433,4 +444,3 @@ export async function createProfile(e) {
   }
 }
 
-// ---------- query log ----------

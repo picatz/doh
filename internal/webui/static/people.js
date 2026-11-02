@@ -1,15 +1,16 @@
-import { renderServiceAccounts } from "./accounts.js";
-import { renderAlerts } from "./alerts.js";
-import { APIError, api, report, authCall } from "./api.js";
-import { $, h, badge, clear, toast, fmtTime, confirmDialog } from "./dom.js";
-import { showSignIn, passkeyError, refreshAuth } from "./session.js";
-import { state, isAdmin, isOperator, tenantName } from "./state.js";
+import { api, APIError, authCall, report } from "./api.js";
+import { syncTheme } from "./commands.js";
+import { $, badge, clear, confirmDialog, copyButton, emptyState, fmtTime, h, icon, toast } from "./dom.js";
+import { enter } from "./motion.js";
+import { passkeyError, refreshAuth, showSignIn, signOut } from "./session.js";
+import { refreshSettings } from "./settings.js";
+import { isAdmin, isOperator, state, tenantName } from "./state.js";
+import { applyTheme, currentTheme, themeLabel } from "./theme.js";
 import { webauthnJSON } from "./webauthn.js";
 
-// renderSecurity lists who can use the admin API: people and their
-// passkeys, and service accounts and their keys. The operator sees them
-// grouped by tenant.
-export async function renderSecurity() {
+// renderAccountPanel shows who's signed in, adds passkeys, lists their
+// own, and chooses the theme.
+export async function renderAccountPanel() {
   const me = state.auth?.session;
   $("add-passkey-person").hidden = !!me?.person;
   $("ap-person").required = !me?.person;
@@ -19,11 +20,81 @@ export async function renderSecurity() {
   host.hidden = !rpID || location.hostname === rpID;
   host.textContent = host.hidden ? "" : `Passkeys for this server only work at ${rpID}. Open the UI there to add one.`;
 
-  const [peopleData, accountData] = await Promise.all([api("GET", "/people"), api("GET", "/service-accounts")]);
-  const people = peopleData?.people || [];
+  const role = [me?.role === "reader" ? "Reader" : "Admin", state.status?.tenant ? tenantName(state.status.tenant) : isOperator() ? "Operator" : ""].filter(Boolean).join(" · ");
+  clear($("account-who")).append(
+    h("span", { class: "avatar big", "aria-hidden": "true" }, me?.person ? (me.name.match(/\p{L}|\p{N}/u)?.[0] || "?").toUpperCase() : icon("key")),
+    h("div", {},
+      h("p", { class: "account-name", text: me?.person ? me.name : "Signed in with a link" }),
+      h("p", { class: "muted", text: me?.person ? role : `${role}. Add a passkey to be someone here.` })),
+    h("button", { type: "button", class: "ghost", onClick: () => signOut() }, icon("signout"), "Sign out"));
+
+  renderThemeChoice();
+  const box = clear($("my-passkeys"));
+  if (!me?.person) return;
+  const data = await api("GET", "/people");
+  const mine = (data?.people || []).find((p) => p.id === me.person);
+  if (mine?.passkeys?.length) {
+    box.append(h("div", { class: "section" }, h("h4", { text: "Your passkeys" }), passkeyList(mine, true)));
+  }
+}
+
+// renderThemeChoice offers the themes as a segmented choice.
+function renderThemeChoice() {
+  const box = clear($("theme-choice"));
+  for (const t of ["system", "light", "dark"]) {
+    const input = h("input", { type: "radio", name: "theme-choice", value: t, checked: currentTheme() === t });
+    input.addEventListener("change", () => { applyTheme(t); syncTheme(); });
+    box.append(h("label", {}, input, h("span", {}, icon({ system: "system", light: "sun", dark: "moon" }[t]), themeLabel(t))));
+  }
+}
+
+// renderPeoplePanel lists who can sign in, and invites more.
+export async function renderPeoplePanel() {
+  const me = state.auth?.session;
+  const invite = clear($("people-invite"));
+  if (isAdmin()) invite.append(inviteCard());
+  const data = await api("GET", "/people");
+  const people = data?.people || [];
+  state.hints.people = people.length;
   renderPeople(people, me);
-  renderServiceAccounts(accountData?.service_accounts || [], people);
-  await renderAlerts();
+}
+
+// inviteCard makes single-use sign-in links for someone else in the
+// household, as an admin or read-only.
+function inviteCard() {
+  const result = h("div", { "aria-live": "polite" });
+  const role = h("select", { "aria-label": "Their access" },
+    h("option", { value: "admin", text: "Admin: can change things" }),
+    h("option", { value: "reader", text: "Read-only: can look" }));
+  const button = h("button", { type: "button", class: "primary" }, icon("link"), "Make an invite link");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const link = await api("POST", "/signin-links", { body: { role: role.value } });
+      clear(result).append(enter(h("div", { class: "invite" },
+        h("div", { class: "link" }, h("output", { text: link.url }), copyButton(link.url, "invite link")),
+        h("p", { class: "field-note", text: `Send it to them privately. It works once, until ${fmtTime(link.expires)}.${link.passkey_required ? " They'll finish with a passkey they already have." : " Once in, they add a passkey of their own."}` }))));
+    } catch (err) {
+      report(err);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  return h("div", { class: "card invite-card" },
+    h("div", { class: "add-passkey-intro" },
+      h("span", { class: "id-badge", "aria-hidden": "true" }, icon("people")),
+      h("div", {}, h("h4", { text: "Invite someone" }),
+        h("p", { class: "muted", text: "A single-use link that signs them in. They add a passkey, and from then on it's theirs." }))),
+    h("div", { class: "invite-form" }, role, button), result);
+}
+
+// passkeyList lists a person's passkeys, each removable by admins.
+function passkeyList(person, mine) {
+  return h("ul", { class: "passkeys" }, person.passkeys.map((k) => h("li", { class: "passkey" },
+    h("div", { class: "passkey-name" }, k.name, k.synced ? h("span", { class: "badge synced", text: "Synced", title: "A multi-device passkey, backed up to the person's account" }) : null),
+    h("div", { class: "muted passkey-meta", text: `Added ${fmtTime(k.created, true)} · ${k.last_used ? "last used " + fmtTime(k.last_used, true) : "never used"}` }),
+    isAdmin() ? h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove passkey ${k.name}`, onClick: () => removePasskey(person, k, mine) }) : null,
+  )));
 }
 
 // byTenant groups items by their tenant, the operator's first, then
@@ -54,7 +125,12 @@ export function grouped(box, items, render) {
 export function renderPeople(people, me) {
   const box = clear($("people"));
   if (!people.length) {
-    box.append(h("p", { class: "muted empty", text: "No one has a passkey yet. Until someone does, sign-in links from doh ui sign in on their own." }));
+    box.append(emptyState({
+      title: "No one has a passkey yet.",
+      body: "Until someone adds one, sign-in links from doh ui sign in on their own. Add yours in Account & passkeys.",
+      action: h("a", { class: "button", href: "#/settings/account" }, icon("key"), "Add a passkey"),
+      compact: true,
+    }));
     return;
   }
   grouped(box, people, (person) => {
@@ -65,16 +141,10 @@ export function renderPeople(people, me) {
       h("span", { class: "badge", text: person.role }),
       isAdmin() ? h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove ${person.name}`, onClick: () => removePerson(person, mine) }) : null,
     );
-    const keys = h("ul", { class: "passkeys" }, person.passkeys.map((k) => h("li", { class: "passkey" },
-      h("div", { class: "passkey-name" }, k.name, k.synced ? h("span", { class: "badge synced", text: "Synced", title: "A multi-device passkey, backed up to the person's account" }) : null),
-      h("div", { class: "muted passkey-meta", text: `Added ${fmtTime(k.created, true)} · ${k.last_used ? "last used " + fmtTime(k.last_used, true) : "never used"}` }),
-      isAdmin() ? h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove passkey ${k.name}`, onClick: () => removePasskey(person, k, mine) }) : null,
-    )));
-    return h("article", { class: "card person" }, head, keys);
+    return h("article", { class: "card person" }, head, passkeyList(person, mine));
   });
 }
 
-// ---------- service accounts ----------
 
 // describeActor names who made something, from the server's record of
 // it: a person by name, or how someone signed in.
@@ -86,25 +156,33 @@ export function describeActor(by, people) {
 
 // addPasskey creates a passkey for the signed-in person, or for a link
 // session, for a new person.
-export async function addPasskey(e) {
-  e.preventDefault();
-  const button = $("ap-submit");
+// registerPasskey creates a passkey named name for the signed-in person,
+// or, for a link session, for a new person named person. It returns
+// whether it did, having said why not if it didn't.
+export async function registerPasskey(name, person, button) {
   button.disabled = true;
   try {
-    const name = $("ap-name").value.trim();
-    const person = $("ap-person").value.trim();
     const begin = await authCall("POST", "/passkey/register", { name, person });
     const credential = await navigator.credentials.create({ publicKey: webauthnJSON.creationOptions(begin.options.publicKey) });
     const passkey = await authCall("POST", `/passkey/register/${encodeURIComponent(begin.id)}`, JSON.stringify(webauthnJSON.credential(credential)));
-    $("ap-name").value = "";
     toast(`Added passkey ${passkey.name}.`);
     await refreshAuth();
-    await renderSecurity();
+    return true;
   } catch (err) {
     if (err instanceof APIError && err.status === 401) showSignIn("Your session ended. Sign in again.");
     else toast(passkeyError(err), { error: true });
+    return false;
   } finally {
     button.disabled = false;
+  }
+}
+
+// addPasskey adds a passkey from the Account form.
+export async function addPasskey(e) {
+  e.preventDefault();
+  if (await registerPasskey($("ap-name").value.trim(), $("ap-person").value.trim(), $("ap-submit"))) {
+    $("ap-name").value = "";
+    await refreshSettings();
   }
 }
 
@@ -115,7 +193,7 @@ export async function removePasskey(person, passkey, mine) {
   try {
     await api("DELETE", `/people/${encodeURIComponent(person.id)}/passkeys/${encodeURIComponent(passkey.id)}`);
     toast(`Removed passkey ${passkey.name}.`);
-    await renderSecurity();
+    await refreshSettings();
   } catch (err) {
     report(err);
   }
@@ -134,10 +212,9 @@ export async function removePerson(person, mine) {
       return;
     }
     toast(`Removed ${person.name}.`);
-    await renderSecurity();
+    await refreshSettings();
   } catch (err) {
     report(err);
   }
 }
 
-// ---------- alerts ----------

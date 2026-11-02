@@ -1,8 +1,7 @@
-import { WEEKDAYS, DAY_NAMES, DAY_PRESETS, clockMinutes, overnight, scheduleActive, formatDays, describeBlocks, formatPeriod } from "./schedule.js";
-import { $, h, clear, edit, toast, confirmDialog } from "./dom.js";
-import { patchProfile, section, switchControl, renderEditor } from "./profiles.js";
-import { start } from "./session.js";
-import { state, profile } from "./state.js";
+import { $, clear, confirmDialog, edit, h, icon, toast } from "./dom.js";
+import { patchProfile, renderEditor, section, switchControl } from "./profiles.js";
+import { clockMinutes, DAY_NAMES, DAY_PRESETS, describeBlocks, formatDays, formatPeriod, overnight, scheduleActive, WEEKDAYS } from "./schedule.js";
+import { profile, state } from "./state.js";
 
 export const CATEGORIES = [
   ["social", "Social"], ["messaging", "Messaging"], ["video", "Video and streaming"], ["music", "Music"],
@@ -261,9 +260,9 @@ export function draftChips(values, placeholder, label) {
     clear(chips);
     for (const v of values) {
       chips.append(h("span", { class: "chip" }, v, edit(h("button", {
-        type: "button", "aria-label": `Remove ${v}`, text: "✕",
+        type: "button", "aria-label": `Remove ${v}`, class: "chip-remove",
         onClick: () => { values.splice(values.indexOf(v), 1); render(); },
-      }))));
+      }, icon("x")))));
     }
   };
   render();

@@ -1,62 +1,76 @@
-import { Palette, looksLikeDomain } from "./palette.js";
-import { currentTheme, applyTheme, nextTheme, themeLabel } from "./theme.js";
 import { openCreateAccount } from "./accounts.js";
+import { openAddDestination } from "./alerts.js";
 import { report } from "./api.js";
 import { $, h, icon, toast } from "./dom.js";
-import { explainDomain, findInActivity, changeDomain } from "./explain.js";
+import { changeDomain, explainDomain, findInActivity } from "./explain.js";
+import { looksLikeDomain, Palette } from "./palette.js";
 import { openCreate } from "./profiles.js";
 import { go } from "./router.js";
+import { PROFILE_SECTIONS, settingsFor } from "./routes.js";
 import { signOut } from "./session.js";
-import { state, isAdmin, isOperator } from "./state.js";
+import { isAdmin, isOperator, state } from "./state.js";
 import { openCreateTenant } from "./tenants.js";
+import { applyTheme, currentTheme, nextTheme, themeLabel } from "./theme.js";
+
+// syncTheme shows the current theme on every control that changes it.
+export function syncTheme() {
+  const t = currentTheme();
+  const symbol = { system: "i-system", light: "i-sun", dark: "i-moon" }[t];
+  for (const b of document.querySelectorAll("[data-theme-toggle]")) {
+    b.setAttribute("aria-label", `Theme: ${themeLabel(t)}. Change it`);
+    b.title = `Theme: ${themeLabel(t)}`;
+    b.querySelector("use").setAttribute("href", "#" + symbol);
+    const label = b.querySelector("[data-theme-label]");
+    if (label) label.textContent = `Theme: ${themeLabel(t)}`;
+  }
+  for (const r of document.querySelectorAll('input[name="theme-choice"]')) r.checked = r.value === t;
+}
 
 export function wireTheme() {
-  const sync = () => {
-    const t = currentTheme();
-    const icon = { system: "i-system", light: "i-sun", dark: "i-moon" }[t];
-    for (const b of document.querySelectorAll("[data-theme-toggle]")) {
-      b.setAttribute("aria-label", `Theme: ${themeLabel(t)}. Change it`);
-      b.title = `Theme: ${themeLabel(t)}`;
-      b.querySelector("use").setAttribute("href", "#" + icon);
-      const label = b.querySelector("[data-theme-label]");
-      if (label) label.textContent = `Theme: ${themeLabel(t)}`;
-    }
-  };
-  for (const b of document.querySelectorAll("[data-theme-toggle]")) {
-    b.addEventListener("click", () => { cycleTheme(); sync(); });
-  }
-  sync();
-  wireTheme.sync = sync;
+  for (const b of document.querySelectorAll("[data-theme-toggle]")) b.addEventListener("click", cycleTheme);
+  syncTheme();
 }
 
 export function cycleTheme() {
   const t = nextTheme(currentTheme());
   applyTheme(t);
-  wireTheme.sync?.();
+  syncTheme();
   toast(`Theme: ${themeLabel(t)}`);
 }
 
-// ---------- command palette ----------
-
 export let palette;
 
-// commands returns what the palette offers for query: places, profiles,
-// actions, and, for anything that looks like a domain, what can be done
-// with it.
+// commands returns what the palette offers for query: places, profiles
+// and their sections, actions, and, for anything that looks like a
+// domain, what can be done with it. Everything in the UI is reachable
+// from here.
 export function commands(query) {
   const list = [];
-  const goTo = (view, title, icon, keywords = []) => ({ id: "go-" + view, group: "Go to", title, icon, keywords, run: () => go(view) });
+  const place = (id, title, icon, route, keywords = []) => ({ id: "go-" + id, group: "Go to", title, icon, keywords, run: () => go(...route) });
   list.push(
-    goTo("overview", "Overview", "i-overview", ["home", "dashboard", "stats"]),
-    goTo("profiles", "Profiles", "i-profiles", ["devices", "rules", "settings"]),
-    goTo("logs", "Activity", "i-log", ["query log", "logs", "queries", "history"]),
-    goTo("explain", "Explain a query", "i-explain", ["why", "debug", "test"]),
-    goTo("security", "Security", "i-security", ["passkeys", "people", "service accounts", "keys", "tokens", "alerts", "notifications", "ntfy", "webhooks"]),
+    place("overview", "Overview", "i-overview", ["overview"], ["home", "dashboard", "stats", "today"]),
+    place("profiles", "Profiles", "i-profiles", ["profiles"], ["devices", "rules"]),
+    place("logs", "Activity", "i-log", ["logs"], ["query log", "logs", "queries", "history"]),
+    place("explain", "Explain a query", "i-explain", ["explain"], ["why", "debug", "test"]),
+    place("setup", "Setup guide", "i-sparkle", ["setup"], ["onboarding", "getting started", "checklist", "router", "network", "dhcp"]),
   );
-  if (isOperator()) list.push(goTo("tenants", "Tenants", "i-tenants", ["households", "customers", "organizations"]));
+  for (const s of settingsFor({ operator: isOperator(), admin: isAdmin() })) {
+    list.push(place("settings-" + s.id, `Settings: ${s.title}`, "i-" + s.icon, ["settings", s.id], {
+      account: ["passkeys", "sign out", "theme", "appearance", "me"],
+      people: ["invite", "household", "family", "users"],
+      alerts: ["notifications", "ntfy", "webhooks", "quiet hours"],
+      api: ["service accounts", "keys", "tokens", "automation", "home assistant"],
+      tenants: ["households", "customers", "organizations"],
+      server: ["version", "upstreams", "blocklists", "lists", "status"],
+    }[s.id] || []));
+  }
 
   for (const p of state.profiles) {
-    list.push({ id: "profile-" + p.id, group: "Profiles", title: p.name || p.id, hint: p.name ? p.id : "", icon: "i-profiles", keywords: [p.id, "profile"], run: () => go("profiles", p.id) });
+    const name = p.name || p.id;
+    list.push({ id: "profile-" + p.id, group: "Profiles", title: name, hint: p.name ? p.id : "", icon: "i-profiles", keywords: [p.id, "profile"], run: () => go("profiles", p.id) });
+    for (const t of PROFILE_SECTIONS) {
+      list.push({ id: `profile-${p.id}-${t.id}`, group: "Profiles", title: `${name}: ${t.title}`, icon: "i-" + t.icon, hidden: true, keywords: [p.id], run: () => go("profiles", p.id, { tab: t.id }) });
+    }
   }
 
   const d = query.trim().toLowerCase().replace(/\.$/, "");
@@ -76,18 +90,23 @@ export function commands(query) {
   }
 
   if (isAdmin()) {
+    const first = state.profiles.find((p) => p.id !== "default") || state.profiles[0];
     list.push(
+      first ? { id: "connect", group: "Actions", title: "Connect a device", icon: "i-phone", keywords: ["setup link", "qr", "phone", "tablet", "add device"], run: () => go("profiles", first.id, { tab: "connect" }) } : null,
       { id: "new-profile", group: "Actions", title: "New profile", icon: "i-plus", keywords: ["create", "add"], run: () => { go("profiles"); openCreate(); } },
-      { id: "new-sa", group: "Actions", title: "New service account", icon: "i-key", keywords: ["create", "token", "api key", "automation"], run: () => { go("security"); openCreateAccount(); } },
+      { id: "invite", group: "Actions", title: "Invite someone", icon: "i-people", keywords: ["person", "sign-in link", "household"], run: () => go("settings", "people") },
+      { id: "add-alert", group: "Actions", title: "Add an alert destination", icon: "i-bell", keywords: ["ntfy", "webhook", "notifications"], run: () => { go("settings", "alerts"); openAddDestination(); } },
+      { id: "new-sa", group: "Actions", title: "New service account", icon: "i-key", keywords: ["create", "token", "api key", "automation"], run: () => { go("settings", "api"); openCreateAccount(); } },
     );
-    if (isOperator()) list.push({ id: "new-tenant", group: "Actions", title: "New tenant", icon: "i-tenants", keywords: ["create", "household"], run: () => { go("tenants"); openCreateTenant(); } });
+    if (isOperator()) list.push({ id: "new-tenant", group: "Actions", title: "New tenant", icon: "i-tenants", keywords: ["create", "household"], run: () => { go("settings", "tenants"); openCreateTenant(); } });
   }
   list.push(
+    { id: "add-passkey", group: "Actions", title: "Add a passkey", icon: "i-key", keywords: ["face id", "touch id", "security key", "sign in"], run: () => go("settings", "account") },
     { id: "theme", group: "Preferences", title: `Change the theme (now ${themeLabel(currentTheme()).toLowerCase()})`, icon: "i-sun", keywords: ["dark", "light", "appearance"], run: cycleTheme },
     { id: "shortcuts", group: "Help", title: "Keyboard shortcuts", icon: "i-keyboard", keywords: ["keys", "help"], run: () => $("shortcuts").showModal() },
     { id: "signout", group: "Account", title: "Sign out", icon: "i-signout", hidden: true, run: signOut },
   );
-  return list;
+  return list.filter(Boolean);
 }
 
 export function paletteItem(c) {
@@ -124,8 +143,8 @@ export function wireShortcuts() {
 
     if (pendingG && Date.now() - pendingG < 1200) {
       pendingG = 0;
-      const view = { o: "overview", p: "profiles", a: "logs", l: "logs", e: "explain", s: "security", t: "tenants" }[e.key];
-      if (view) { e.preventDefault(); go(view); }
+      const route = { o: ["overview"], p: ["profiles"], a: ["logs"], l: ["logs"], e: ["explain"], s: ["settings"], t: ["settings", "tenants"], u: ["setup"] }[e.key];
+      if (route) { e.preventDefault(); go(...route); }
       return;
     }
     switch (e.key) {
@@ -141,4 +160,3 @@ export function wireShortcuts() {
   });
 }
 
-// ---------- wiring ----------

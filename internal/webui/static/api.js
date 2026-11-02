@@ -1,6 +1,6 @@
 import { toast } from "./dom.js";
-import { showSignIn, loadPolicy } from "./session.js";
-import { state, isAdmin } from "./state.js";
+import { loadPolicy, showSignIn } from "./session.js";
+import { isAdmin, state } from "./state.js";
 
 export const API = "/api/v1";
 
@@ -66,7 +66,6 @@ export function report(err) {
   toast(err.message, { error: true, details: err.details || [] });
 }
 
-// ---------- sign-in ----------
 
 // authCall calls a sign-in endpoint, returning its JSON, or throwing an
 // APIError with the server's message.

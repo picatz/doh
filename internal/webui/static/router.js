@@ -1,30 +1,22 @@
-import { setLogFilter, loadLogs, stopLive, closeDrawer } from "./activity.js";
+// The router: shows what the URL names. Views register what they render;
+// routes.js says what the URLs are.
+
+import { closeDrawer } from "./activity.js";
 import { report } from "./api.js";
 import { $ } from "./dom.js";
-import { runExplain } from "./explain.js";
-import { renderOverview } from "./overview.js";
-import { renderSecurity } from "./people.js";
-import { renderProfiles, section } from "./profiles.js";
-import { state, isOperator } from "./state.js";
-import { renderTenants } from "./tenants.js";
+import { transition } from "./motion.js";
+import { parseRoute, routeHash, VIEWS } from "./routes.js";
+import { state } from "./state.js";
 
-export const VIEWS = ["overview", "profiles", "logs", "explain", "security", "tenants"];
+export { routeHash };
 
-// parseRoute reads the view and its argument, such as a profile ID, from
-// a URL hash.
-export function parseRoute(hash = location.hash) {
-  const m = /^#\/([a-z]+)(?:\/([^?]*))?(?:\?(.*))?$/.exec(hash);
-  if (!m || !VIEWS.includes(m[1])) return { view: "overview", arg: "", query: new URLSearchParams() };
-  let arg = "";
-  try { arg = decodeURIComponent(m[2] || ""); } catch { /* a malformed link: ignore its argument */ }
-  return { view: m[1], arg, query: new URLSearchParams(m[3] || "") };
-}
+// views holds each view's { title(arg), route(arg, query), render(arg,
+// query), leave() }, by name.
+const views = new Map();
 
-// routeHash returns the URL hash of a view, its argument, and its query,
-// leaving out empty query values.
-export function routeHash(view, arg = "", query = {}) {
-  const q = new URLSearchParams(Object.entries(query).filter(([, v]) => v !== undefined && v !== ""));
-  return `#/${view}${arg ? "/" + encodeURIComponent(arg) : ""}${q.size ? "?" + q : ""}`;
+// register adds a view.
+export function register(name, view) {
+  views.set(name, view);
 }
 
 // go navigates to a view, adding to history.
@@ -40,38 +32,54 @@ export function setRoute(view, arg = "", query = {}) {
   history.replaceState(null, "", routeHash(view, arg, query));
 }
 
-// applyRoute shows what the URL names.
+// where is the place last shown, so a change within a view, such as to
+// another settings section, is told apart from moving to another view.
+let where = { view: "", arg: "", first: true };
+
+// applyRoute shows what the URL names. Old URLs, such as #/security, are
+// replaced with where those things are now.
 export function applyRoute() {
-  const { view, arg, query } = parseRoute();
-  if (!location.hash) setRoute(view, arg);
-  if (view === "profiles") {
-    if (state.selected !== arg) state.profileTab = "";
-    state.selected = arg;
-    state.profileTab = query.get("tab") || state.profileTab;
-  }
-  if (view === "logs") setLogFilter(query);
-  show(view);
+  const r = parseRoute(location.hash);
+  if (!location.hash || r.moved) setRoute(r.view, r.arg, Object.fromEntries(r.query));
+  show(r.view, r.arg, r.query);
 }
 
-export function show(view) {
-  if (view === "tenants" && !isOperator()) view = "overview";
-  const changed = state.view !== view;
-  state.view = view;
-  for (const b of document.querySelectorAll(".nav")) {
-    if (b.dataset.view === view) b.setAttribute("aria-current", "page");
-    else b.removeAttribute("aria-current");
+// show shows view, with its argument and query.
+export function show(name, arg = "", query = new URLSearchParams()) {
+  let view = views.get(name);
+  if (!view || (view.allowed && !view.allowed(arg))) { name = "overview"; view = views.get(name); arg = ""; }
+  const prev = where;
+  const changed = prev.view !== name;
+  const moved = changed || prev.arg !== arg;
+  where = { view: name, arg, first: false };
+  state.view = name;
+  view.route?.(arg, query);
+
+  const update = () => {
+    if (changed) views.get(prev.view)?.leave?.();
+    for (const b of document.querySelectorAll(".nav")) {
+      if (b.dataset.view === name || (name === "setup" && b.dataset.view === "overview")) b.setAttribute("aria-current", "page");
+      else b.removeAttribute("aria-current");
+    }
+    for (const v of VIEWS) $("view-" + v).hidden = v !== name;
+    if (changed) scrollTo({ top: 0 });
+    closeDrawer();
+    const rendering = Promise.resolve().then(() => view.render(arg, query)).catch(report);
+    // Wait a moment for the view's data, so the transition shows it
+    // arriving, but never long: a slow server shouldn't freeze the page.
+    return Promise.race([rendering, new Promise((r) => setTimeout(r, 160))]);
+  };
+  if (changed && !prev.first) transition(update);
+  else update();
+
+  const title = view.title?.(arg) || "doh";
+  document.title = `${title} · doh`;
+  if (moved && !prev.first) {
+    // Tell assistive technology where it is, and start the keyboard there.
+    $("announcer").textContent = title;
+    requestAnimationFrame(() => view.focus?.(arg)?.focus({ preventScroll: true }));
   }
-  for (const v of VIEWS) $("view-" + v).hidden = v !== view;
-  const section = $("view-" + view);
-  if (changed) {
-    section.classList.remove("entering");
-    void section.offsetWidth; // restart the entrance
-    section.classList.add("entering");
-    window.scrollTo({ top: 0 });
-    document.title = `${section.querySelector("h2")?.textContent || "doh"} · doh`;
-  }
-  closeDrawer();
-  if (view !== "logs") stopLive();
-  const load = { overview: renderOverview, profiles: renderProfiles, logs: () => loadLogs(true), explain: () => { if (!$("explain-result").childElementCount) runExplain(); }, security: renderSecurity, tenants: renderTenants }[view];
-  Promise.resolve(load()).catch(report);
 }
+
+// currentArg returns the shown view's argument, such as a profile ID.
+export const currentArg = () => where.arg;

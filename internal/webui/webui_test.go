@@ -202,24 +202,31 @@ func TestScript_NoUnsafeDOMOrDynamicCode(t *testing.T) {
 		t.Error("app.js fetches an absolute URL")
 	}
 
-	// Session cookies are HttpOnly. The only thing stored in the browser
-	// is the theme someone chose, by theme.js, under one key.
+	// Session cookies are HttpOnly. The only things stored in the browser
+	// are someone's own choices on that device: the theme, by theme.js,
+	// and dismissing the setup checklist, by prefs.js, each under one key.
 	for _, bad := range []string{"sessionStorage", "indexedDB", "document.cookie"} {
 		if strings.Contains(js, bad) {
 			t.Errorf("a script uses %s", bad)
 		}
 	}
 	for _, name := range scriptNames(t) {
-		if name != "theme.js" && strings.Contains(readStatic(t, name), "localStorage") {
-			t.Errorf("%s uses localStorage; only theme.js stores anything", name)
+		if name != "theme.js" && name != "prefs.js" && strings.Contains(readStatic(t, name), "localStorage") {
+			t.Errorf("%s uses localStorage; only theme.js and prefs.js store anything", name)
 		}
 	}
-	theme := readStatic(t, "theme.js")
-	if keys := regexp.MustCompile(`const KEY = "([^"]+)"`).FindAllStringSubmatch(theme, -1); len(keys) != 1 || keys[0][1] != "doh.theme" {
-		t.Errorf("theme.js stores under %v, want only doh.theme", keys)
+	for name, want := range map[string]string{"theme.js": "doh.theme", "prefs.js": "doh.prefs"} {
+		src := readStatic(t, name)
+		if keys := regexp.MustCompile(`const KEY = "([^"]+)"`).FindAllStringSubmatch(src, -1); len(keys) != 1 || keys[0][1] != want {
+			t.Errorf("%s stores under %v, want only %s", name, keys, want)
+		}
+		if n := strings.Count(src, "localStorage.setItem("); n != 1 || strings.Count(src, "localStorage.setItem(KEY") != 1 {
+			t.Errorf("%s stores something besides its key", name)
+		}
 	}
-	if strings.Count(theme, "localStorage.") != 3 || strings.Count(theme, "localStorage.setItem(KEY") != 1 {
-		t.Error("theme.js stores something besides the theme")
+	// prefs.js keeps booleans only: nothing someone typed, or the server said.
+	if !strings.Contains(readStatic(t, "prefs.js"), "[name]: !!value") {
+		t.Error("prefs.js stores something other than booleans")
 	}
 }
 
@@ -293,7 +300,7 @@ func TestScript_PasskeyFallbacks(t *testing.T) {
 // script learns who they are.
 func TestIndex_OperatorOnlyStartsHidden(t *testing.T) {
 	index := readStatic(t, "index.html")
-	for _, id := range []string{"nav-tenants", "c-tenant-row", "sa-tenant-row", "view-tenants"} {
+	for _, id := range []string{"settings-nav-tenants", "c-tenant-row", "sa-tenant-row", "panel-tenants"} {
 		tag := regexp.MustCompile(`<[a-z]+[^>]*\sid="` + id + `"[^>]*>`).FindString(index)
 		if !regexp.MustCompile(`\shidden[\s>]`).MatchString(tag) {
 			t.Errorf("#%s doesn't start hidden: %q", id, tag)
@@ -321,7 +328,7 @@ func TestScriptModules(t *testing.T) {
 			}
 		})
 	}
-	for _, module := range []string{"/ui/schedule.js", "/ui/format.js"} {
+	for _, module := range []string{"/ui/schedule.js", "/ui/format.js", "/ui/routes.js", "/ui/setup.js", "/ui/watch.js"} {
 		if rec := get(t, module); rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "javascript") {
 			t.Errorf("%s: %d %q", module, rec.Code, rec.Header().Get("Content-Type"))
 		}
@@ -337,7 +344,7 @@ func TestScript_SchedulesFollowTheProfileTimeZone(t *testing.T) {
 	if n := strings.Count(readScripts(t), "Intl.DateTimeFormat(\"en-US\""); n != 1 || !strings.Contains(mod, "timeZone, weekday") {
 		t.Error("schedules aren't checked in the profile's time zone by one function")
 	}
-	if !strings.Contains(js, `import { WEEKDAYS`) || !strings.Contains(js, `from "./schedule.js"`) {
+	if !regexp.MustCompile(`import \{[^}]*\bWEEKDAYS\b[^}]*\} from "\./schedule\.js"`).MatchString(js) {
 		t.Error("apps.js doesn't use schedule.js")
 	}
 	if !regexp.MustCompile(`try \{ zones = Intl\.supportedValuesOf\("timeZone"\); \} catch`).MatchString(js) {
