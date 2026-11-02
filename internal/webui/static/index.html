@@ -60,15 +60,15 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></symbol>
   <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="3" y="6.5" width="18" height="11" rx="2"/><path d="M7 10.5h.1M10.3 10.5h.1M13.6 10.5h.1M17 10.5h.1M8 14h8"/></symbol>
 </svg>
-<a class="skip" href="#main">Skip to content</a>
+<a class="skip-link" href="#main">Skip to content</a>
 
 <section id="signin" class="signin" hidden aria-labelledby="signin-title">
-  <div class="card signin-card">
-    <img src="/ui/icon.svg" alt="" width="40" height="40">
+  <div class="signin-card">
+    <div class="signin-face" aria-hidden="true"><svg class="buddy"><use href="#buddy-calm"/></svg></div>
     <h1 id="signin-title">Sign in to doh</h1>
     <p id="signin-lede" class="muted"></p>
     <p id="signin-error" class="error" role="alert" hidden></p>
-    <button type="button" id="signin-passkey" class="primary">Sign in with a passkey</button>
+    <button type="button" id="signin-passkey" class="primary"><svg class="icon" aria-hidden="true"><use href="#i-key"/></svg><span id="signin-passkey-label">Sign in with a passkey</span></button>
     <p id="signin-host" class="hint" hidden></p>
     <p id="signin-link-hint" class="muted hint">No passkey yet? On the server, run <code>doh ui</code> for a single-use sign-in link.</p>
   </div>
@@ -219,15 +219,24 @@
     </section>
 
     <section id="view-explain" class="view" hidden aria-labelledby="explain-title">
-      <h2 id="explain-title">Explain a query</h2>
-      <form id="explain-form" class="filters">
-        <label>Name <input id="x-name" required placeholder="ads.example.com" spellcheck="false"></label>
-        <label>Type <input id="x-type" value="A" size="6" spellcheck="false"></label>
-        <label>Profile <select id="x-profile"><option value="">By client</option></select></label>
-        <label>Client <input id="x-client" placeholder="optional address" spellcheck="false"></label>
-        <button type="submit" class="primary">Explain</button>
+      <h2 id="explain-title">Explain</h2>
+      <p class="muted lede">Ask why doh would allow or block a name, and see every check it would go through.</p>
+      <form id="explain-form" class="ask" role="search">
+        <div class="ask-field">
+          <svg class="icon" aria-hidden="true"><use href="#i-explain"/></svg>
+          <input id="x-name" required placeholder="ads.example.com" aria-label="Domain name to explain" spellcheck="false" autocapitalize="off" autocomplete="off" enterkeyhint="go">
+          <button type="submit" class="primary">Explain</button>
+        </div>
+        <details class="more-filters">
+          <summary>Options</summary>
+          <div class="more-filters-body">
+            <label>Record type <input id="x-type" value="A" size="6" spellcheck="false" autocapitalize="characters"></label>
+            <label>Profile <select id="x-profile"><option value="">Chosen by the client</option></select></label>
+            <label>Client address <input id="x-client" placeholder="192.168.1.20" spellcheck="false"></label>
+          </div>
+        </details>
       </form>
-      <div id="explain-result"></div>
+      <div id="explain-result" aria-live="polite"></div>
     </section>
 
     <section id="view-tenants" class="view" hidden aria-labelledby="tenants-title">
@@ -358,7 +367,7 @@
 <dialog id="palette" class="palette" aria-label="Search or jump to">
   <div class="palette-field">
     <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-    <input id="palette-input" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" placeholder="Search, jump to, or type a domain…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go">
+    <input id="palette-input" role="combobox" aria-label="Search, jump to, or type a domain" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" placeholder="Search, jump to, or type a domain…" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go">
     <kbd class="palette-esc">esc</kbd>
   </div>
   <ul id="palette-list" class="palette-list" role="listbox" aria-label="Results"></ul>
