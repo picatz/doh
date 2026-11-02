@@ -203,6 +203,43 @@ func profileLabel(pr *policy.Profile) string {
 	return pr.ID
 }
 
+// settingLabels name a profile's settings, by their paths in a change's
+// details, as people know them.
+var settingLabels = map[string]string{
+	"safe_search":                    "safe search",
+	"security.rebinding":             "DNS rebinding protection",
+	"security.homograph":             "look-alike domain protection",
+	"security.newly_registered":      "newly registered domain blocking",
+	"security.newly_registered_days": "how new a domain counts as newly registered",
+	"security.tunneling":             "DNS tunneling protection",
+	"security.bypass":                "bypass blocking",
+	"security.typosquatting":         "typosquatting protection",
+	"security.dga":                   "machine-generated domain blocking",
+	"security.safe_browsing":         "Google Safe Browsing",
+	"schedules":                      "schedules",
+	"time_zone":                      "time zone",
+	"rewrites":                       "rewrites",
+	"logging":                        "query logging",
+	"name":                           "name",
+}
+
+// settingLabel names the setting at a change's path, such as
+// "security.tunneling", for people; one without a label reads as its
+// path in words.
+func settingLabel(path string) string {
+	for p := path; p != ""; {
+		if l, ok := settingLabels[p]; ok {
+			return l
+		}
+		i := strings.LastIndexAny(p, ".")
+		if i < 0 {
+			break
+		}
+		p = p[:i]
+	}
+	return strings.NewReplacer("_", " ", ".", " ").Replace(path)
+}
+
 // profileSummary describes a profile's change, d, for people: what was
 // allowed, denied, or blocked, by name, and which settings changed.
 func profileSummary(pr *policy.Profile, d map[string]string) string {
@@ -242,8 +279,25 @@ func profileSummary(pr *policy.Profile, d map[string]string) string {
 			other = append(other, k)
 		}
 	}
-	if len(other) > 0 {
-		parts = append(parts, "changed "+strings.Join(other, ", "))
+	// Switches read as turned on or off; other settings as changed.
+	var on, off, changed []string
+	for _, k := range other {
+		switch d[k] {
+		case "true":
+			on = append(on, settingLabel(k))
+		case "false":
+			off = append(off, settingLabel(k))
+		default:
+			changed = append(changed, settingLabel(k))
+		}
+	}
+	for _, g := range []struct {
+		verb  string
+		names []string
+	}{{"turned on", on}, {"turned off", off}, {"changed", changed}} {
+		if len(g.names) > 0 {
+			parts = append(parts, g.verb+" "+strings.Join(slices.Compact(g.names), ", "))
+		}
 	}
 	if len(parts) == 0 {
 		return "Changed profile " + profileLabel(pr)
