@@ -5,6 +5,7 @@ import { runExplain } from "./explain.js";
 import { domainAction } from "./profiles.js";
 import { go, setRoute } from "./router.js";
 import { state } from "./state.js";
+import { enter } from "./motion.js";
 
 export const LIVE_CAP = 500;
 
@@ -161,7 +162,7 @@ export async function startLive() {
         let entry;
         try { entry = JSON.parse(data); } catch { continue; }
         const rows = $("log-rows");
-        rows.prepend(logRow(entry));
+        rows.prepend(enter(logRow(entry)));
         while (rows.childElementCount > LIVE_CAP) rows.lastElementChild.remove();
         $("log-empty").hidden = true;
         $("log-table").hidden = false;

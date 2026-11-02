@@ -26,7 +26,8 @@ export async function renderApiPanel() {
 
 export function renderServiceAccounts(accounts, people = []) {
   const box = clear($("service-accounts"));
-  $("new-sa").hidden = !isAdmin();
+  // An empty list offers its own button.
+  $("new-sa").hidden = !isAdmin() || !accounts.length;
   if (!accounts.length) {
     box.append(emptyState({
       title: "No service accounts yet.",

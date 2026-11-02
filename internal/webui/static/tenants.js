@@ -8,6 +8,7 @@ import { state } from "./state.js";
 export async function renderTenants() {
   await Promise.all([loadTenants(), loadPolicy()]);
   const box = clear($("tenant-cards"));
+  $("new-tenant").hidden = !state.tenants.length;
   if (!state.tenants.length) {
     box.append(emptyState({
       title: "No tenants yet.",
