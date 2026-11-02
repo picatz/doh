@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json/v2"
 	"errors"
@@ -20,26 +21,26 @@ import (
 // fileVersion is the version of the persisted store.
 const fileVersion = 1
 
-// store keeps each scope's settings, destinations, and seen devices,
-// persisted to a file, and its recent deliveries, in memory. It's safe
-// for concurrent use.
+// store keeps each scope's settings and destinations, persisted to a
+// file, and its recent deliveries, in memory. It's safe for concurrent
+// use. The devices each scope has seen are a [Memory]'s; files from
+// before kept them too, and [openStore] returns them to import.
 type store struct {
 	path string
 
 	mu     sync.Mutex
 	scopes map[string]*scopeData
-	dirty  bool // changed since saved, by deliveries or devices
+	dirty  bool // changed since saved, by deliveries
+
+	// legacyDevices are the devices an older file kept, by scope, until
+	// they're imported into a Memory and the file is saved without them.
+	legacyDevices map[string]*fileDevices
 }
 
 // scopeData is one scope's state.
 type scopeData struct {
 	settings     *Settings // nil for the defaults
 	destinations []*destination
-
-	// devicesSince is when the scope started seeing devices, and devices
-	// when each it has seen was last seen.
-	devicesSince time.Time
-	devices      map[string]time.Time
 
 	deliveries []Delivery // newest last
 }
@@ -100,7 +101,7 @@ func openStore(path string) (*store, error) {
 func (s *store) scope(scope string) *scopeData {
 	d := s.scopes[scope]
 	if d == nil {
-		d = &scopeData{devices: make(map[string]time.Time)}
+		d = new(scopeData)
 		s.scopes[scope] = d
 	}
 	return d
@@ -407,9 +408,14 @@ func (s *store) forget(scope string) error {
 	if !ok {
 		return nil
 	}
+	legacy, hadLegacy := s.legacyDevices[scope]
 	delete(s.scopes, scope)
+	delete(s.legacyDevices, scope)
 	if err := s.save(); err != nil {
 		s.scopes[scope] = d
+		if hadLegacy {
+			s.legacyDevices[scope] = legacy
+		}
 		return err
 	}
 	return nil
@@ -439,31 +445,6 @@ func (s *store) record(scope string, del Delivery) {
 	}
 }
 
-// seeDevice records that scope saw device at now, reporting whether it's
-// new to the scope, and whether the scope is still learning its devices.
-func (s *store) seeDevice(scope, device string, now time.Time) (isNew, learning bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	d := s.scope(scope)
-	if d.devicesSince.IsZero() {
-		d.devicesSince = now.UTC()
-		s.dirty = true
-	}
-	learning = now.Sub(d.devicesSince) < LearningPeriod
-
-	if _, ok := d.devices[device]; ok {
-		d.devices[device] = now.UTC() // persisted with the next change
-		return false, learning
-	}
-	if len(d.devices) >= MaxSeenDevices {
-		oldest, _ := minByValue(d.devices)
-		delete(d.devices, oldest)
-	}
-	d.devices[device] = now.UTC()
-	s.dirty = true
-	return true, learning
-}
-
 // minByValue returns the key of m with the earliest time.
 func minByValue(m map[string]time.Time) (string, time.Time) {
 	var key string
@@ -476,7 +457,7 @@ func minByValue(m map[string]time.Time) (string, time.Time) {
 	return key, at
 }
 
-// flush saves the store if deliveries or devices changed it.
+// flush saves the store if deliveries changed it.
 func (s *store) flush() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -485,6 +466,46 @@ func (s *store) flush() error {
 	}
 	return s.save()
 }
+
+// importDevices moves the devices an older file kept into m, then saves
+// the file without them, keeping the file as it was beside it, with
+// LegacyBackupSuffix appended, in case of a downgrade. Without such
+// devices, it does nothing.
+func (s *store) importDevices(ctx context.Context, m Memory) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.legacyDevices) == 0 {
+		return nil
+	}
+	importer, ok := m.(DeviceImporter)
+	if !ok {
+		return nil // nowhere to put them; the file keeps them
+	}
+	for _, scope := range slices.Sorted(maps.Keys(s.legacyDevices)) {
+		d := s.legacyDevices[scope]
+		if err := importer.ImportDevices(ctx, scope, d.Since, d.Seen); err != nil {
+			return fmt.Errorf("alerts: importing the devices %s kept: %w", s.path, err)
+		}
+	}
+	if s.path != "" {
+		backup := s.path + LegacyBackupSuffix
+		if _, err := os.Stat(backup); errors.Is(err, fs.ErrNotExist) {
+			b, err := os.ReadFile(s.path)
+			if err != nil {
+				return fmt.Errorf("alerts: %w", err)
+			}
+			if err := atomicfile.WriteFile(backup, b, 0o600); err != nil {
+				return fmt.Errorf("alerts: keeping a copy of %s: %w", s.path, err)
+			}
+		}
+	}
+	s.legacyDevices = nil
+	return s.save()
+}
+
+// LegacyBackupSuffix is appended to the alerts file's name for the copy
+// kept when the devices it held move to a [Memory].
+const LegacyBackupSuffix = ".before-statedb"
 
 // file is the persisted form of the store.
 type file struct {
@@ -497,7 +518,11 @@ type fileScope struct {
 	Scope        string            `json:"scope"`
 	Settings     *Settings         `json:"settings,omitempty"`
 	Destinations []fileDestination `json:"destinations,omitempty"`
-	Devices      *fileDevices      `json:"devices,omitempty"`
+
+	// Devices are the devices the scope has seen, as files before the
+	// state database kept them. They're read, to import, but no longer
+	// written.
+	Devices *fileDevices `json:"devices,omitempty"`
 }
 
 type fileDestination struct {
@@ -613,15 +638,10 @@ func (s *store) load() error {
 			d.destinations = append(d.destinations, dest)
 		}
 		if sc.Devices != nil {
-			d.devicesSince = sc.Devices.Since
-			d.devices = maps.Clone(sc.Devices.Seen)
-			if d.devices == nil {
-				d.devices = make(map[string]time.Time)
+			if s.legacyDevices == nil {
+				s.legacyDevices = make(map[string]*fileDevices)
 			}
-			for len(d.devices) > MaxSeenDevices {
-				oldest, _ := minByValue(d.devices)
-				delete(d.devices, oldest)
-			}
+			s.legacyDevices[sc.Scope] = sc.Devices
 		}
 	}
 	return nil
@@ -637,7 +657,7 @@ func (s *store) save() error {
 	f := file{Version: fileVersion, Scopes: []fileScope{}}
 	for _, scope := range slices.Sorted(maps.Keys(s.scopes)) {
 		d := s.scopes[scope]
-		sc := fileScope{Scope: scope, Settings: d.settings}
+		sc := fileScope{Scope: scope, Settings: d.settings, Devices: s.legacyDevices[scope]}
 		for _, dest := range d.destinations {
 			fd := fileDestination{
 				ID: dest.ID, Type: dest.Type, URL: dest.url, Secret: dest.secret, Name: dest.Name,
@@ -649,9 +669,6 @@ func (s *store) save() error {
 				fd.ConfirmHash, fd.ConfirmExpires = dest.confirm.hash, dest.confirm.expires
 			}
 			sc.Destinations = append(sc.Destinations, fd)
-		}
-		if !d.devicesSince.IsZero() {
-			sc.Devices = &fileDevices{Since: d.devicesSince, Seen: d.devices}
 		}
 		f.Scopes = append(f.Scopes, sc)
 	}

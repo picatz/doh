@@ -27,7 +27,7 @@ import (
 )
 
 // testLogger discards logs unless the test fails.
-func testLogger(t *testing.T) *slog.Logger {
+func testLogger(t testing.TB) *slog.Logger {
 	t.Helper()
 	return slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug}))
 }

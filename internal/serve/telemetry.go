@@ -214,7 +214,10 @@ func (s *Server) adminHandler() http.Handler {
 	//
 	// Everything on the admin listener is data unless it says otherwise,
 	// as the web UI's pages do.
-	return http.NewCrossOriginProtection().Handler(httpsec.DataHandler(mux))
+	//
+	// Outermost, requests to hosts the listener doesn't answer to are
+	// refused, against DNS rebinding.
+	return s.hostGuard(http.NewCrossOriginProtection().Handler(httpsec.DataHandler(mux)))
 }
 
 // serveVars writes the server's counters, runtime metrics, and build

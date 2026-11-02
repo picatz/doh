@@ -451,7 +451,7 @@ func TestDeletePerson_EndsSessions(t *testing.T) {
 	b.addPasskey("Key", "Alice")
 	id := b.status().Session.Person
 
-	if err := f.service.DeletePerson(id); err != nil {
+	if err := f.service.DeletePerson(t.Context(), id); err != nil {
 		t.Fatal(err)
 	}
 	if b.status().Session != nil {
@@ -460,7 +460,7 @@ func TestDeletePerson_EndsSessions(t *testing.T) {
 	if f.service.HasPasskeys("") {
 		t.Error("passkeys still required with no one left")
 	}
-	if err := f.service.DeletePerson(id); err != ErrNotFound {
+	if err := f.service.DeletePerson(t.Context(), id); err != ErrNotFound {
 		t.Errorf("deleting again = %v, want ErrNotFound", err)
 	}
 }
@@ -533,9 +533,10 @@ func TestSessions_PendingFloodDoesNotEvictSignedIn(t *testing.T) {
 	if !admin.status().SignedIn {
 		t.Error("a flood of pending sign-ins signed out a complete session")
 	}
-	f.service.mu.Lock()
-	pending := f.service.count(true)
-	f.service.mu.Unlock()
+	m := f.service.sessions.(*memorySessions)
+	m.mu.Lock()
+	pending := m.count(true)
+	m.mu.Unlock()
 	if pending > maxPendingSessions {
 		t.Errorf("%d pending sessions, want at most %d", pending, maxPendingSessions)
 	}

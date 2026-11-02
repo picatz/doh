@@ -1,6 +1,8 @@
 package serve
 
 import (
+	"cmp"
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -16,12 +18,14 @@ import (
 
 	"github.com/picatz/doh/internal/alerts"
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/filter"
 )
 
-// AlertsFile is where alert settings, destinations, and the devices each
-// tenant has seen are kept in the data directory.
+// AlertsFile is where alert settings and destinations are kept in the
+// data directory. The devices each tenant has seen, which it kept before
+// too, are in the state database.
 const AlertsFile = "alerts.json"
 
 // configureAlerts starts the alerts engine: kept in the data directory,
@@ -43,8 +47,13 @@ func (s *Server) configureAlerts() error {
 	if s.config.DataDir != "" {
 		pushKey = filepath.Join(s.config.DataDir, PushKeyFile)
 	}
+	var memory alerts.Memory
+	if s.stateDB != nil {
+		memory = s.stateDB.AlertMemory()
+	}
 	engine, err := alerts.New(alerts.Options{
 		Path:        path,
+		Memory:      memory,
 		Logger:      s.logger,
 		Origin:      origin,
 		Mail:        mail,
@@ -192,7 +201,8 @@ func (s *Server) apiPatchAlerts(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.alerts.SetSettings(scope, next); s.writeAlertsError(w, err) {
 		return
 	}
-	s.audit(r, "alert settings changed", alertsAttrs(r, scope)...)
+	s.audit(r, change{action: "alerts.settings.updated", message: "alert settings changed", tenant: scope,
+		target: audit.Target{Type: "alerts"}, summary: "Changed alert settings", details: alertSettingsDetails(next)})
 	writeJSON(w, http.StatusOK, s.alertsView(scope))
 }
 
@@ -221,11 +231,10 @@ func (s *Server) apiAddAlertDestination(w http.ResponseWriter, r *http.Request) 
 			_, host, _ = strings.Cut(u.Opaque, "@")
 		}
 	}
-	attrs := append(alertsAttrs(r, scope), slog.String("destination", d.ID), slog.String("type", string(d.Type)), slog.String("host", host))
-	if d.State == alerts.Pending {
-		attrs = append(attrs, slog.String("state", string(d.State)))
-	}
-	s.audit(r, "alert destination added", attrs...)
+	s.audit(r, change{action: "alerts.destination.added", message: "alert destination added", tenant: scope,
+		target:  audit.Target{Type: "alert_destination", ID: d.ID},
+		summary: "Added " + string(d.Type) + " alert destination " + cmp.Or(d.Name, host),
+		details: details("destination", d.ID, "type", string(d.Type), "host", host, "name", d.Name, "state", string(d.State))})
 	w.Header().Set("Location", api.Prefix+"/alerts/destinations/"+d.ID)
 	writeJSON(w, http.StatusCreated, api.NewAlertDestination{Destination: d, Secret: secret})
 }
@@ -239,7 +248,8 @@ func (s *Server) apiDeleteAlertDestination(w http.ResponseWriter, r *http.Reques
 	if s.writeAlertsError(w, s.alerts.RemoveDestination(scope, id)) {
 		return
 	}
-	s.audit(r, "alert destination removed", append(alertsAttrs(r, scope), slog.String("destination", id))...)
+	s.audit(r, change{action: "alerts.destination.removed", message: "alert destination removed", tenant: scope,
+		target: audit.Target{Type: "alert_destination", ID: id}, summary: "Removed alert destination " + id, details: details("destination", id)})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -256,7 +266,10 @@ func (s *Server) apiConfirmAlerts(w http.ResponseWriter, r *http.Request) {
 	if s.writeAlertsError(w, err) {
 		return
 	}
-	s.audit(r, "alert destination confirmed", append(alertsAttrs(r, scope), slog.String("destination", d.ID))...)
+	s.audit(r, change{action: "alerts.destination.confirmed", message: "alert destination confirmed", tenant: scope,
+		target:  audit.Target{Type: "alert_destination", ID: d.ID},
+		summary: "Confirmed " + string(d.Type) + " alert destination " + cmp.Or(d.Name, d.ID),
+		details: details("destination", d.ID, "type", string(d.Type))})
 	writeJSON(w, http.StatusOK, d)
 }
 
@@ -282,13 +295,17 @@ func (s *Server) apiTestAlerts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, api.AlertTest{Deliveries: deliveries})
 }
 
-// alertsAttrs describes whose alerts r changed, for the audit log, when
-// it isn't the caller's own.
-func alertsAttrs(r *http.Request, scope string) []slog.Attr {
-	if scope != principalOf(r).tenant {
-		return []slog.Attr{slog.String("alerts_tenant", scope)}
+// alertSettingsDetails describes alert settings for the audit trail.
+func alertSettingsDetails(s alerts.Settings) map[string]string {
+	kinds := make([]string, len(s.Kinds))
+	for i, k := range s.Kinds {
+		kinds[i] = string(k)
 	}
-	return nil
+	quiet := ""
+	if s.QuietHours != nil {
+		quiet = s.QuietHours.Start + "-" + s.QuietHours.End
+	}
+	return details("kinds", strings.Join(kinds, ", "), "quiet_hours", quiet, "time_zone", s.TimeZone)
 }
 
 // writeAlertsError writes err, if there is one, as an API error, and
@@ -318,8 +335,8 @@ func (s *Server) writeAlertsError(w http.ResponseWriter, err error) bool {
 }
 
 // forgetTenantAlerts removes a deleted tenant's alerts.
-func (s *Server) forgetTenantAlerts(tenant string) {
-	if err := s.alerts.ForgetScope(tenant); err != nil {
+func (s *Server) forgetTenantAlerts(ctx context.Context, tenant string) {
+	if err := s.alerts.ForgetScope(ctx, tenant); err != nil {
 		s.logger.Error("admin: removing a deleted tenant's alerts", slog.String("tenant", tenant), slog.Any("error", err))
 	}
 }

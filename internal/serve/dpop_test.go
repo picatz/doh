@@ -452,7 +452,9 @@ func TestDPoP_AdminOrigin(t *testing.T) {
 		{"", "https://admin.example.com.evil.example" + path},
 		{"", "https://admin.example.com/api/v1/policy"},
 		// The request's Host isn't trusted once there are origins.
-		{"evil.example", "http://evil.example" + path},
+		// (A host the listener answers to, but not an origin: others it
+		// refuses outright, against DNS rebinding.)
+		{"doh.lan", "http://doh.lan" + path},
 		{"admin.example.com", "http://admin.example.com" + path},
 	} {
 		resp, b := get(tt.host, tt.htu)

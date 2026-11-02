@@ -216,7 +216,8 @@ func TestEngine_CoalescesAndSummarizesBursts(t *testing.T) {
 func TestEngine_NewDevices(t *testing.T) {
 	path := t.TempDir() + "/alerts.json"
 	synctest.Test(t, func(t *testing.T) {
-		e, rec := startEngine(t, Options{Path: path})
+		mem := NewMemory() // durable across the restart below
+		e, rec := startEngine(t, Options{Path: path, Memory: mem})
 		addDestination(t, e, "")
 		only(t, e, "", KindNewDevice)
 
@@ -252,7 +253,7 @@ func TestEngine_NewDevices(t *testing.T) {
 		}
 
 		// The devices seen survive a restart.
-		e, rec = startEngine(t, Options{Path: path})
+		e, rec = startEngine(t, Options{Path: path, Memory: mem})
 		defer e.Close()
 		for _, en := range []querylog.Entry{
 			{Time: time.Now(), Profile: "home", Client: "192.168.1.10"},

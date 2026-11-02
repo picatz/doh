@@ -14,7 +14,8 @@
 // a sign-in on their own, since they require user verification (a
 // biometric or PIN) as well as the device.
 //
-// Sessions are kept in memory, as hashes of their cookies, and end after
+// Sessions are kept by the SHA-256 of their cookies, in memory or in a
+// [Sessions] store such as the server's state database, and end after
 // [Config.IdleTimeout] without use or [Config.Lifetime] at most. People and
 // their passkeys are persisted to [Config.Path].
 //
@@ -23,6 +24,7 @@ package signin
 
 import (
 	"cmp"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -88,6 +90,10 @@ type Config struct {
 	// Path persists people and passkeys as JSON. Empty keeps them in
 	// memory.
 	Path string
+
+	// Sessions keeps browser sessions. Nil keeps them in memory, so a
+	// restart signs everyone out.
+	Sessions Sessions
 
 	// IdleTimeout ends sessions unused for this long, and Lifetime ends
 	// them this long after sign-in, whatever their use. They default to
@@ -172,9 +178,6 @@ type Session struct {
 	// Created and Expires bound the session's life.
 	Created time.Time `json:"created"`
 	Expires time.Time `json:"expires"`
-
-	lastSeen time.Time
-	binding  string // WebAuthn ceremony binding: the session's own secret
 }
 
 // Service signs people in and keeps their sessions. It's safe for
@@ -188,9 +191,11 @@ type Service struct {
 	now     func() time.Time
 	persist bool
 
+	// sessions keeps browser sessions, and has a lock of its own.
+	sessions Sessions
+
 	mu          sync.Mutex
 	people      []Person
-	sessions    map[[sha256.Size]byte]*Session
 	links       map[[sha256.Size]byte]link
 	enrollments map[string]enrollment // by ceremony ID
 }
@@ -234,13 +239,16 @@ func New(config Config) (*Service, error) {
 		logger:   cmp.Or(config.Logger, slog.New(slog.DiscardHandler)),
 		now:      config.Now,
 		persist:  config.Path != "",
-		sessions: make(map[[sha256.Size]byte]*Session),
+		sessions: config.Sessions,
 		links:    make(map[[sha256.Size]byte]link),
 
 		enrollments: make(map[string]enrollment),
 	}
 	if s.now == nil {
 		s.now = time.Now
+	}
+	if s.sessions == nil {
+		s.sessions = newMemorySessions()
 	}
 
 	store, err := webauthn.NewMemoryChallengeStore(1_000)
@@ -303,7 +311,18 @@ var ErrNotFound = errors.New("signin: not found")
 
 // DeletePerson removes a person and their passkeys, and ends their
 // sessions.
-func (s *Service) DeletePerson(id string) error {
+func (s *Service) DeletePerson(ctx context.Context, id string) error {
+	if err := s.deletePerson(id); err != nil {
+		return err
+	}
+	if err := s.sessions.DeletePerson(ctx, id); err != nil {
+		return fmt.Errorf("signin: ending removed person's sessions: %w", err)
+	}
+	s.logger.InfoContext(ctx, "signin: removed person", slog.String("person", id))
+	return nil
+}
+
+func (s *Service) deletePerson(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -316,8 +335,6 @@ func (s *Service) DeletePerson(id string) error {
 		return err
 	}
 	s.people = people
-	s.endSessions(id)
-	s.logger.Info("signin: removed person", slog.String("person", id))
 	return nil
 }
 

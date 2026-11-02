@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/brand"
 	"github.com/picatz/doh/internal/policy"
+	"github.com/picatz/doh/internal/statedb"
 )
 
 func TestSetupLinks(t *testing.T) {
@@ -114,14 +116,47 @@ func TestSetupLinks_NeedAPublicName(t *testing.T) {
 }
 
 func TestSetupLinks_Bounded(t *testing.T) {
-	l := newSetupLinks()
+	l := newSetupLinks(nil)
 	for range maxSetupLinks + 50 {
-		if _, _, err := l.create("p", ""); err != nil {
+		if _, _, err := l.create(t.Context(), "p", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n := len(l.links); n > maxSetupLinks {
+	if n := len(l.store.(*memorySetupLinks).links); n > maxSetupLinks {
 		t.Errorf("%d links kept, want at most %d", n, maxSetupLinks)
+	}
+}
+
+// Setup links outlive the server that made them, until they expire.
+func TestSetupLinks_SurviveRestarts(t *testing.T) {
+	dir := t.TempDir()
+	open := func() *setupLinks {
+		t.Helper()
+		db, err := statedb.Open(t.Context(), filepath.Join(dir, statedb.FileName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		return newSetupLinks(db.SetupLinks())
+	}
+	code, _, err := open().create(t.Context(), "kids", "tablet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := open()
+	link, ok, err := l.lookup(t.Context(), code)
+	if err != nil || !ok || link.Profile != "kids" || link.Device != "tablet" {
+		t.Fatalf("after a restart: %+v, %v, %v", link, ok, err)
+	}
+	// A guess, or a code of the wrong length, finds nothing.
+	for _, guess := range []string{code[:21] + map[bool]string{true: "B", false: "A"}[code[21] == 'A'], code + "A", ""} {
+		if _, ok, _ := l.lookup(t.Context(), guess); ok {
+			t.Errorf("%q found a link", guess)
+		}
+	}
+	l.now = func() time.Time { return time.Now().Add(SetupLinkTTL) }
+	if _, ok, _ := l.lookup(t.Context(), code); ok {
+		t.Error("an expired link was found after a restart")
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/ratelimit"
 	"github.com/picatz/doh/internal/signin"
 )
@@ -40,6 +41,9 @@ func (s *Server) configureSignin(addr net.Addr) error {
 	config := signin.Config{Origins: origins, Logger: s.logger}
 	if s.config.DataDir != "" {
 		config.Path = filepath.Join(s.config.DataDir, "people.json")
+	}
+	if s.stateDB != nil {
+		config.Sessions = s.stateDB.Sessions()
 	}
 	svc, err := signin.New(config)
 	if err != nil {
@@ -134,6 +138,10 @@ func (s *Server) apiSigninLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.audit(r, change{action: "signin_link.created", message: "sign-in link created", tenant: req.Tenant,
+		target:  audit.Target{Type: "signin_link"},
+		summary: "Made a sign-in link for " + string(role) + " access" + forTenant(req.Tenant),
+		details: details("role", string(role))})
 	writeJSON(w, http.StatusCreated, api.SigninLink{
 		URL:             s.uiURL() + "#signin=" + code,
 		Expires:         expires,
@@ -151,14 +159,27 @@ func (s *Server) apiPeople(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiDeletePerson(w http.ResponseWriter, r *http.Request) {
-	s.deleteSignin(w, r, func(svc *signin.Service) error { return svc.DeletePerson(r.PathValue("id")) })
+	s.deleteSignin(w, r, func(svc *signin.Service, p signin.Person) (change, error) {
+		return change{action: "person.deleted", message: "person removed", tenant: p.Tenant,
+			target:  audit.Target{Type: "person", ID: p.ID},
+			summary: "Removed " + p.Name + ", and their passkeys", details: details("person", p.ID, "name", p.Name)}, svc.DeletePerson(r.Context(), p.ID)
+	})
 }
 
 func (s *Server) apiDeletePasskey(w http.ResponseWriter, r *http.Request) {
-	s.deleteSignin(w, r, func(svc *signin.Service) error { return svc.DeletePasskey(r.PathValue("id"), r.PathValue("passkey")) })
+	s.deleteSignin(w, r, func(svc *signin.Service, p signin.Person) (change, error) {
+		id, name := r.PathValue("passkey"), ""
+		if i := slices.IndexFunc(p.Passkeys, func(k signin.Passkey) bool { return k.ID == id }); i >= 0 {
+			name = p.Passkeys[i].Name
+		}
+		return change{action: "person.passkey.deleted", message: "passkey removed", tenant: p.Tenant,
+				target:  audit.Target{Type: "person", ID: p.ID},
+				summary: "Removed passkey " + cmp.Or(name, id) + " of " + p.Name, details: details("person", p.ID, "passkey", id, "passkey_name", name)},
+			svc.DeletePasskey(p.ID, id)
+	})
 }
 
-func (s *Server) deleteSignin(w http.ResponseWriter, r *http.Request, del func(*signin.Service) error) {
+func (s *Server) deleteSignin(w http.ResponseWriter, r *http.Request, del func(*signin.Service, signin.Person) (change, error)) {
 	svc := s.signin.Load()
 	if svc == nil {
 		writeError(w, http.StatusNotFound, "not found")
@@ -169,20 +190,31 @@ func (s *Server) deleteSignin(w http.ResponseWriter, r *http.Request, del func(*
 	// like they don't exist.
 	who := principalOf(r)
 	id := r.PathValue("id")
-	if !slices.ContainsFunc(svc.People(), func(p signin.Person) bool { return p.ID == id && who.seesPerson(p) }) {
+	people := svc.People()
+	i := slices.IndexFunc(people, func(p signin.Person) bool { return p.ID == id && who.seesPerson(p) })
+	if i < 0 {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
-	switch err := del(svc); {
+	switch c, err := del(svc, people[i]); {
 	case errors.Is(err, signin.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
 	case err != nil:
 		s.logger.Error("admin: removing sign-in", slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "removing failed")
 	default:
+		s.audit(r, c)
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// forTenant describes a tenant, if there is one, as " for tenant ...".
+func forTenant(tenant string) string {
+	if tenant == "" {
+		return ""
+	}
+	return " for tenant " + tenant
 }
 
 // canonicalHost redirects UI page loads at a loopback IP address to

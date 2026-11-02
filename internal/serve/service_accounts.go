@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/serviceaccount"
 )
 
@@ -94,7 +95,9 @@ func (s *Server) apiCreateServiceAccount(w http.ResponseWriter, r *http.Request)
 	if s.writeAccountError(w, err) {
 		return
 	}
-	s.audit(r, "service account created", slog.String("account", a.ID), slog.String("name", a.Name), slog.String("role", string(a.Role)))
+	s.audit(r, change{action: "service_account.created", message: "service account created", tenant: a.Tenant, target: audit.Target{Type: "service_account", ID: a.ID},
+		summary: "Created service account " + a.Name + " (" + string(a.Role) + ")",
+		details: details("account", a.ID, "name", a.Name, "role", string(a.Role))})
 	writeJSON(w, http.StatusCreated, a)
 }
 
@@ -106,7 +109,8 @@ func (s *Server) apiDeleteServiceAccount(w http.ResponseWriter, r *http.Request)
 	if s.writeAccountError(w, s.accounts.Delete(a.ID)) {
 		return
 	}
-	s.audit(r, "service account deleted", slog.String("account", a.ID), slog.String("name", a.Name))
+	s.audit(r, change{action: "service_account.deleted", message: "service account deleted", tenant: a.Tenant, target: audit.Target{Type: "service_account", ID: a.ID},
+		summary: "Deleted service account " + a.Name, details: details("account", a.ID, "name", a.Name)})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -125,7 +129,9 @@ func (s *Server) apiAddKey(w http.ResponseWriter, r *http.Request) {
 	if s.writeAccountError(w, err) {
 		return
 	}
-	s.audit(r, "service account key added", slog.String("account", a.ID), slog.String("key", k.ID), slog.Time("expires", k.Expires), slog.String("jkt", k.JKT))
+	s.audit(r, change{action: "service_account.key.added", message: "service account key added", tenant: a.Tenant, target: audit.Target{Type: "service_account", ID: a.ID},
+		summary: "Added key " + k.ID + " to service account " + a.Name,
+		details: details("account", a.ID, "key", k.ID, "expires", k.Expires.UTC().Format(time.RFC3339), "jkt", k.JKT)})
 	writeJSON(w, http.StatusCreated, api.NewKey{Account: a.ID, Key: k, Secret: secret})
 }
 
@@ -149,8 +155,9 @@ func (s *Server) apiRotateKey(w http.ResponseWriter, r *http.Request) {
 	if s.writeAccountError(w, err) {
 		return
 	}
-	s.audit(r, "service account key rotated", slog.String("account", a.ID), slog.String("previous", r.PathValue("key")),
-		slog.String("key", k.ID), slog.Duration("grace", grace), slog.String("jkt", k.JKT))
+	s.audit(r, change{action: "service_account.key.rotated", message: "service account key rotated", tenant: a.Tenant, target: audit.Target{Type: "service_account", ID: a.ID},
+		summary: "Rotated key " + r.PathValue("key") + " of service account " + a.Name + " to " + k.ID,
+		details: details("account", a.ID, "previous", r.PathValue("key"), "key", k.ID, "grace", grace.String(), "jkt", k.JKT)})
 	writeJSON(w, http.StatusCreated, api.NewKey{Account: a.ID, Key: k, Secret: secret})
 }
 
@@ -162,7 +169,9 @@ func (s *Server) apiDeleteKey(w http.ResponseWriter, r *http.Request) {
 	if s.writeAccountError(w, s.accounts.DeleteKey(a.ID, r.PathValue("key"))) {
 		return
 	}
-	s.audit(r, "service account key revoked", slog.String("account", a.ID), slog.String("key", r.PathValue("key")))
+	s.audit(r, change{action: "service_account.key.revoked", message: "service account key revoked", tenant: a.Tenant, target: audit.Target{Type: "service_account", ID: a.ID},
+		summary: "Revoked key " + r.PathValue("key") + " of service account " + a.Name,
+		details: details("account", a.ID, "key", r.PathValue("key"))})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -192,14 +201,4 @@ func (s *Server) writeAccountError(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusInternalServerError, "saving service accounts failed")
 	}
 	return true
-}
-
-// audit logs a change to who can use the admin API, and who made it.
-func (s *Server) audit(r *http.Request, msg string, attrs ...slog.Attr) {
-	who := principalOf(r)
-	attrs = append(attrs, slog.String("by", who.by))
-	if who.tenant != "" {
-		attrs = append(attrs, slog.String("tenant", who.tenant))
-	}
-	s.logger.LogAttrs(r.Context(), slog.LevelInfo, "admin: "+msg, attrs...)
 }

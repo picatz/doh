@@ -64,7 +64,7 @@ func startZone(t *testing.T, records map[string]string) (string, *atomic.Int64) 
 }
 
 // writePolicy writes p as the policy file in dataDir.
-func writePolicy(t *testing.T, dataDir string, p *policy.Policy) {
+func writePolicy(t testing.TB, dataDir string, p *policy.Policy) {
 	t.Helper()
 	b, err := policy.Marshal(p)
 	if err != nil {
@@ -77,7 +77,7 @@ func writePolicy(t *testing.T, dataDir string, p *policy.Policy) {
 
 // newPolicyServer returns a server with profiles from p, forwarding to
 // upstream.
-func newPolicyServer(t *testing.T, upstream string, p *policy.Policy, configure ...func(*Config)) (*Server, string) {
+func newPolicyServer(t testing.TB, upstream string, p *policy.Policy, configure ...func(*Config)) (*Server, string) {
 	t.Helper()
 
 	dataDir := t.TempDir()

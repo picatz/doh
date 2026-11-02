@@ -20,6 +20,7 @@ import (
 
 	"github.com/picatz/doh/internal/alerts"
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
 	"github.com/picatz/doh/internal/serviceaccount"
@@ -769,6 +770,17 @@ func (c *Client) Undeny(ctx context.Context, profile, domain string) (*policy.Pr
 func (c *Client) Logs(ctx context.Context, f url.Values) (*querylog.Page, error) {
 	var page querylog.Page
 	if _, err := c.get(ctx, "/logs", f, &page); err != nil {
+		return nil, err
+	}
+	return &page, nil
+}
+
+// Audit returns a page of the audit trail matching the filter parameters
+// in q (tenant, actor, action, before, limit, and page_token), newest
+// first.
+func (c *Client) Audit(ctx context.Context, q url.Values) (*audit.Page, error) {
+	var page audit.Page
+	if _, err := c.get(ctx, "/audit", q, &page); err != nil {
 		return nil, err
 	}
 	return &page, nil
