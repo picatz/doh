@@ -95,20 +95,31 @@ const dir = mkdtempSync(join(tmpdir(), "doh-layout-"));
 const proc = spawn(chrome, [
   "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
   "--remote-debugging-port=0", `--user-data-dir=${dir}`, "about:blank",
-], { stdio: "ignore" });
+], { stdio: ["ignore", "ignore", "pipe"] });
+
+// Chrome's own errors, kept to say why it didn't start, if it doesn't.
+let chromeErrors = "";
+proc.stderr.on("data", (b) => { chromeErrors = (chromeErrors + b).slice(-4000); });
+let exited = null;
+proc.on("exit", (code, signal) => { exited = signal || `exit status ${code}`; });
 
 let ws;
 try {
-  // Chrome writes its port and path once it listens.
+  // Chrome writes its port and path once it listens. A cold start on a
+  // busy CI runner, with other packages' tests running, can take a while.
+  const START_TIMEOUT = 60_000;
   let port, path;
-  for (let i = 0; i < 200 && !port; i++) {
+  for (const deadline = Date.now() + START_TIMEOUT; !port && !exited && Date.now() < deadline;) {
     try {
       [port, path] = readFileSync(join(dir, "DevToolsActivePort"), "utf8").trim().split("\n");
     } catch {
       await sleep(50);
     }
   }
-  if (!port) throw new Error("Chrome didn't start");
+  if (!port) {
+    const why = exited ? `it exited (${exited})` : `it didn't listen within ${START_TIMEOUT / 1000}s`;
+    throw new Error(`Chrome didn't start: ${why}\n${chromeErrors.trim()}`);
+  }
 
   ws = new WebSocket(`ws://127.0.0.1:${port}${path}`);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error("can't reach Chrome")); });
