@@ -280,8 +280,17 @@ func TestPolicyChanges(t *testing.T) {
 	if c.details["services.removed"] != "tiktok" || c.details["security.bypass"] != "true" || c.details["tenant"] != "new" {
 		t.Errorf("details = %v", c.details)
 	}
-	if !strings.Contains(c.summary, "Unblocked TikTok (tiktok)") || !strings.Contains(c.summary, "changed security.bypass, tenant") {
+	if !strings.Contains(c.summary, "Unblocked TikTok (tiktok)") || !strings.Contains(c.summary, "turned on bypass blocking; changed tenant") {
 		t.Errorf("summary = %q", c.summary)
+	}
+	for path, want := range map[string]string{
+		"safe_search": "safe search", "security.typosquatting": "typosquatting protection",
+		"security.newly_registered_days": "how new a domain counts as newly registered",
+		"logging.disabled":               "query logging", "something_new.inner": "something new inner",
+	} {
+		if got := settingLabel(path); got != want {
+			t.Errorf("settingLabel(%q) = %q, want %q", path, got, want)
+		}
 	}
 }
 
