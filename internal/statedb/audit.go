@@ -36,7 +36,14 @@ func (a auditStore) Record(ctx context.Context, e audit.Event) error {
 	return nil
 }
 
-func (a auditStore) List(ctx context.Context, f audit.Filter) (audit.Page, error) {
+// listQuery returns the query that lists the page f asks for, newest
+// first, and its arguments. Pages continue by seq (keyset pagination), so
+// a page costs the same however far back it is, and every filter has an
+// index that walks its events in seq order (migration 0003): the tenant,
+// the action's resource (its first dotted part, a generated column), and
+// the actor's ID or name. An actor filter matches either, which SQLite
+// answers from both indexes, then sorts what one actor did.
+func listQuery(f audit.Filter) (string, []any, error) {
 	var (
 		where []string
 		args  []any
@@ -49,9 +56,11 @@ func (a auditStore) List(ctx context.Context, f audit.Filter) (audit.Page, error
 	}
 	if f.Action != "" {
 		// Exactly, or under it: never with LIKE, whose wildcards an action
-		// such as service_account would trip.
-		where = append(where, "(action = ? OR substr(action, 1, ?) = ?)")
-		args = append(args, f.Action, utf8.RuneCountInString(f.Action)+1, f.Action+".")
+		// such as service_account would trip. The resource narrows it to
+		// an index; the rest checks the whole prefix.
+		resource, _, _ := strings.Cut(f.Action, ".")
+		where = append(where, "resource = ?", "(action = ? OR substr(action, 1, ?) = ?)")
+		args = append(args, resource, f.Action, utf8.RuneCountInString(f.Action)+1, f.Action+".")
 	}
 	if !f.Before.IsZero() {
 		where, args = append(where, "time < ?"), append(args, nanos(f.Before))
@@ -59,7 +68,7 @@ func (a auditStore) List(ctx context.Context, f audit.Filter) (audit.Page, error
 	if f.PageToken != "" {
 		before, err := audit.DecodePageToken(f.PageToken)
 		if err != nil {
-			return audit.Page{}, err
+			return "", nil, err
 		}
 		where, args = append(where, "seq < ?"), append(args, int64(min(before, 1<<62)))
 	}
@@ -68,10 +77,17 @@ func (a auditStore) List(ctx context.Context, f audit.Filter) (audit.Page, error
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	limit := f.PageLimit()
 	query += " ORDER BY seq DESC LIMIT ?"
-	args = append(args, limit+1) // one more, to know if there's a next page
+	args = append(args, f.PageLimit()+1) // one more, to know if there's a next page
+	return query, args, nil
+}
 
+func (a auditStore) List(ctx context.Context, f audit.Filter) (audit.Page, error) {
+	query, args, err := listQuery(f)
+	if err != nil {
+		return audit.Page{}, err
+	}
+	limit := f.PageLimit()
 	rows, err := a.db.readRows(ctx, query, args...)
 	if err != nil {
 		return audit.Page{}, fmt.Errorf("statedb: listing audit events: %w", err)

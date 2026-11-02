@@ -151,3 +151,23 @@ func BenchmarkAudit(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkSeenDevices_Save is the worst a save every 30 seconds costs:
+// every one of the 4,096 devices remembered changed, in one transaction,
+// with the bound enforced.
+func BenchmarkSeenDevices_Save(b *testing.B) {
+	db, _ := openTest(b)
+	d, ctx, now := db.SeenDevices(), b.Context(), time.Now()
+	batch := make([]SeenDevice, 4096)
+	for i := range batch {
+		batch[i] = SeenDevice{Profile: "default", Client: "10.0." + strconv.Itoa(i/256) + "." + strconv.Itoa(i%256), Transport: "udp", First: now, Last: now}
+	}
+	for b.Loop() {
+		for i := range batch {
+			batch[i].Last = batch[i].Last.Add(time.Second)
+		}
+		if err := d.Save(ctx, batch, 4096); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
