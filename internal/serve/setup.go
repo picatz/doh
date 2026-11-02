@@ -155,6 +155,12 @@ func (s *Server) apiMobileConfig(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.serveMobileConfig(w, r, pr, device)
+}
+
+// serveMobileConfig writes the Apple configuration profile for pr and
+// device, over DoH or, with protocol=tls, DoT.
+func (s *Server) serveMobileConfig(w http.ResponseWriter, r *http.Request, pr *policy.Profile, device string) {
 	setup := s.setupFor(pr, device)
 
 	dns := plist.Dict{{Key: "DNSProtocol", Value: plist.String("HTTPS")}, {Key: "ServerURL", Value: plist.String(setup.DoHURL)}}

@@ -91,6 +91,7 @@ type Server struct {
 	accounts      *serviceaccount.Store
 	signin        atomic.Pointer[signin.Service]
 	signinLimiter *ratelimit.Limiter
+	setupLinks    *setupLinks
 
 	trustedProxies []netip.Prefix
 
@@ -128,6 +129,7 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		listeners: make(map[string]string),
 
 		signinLimiter: newSigninLimiter(),
+		setupLinks:    newSetupLinks(),
 	}
 
 	if config.Admin.flightRecorder() {
@@ -191,6 +193,9 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 
 	dohHandler := doh.NewHandler(handler, doh.WithLogger(logger))
 	mux := http.NewServeMux()
+	// Setup links' pages, opened on the device being set up.
+	mux.HandleFunc("GET "+setupPath+"{code}", s.setupPage)
+	mux.HandleFunc("GET "+setupPath+"{code}/{file}", s.setupPage)
 	mux.Handle("GET "+config.Path, s.hostProfileGate(dohHandler))
 	mux.Handle("POST "+config.Path, s.hostProfileGate(dohHandler))
 	base := strings.TrimSuffix(config.Path, "/")

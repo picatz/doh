@@ -47,6 +47,7 @@
 //	POST   /api/v1/service-accounts/{id}/keys/{key}/rotate   RotateKeyRequest → 201 NewKey
 //	DELETE /api/v1/service-accounts/{id}/keys/{key}          204
 //	GET    /api/v1/profiles/{id}/setup?device=    Setup
+//	POST   /api/v1/profiles/{id}/setup-links?device=   → 201 SetupLink
 //	GET    /api/v1/profiles/{id}/apple.mobileconfig?device=&protocol=   Apple configuration profile
 //
 // The logs, stream, and stats endpoints take the filter parameters that
@@ -406,6 +407,16 @@ type NewKey struct {
 	Account string             `json:"account"`
 	Key     serviceaccount.Key `json:"key"`
 	Secret  string             `json:"secret"`
+}
+
+// SetupLink is a short-lived link to a page that sets a device up for a
+// profile, to open on the device itself.
+type SetupLink struct {
+	// URL is the page, on the server's public listener.
+	URL string `json:"url"`
+
+	// Expires is when the link stops working.
+	Expires time.Time `json:"expires"`
 }
 
 // People lists who can sign in with passkeys.

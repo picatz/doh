@@ -1,0 +1,73 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>{{.}} · doh</title>
+<style>
+:root { --bg: #f7f7f9; --surface: #fff; --surface-2: #f1f1f5; --border: #e2e2ea; --text: #17171c; --muted: #5d5d69; --glaze: #c2255c; --glaze-ink: #a01d4b; --on-glaze: #fff; color-scheme: light dark; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0f0f13; --surface: #17171d; --surface-2: #1f1f27; --border: #2a2a34; --text: #ececf2; --muted: #a2a2b0; --glaze: #f06595; --glaze-ink: #ff8fb4; --on-glaze: #1c0611; } }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100dvh; background: var(--bg); color: var(--text); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; padding: max(1.25rem, env(safe-area-inset-top)) 1rem max(2rem, env(safe-area-inset-bottom)); }
+main { max-width: 32rem; margin: 0 auto; }
+.mark { display: block; width: 4.5rem; height: 4.5rem; margin: 1.5rem auto 1rem; }
+h1 { font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif; font-size: 1.6rem; line-height: 1.2; letter-spacing: -.02em; text-align: center; margin: 0 0 .5rem; }
+.lede { text-align: center; color: var(--muted); margin: 0 0 1.75rem; }
+.lede strong { color: var(--text); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem 1.2rem; margin-bottom: .9rem; }
+h2 { font-size: 1rem; margin: 0 0 .5rem; }
+ol { margin: 0; padding-left: 1.3rem; display: grid; gap: .4rem; }
+li::marker { color: var(--glaze); font-weight: 700; }
+.button { display: flex; align-items: center; justify-content: center; min-height: 3rem; margin: .25rem 0 .75rem; border-radius: 12px; background: var(--glaze); color: var(--on-glaze); font-weight: 650; text-decoration: none; }
+.button:active { opacity: .85; }
+code { display: block; margin-top: .4rem; padding: .55rem .7rem; border-radius: 8px; background: var(--surface-2); font: .9rem/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+.muted { color: var(--muted); font-size: .9rem; }
+.foot { text-align: center; margin-top: 1.5rem; }
+details summary { cursor: pointer; font-weight: 600; min-height: 2.75rem; display: flex; align-items: center; }
+details[open] summary { margin-bottom: .4rem; }
+</style>
+</head>
+<body>
+<main>
+<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16.8" r="10" fill="none" stroke="#e8b46f" stroke-width="9"/><circle cx="16" cy="15.4" r="10" fill="none" stroke="#d6336c" stroke-width="8"/><g fill="#ff9fbf" opacity=".75"><ellipse cx="7.3" cy="12.6" rx="1.5" ry="1"/><ellipse cx="24.7" cy="12.6" rx="1.5" ry="1"/></g><g fill="none" stroke="#2a0a17" stroke-width="1.35" stroke-linecap="round"><path d="M9.3 8.4q1.1-1.3 2.2 0M20.5 8.4q1.1-1.3 2.2 0"/></g></svg>
+{{end}}
+
+{{define "setup"}}{{template "head" .Profile}}
+<h1>Protect this device</h1>
+<p class="lede">It'll use the <strong>{{.Profile}}</strong> profile{{with .Device}} as <strong>{{.}}</strong>{{end}}. Pick what this device is.</p>
+
+{{if .Download}}<section class="card">
+  <h2>iPhone, iPad, or Mac</h2>
+  <a class="button" href="{{.Download}}">Install the profile</a>
+  <ol>
+    <li>Tap Allow when asked to download it.</li>
+    <li>iPhone and iPad: open Settings, tap Profile Downloaded, then Install. Mac: open System Settings, then Privacy &amp; Security, then Profiles.</li>
+    <li>It works on every network. Remove it from the same place to stop.</li>
+  </ol>
+</section>{{end}}
+
+{{range .Platforms}}<details class="card">
+  <summary>{{.Name}}</summary>
+  <ol>{{range .Steps}}<li>{{.}}</li>{{end}}</ol>
+</details>{{end}}
+
+{{if .DoHURL}}<section class="card">
+  <h2>Anything else</h2>
+  <p class="muted">Apps and devices that take a DNS-over-HTTPS address can use this one:</p>
+  <code>{{.DoHURL}}</code>
+  {{with .DoTHost}}<p class="muted">Or, for DNS over TLS (Android's Private DNS):</p><code>{{.}}</code>{{end}}
+</section>{{end}}
+
+<p class="foot muted">This link works for about {{.Minutes}} more minutes.</p>
+</main>
+</body>
+</html>{{end}}
+
+{{define "expired"}}{{template "head" "Link expired"}}
+<h1>This link has expired</h1>
+<p class="lede">Setup links work for 30 minutes. Ask whoever sent it for a new one.</p>
+</main>
+</body>
+</html>{{end}}
