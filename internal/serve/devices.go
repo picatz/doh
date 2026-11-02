@@ -2,6 +2,8 @@ package serve
 
 import (
 	"cmp"
+	"context"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/policy"
+	"github.com/picatz/doh/internal/statedb"
 )
 
 // maxSeenDevices bounds how many devices the server remembers having
@@ -35,17 +38,86 @@ type seenDevice struct {
 	first, last time.Time
 }
 
-// seenDevices remembers, in memory, the devices the server has answered
-// since it started, whether or not their profile logs queries: what lets
-// the web UI tell someone that the phone they just set up is connected.
-// It's bounded, and costs a map lookup per query.
+// seenDevices remembers the devices the server has answered, whether or
+// not their profiles log queries: what lets the web UI tell someone that
+// the phone they just set up is connected. It's bounded, and costs a map
+// lookup per query. With a state database, what changed is saved every
+// seenSaveInterval and when the server closes, and loaded when it starts,
+// so devices seen survive restarts.
 type seenDevices struct {
 	mu      sync.Mutex
 	devices map[seenKey]*seenDevice
+	dirty   map[seenKey]struct{} // changed since last saved
+	since   time.Time            // when remembering began
 }
 
-func newSeenDevices() *seenDevices {
-	return &seenDevices{devices: make(map[seenKey]*seenDevice)}
+// seenSaveInterval is how often the devices seen are saved.
+const seenSaveInterval = 30 * time.Second
+
+func newSeenDevices(now time.Time) *seenDevices {
+	return &seenDevices{devices: make(map[seenKey]*seenDevice), dirty: make(map[seenKey]struct{}), since: now}
+}
+
+// load adds the devices store kept, as when the server last saved them.
+func (d *seenDevices) load(ctx context.Context, store *statedb.SeenDevices) error {
+	saved, err := store.Load(ctx, maxSeenDevices)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, s := range saved {
+		client, _ := netip.ParseAddr(s.Client)
+		k := seenKey{s.Profile, s.Device, client}
+		if _, ok := d.devices[k]; ok || len(d.devices) >= maxSeenDevices {
+			continue
+		}
+		d.devices[k] = &seenDevice{tenant: s.Tenant, transport: s.Transport, first: s.First, last: s.Last}
+		if s.First.Before(d.since) {
+			d.since = s.First
+		}
+	}
+	return nil
+}
+
+// save stores what changed since it last did.
+func (d *seenDevices) save(ctx context.Context, store *statedb.SeenDevices) error {
+	d.mu.Lock()
+	batch := make([]statedb.SeenDevice, 0, len(d.dirty))
+	for k := range d.dirty {
+		e := d.devices[k]
+		if e == nil {
+			continue // forgotten since
+		}
+		s := statedb.SeenDevice{Profile: k.profile, Device: k.device, Tenant: e.tenant, Transport: e.transport, First: e.first, Last: e.last}
+		if k.client.IsValid() {
+			s.Client = k.client.String()
+		}
+		batch = append(batch, s)
+	}
+	clear(d.dirty)
+	d.mu.Unlock()
+	if len(batch) == 0 {
+		return nil
+	}
+	return store.Save(ctx, batch, maxSeenDevices)
+}
+
+// saveSeen saves the devices seen every seenSaveInterval, until ctx is
+// done. Close saves the rest.
+func (s *Server) saveSeen(ctx context.Context) error {
+	ticker := time.NewTicker(seenSaveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+		if err := s.seen.save(ctx, s.stateDB.SeenDevices()); err != nil && ctx.Err() == nil {
+			s.logger.Warn("saving the devices seen", slog.Any("error", err))
+		}
+	}
 }
 
 // observe records that the server answered a query from client, under
@@ -59,12 +131,14 @@ func (d *seenDevices) observe(profile, tenant, device string, client netip.Addr,
 	defer d.mu.Unlock()
 	if e := d.devices[k]; e != nil {
 		e.last, e.transport, e.tenant = now, transport, tenant
+		d.dirty[k] = struct{}{}
 		return
 	}
 	if len(d.devices) >= maxSeenDevices {
 		d.forgetOldest(maxSeenDevices / 8)
 	}
 	d.devices[k] = &seenDevice{tenant: tenant, transport: transport, first: now, last: now}
+	d.dirty[k] = struct{}{}
 }
 
 // forgetOldest forgets the n least recently seen devices. d.mu must be
@@ -131,8 +205,8 @@ func (d *seenDevices) list(f seenFilter) []api.SeenDevice {
 	return out
 }
 
-// apiDevices lists the devices the server has answered since it started,
-// as the caller may see them: a tenant, only its own profiles' devices.
+// apiDevices lists the devices the server has answered, as the caller may
+// see them: a tenant, only its own profiles' devices.
 //
 // Query parameters: profile, device (present to match exactly, even
 // empty), since (RFC 3339), and new=true to list only devices first seen
@@ -190,5 +264,8 @@ func (s *Server) apiDevices(w http.ResponseWriter, r *http.Request) {
 			devices[i].Hostname = s.hostnames.Name(a)
 		}
 	}
-	writeJSON(w, http.StatusOK, api.SeenDevices{Since: s.started, Devices: devices})
+	s.seen.mu.Lock()
+	since := s.seen.since
+	s.seen.mu.Unlock()
+	writeJSON(w, http.StatusOK, api.SeenDevices{Since: since, Devices: devices})
 }

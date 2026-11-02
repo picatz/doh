@@ -708,9 +708,9 @@ type SetupLink struct {
 	QR *QRCode `json:"qr,omitempty"`
 }
 
-// SeenDevices lists devices the server has answered since it started,
-// most recently seen first, as the caller may see them. The server keeps
-// them in memory only, whether or not their profiles log queries.
+// SeenDevices lists devices the server has answered, most recently seen
+// first, as the caller may see them, whether or not their profiles log
+// queries. With a data directory, they're kept across restarts.
 type SeenDevices struct {
 	// Since is when the server started remembering: before it, nothing
 	// is known.
