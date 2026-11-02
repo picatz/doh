@@ -13,7 +13,7 @@ export const state = {
   readOnly: false,
   logNext: "",
   live: null, // AbortController of the live stream
-  connect: { device: "", platform: "" }, // the "Connect a device" choices
+  connect: { device: "", platform: "", query: "" }, // the "Connect a device" choices
   draft: null, // the schedule being added or edited, kept across renders
   appQuery: "", // the Apps search, kept across renders
   logScope: { since: "", until: "", reason: "" }, // what a link narrowed Activity to

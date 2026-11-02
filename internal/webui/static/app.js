@@ -12,6 +12,7 @@ import { report } from "./api.js";
 import { wirePalette, wireShortcuts, wireTheme } from "./commands.js";
 import { $, clear } from "./dom.js";
 import { runExplain } from "./explain.js";
+import { loadHistory } from "./history.js";
 import { loadSetup, renderSetupCard, renderSetupView } from "./onboarding.js";
 import { renderOverview } from "./overview.js";
 import { addPasskey } from "./people.js";
@@ -31,6 +32,7 @@ export function wire() {
   $("secret-copy").addEventListener("click", copySecret);
   $("alerts-add").addEventListener("click", () => openAddDestination());
   $("alerts-test").addEventListener("click", testAlerts);
+  $("history-more").addEventListener("click", () => loadHistory(false).catch(report));
   $("alert-form").addEventListener("submit", addDestination);
   $("alert-cancel").addEventListener("click", () => $("alert-dialog").close());
   for (const r of $("alert-form").querySelectorAll('input[name="alert-type"]')) r.addEventListener("change", alertTypeChanged);

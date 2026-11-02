@@ -6,7 +6,7 @@
 //
 //   import { pushSupported, prepare, subscribe, unsubscribe, thisBrowser } from "./push.js";
 //
-//   if (pushSupported()) prepare(api);              // when the Security view opens
+//   if (pushSupported()) prepare(api);              // when Settings › Alerts opens
 //   const dest = await subscribe(api, { name });    // in a click handler
 //   const mine = await thisBrowser(alerts.destinations);
 //   await unsubscribe(api, alerts.destinations);    // in a click handler

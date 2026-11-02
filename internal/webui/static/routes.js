@@ -16,6 +16,7 @@ export const SETTINGS = [
   { id: "api", title: "Service accounts & API", icon: "code", group: "Automation" },
   { id: "tenants", title: "Tenants", icon: "tenants", group: "Server", operator: true },
   { id: "server", title: "Server", icon: "server", group: "Server" },
+  { id: "audit", title: "Change history", icon: "history", group: "Server", admin: true },
 ];
 
 // PROFILE_SECTIONS are a profile's sections, in the order it lists them.

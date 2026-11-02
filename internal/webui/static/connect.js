@@ -1,6 +1,7 @@
-import { api, report } from "./api.js";
-import { buddy, clear, copyButton, edit, h, icon, qrCode, toast } from "./dom.js";
-import { burst, enter } from "./motion.js";
+import { API, api, report } from "./api.js";
+import { buddy, clear, copyButton, edit, h, icon, qrCode, statusIcon, toast } from "./dom.js";
+import { burst, enter, reducedMotion } from "./motion.js";
+import { groupPlatforms, guessPlatform, level, signingState } from "./platforms.js";
 import { section } from "./profiles.js";
 import { routeHash } from "./routes.js";
 import { isOperator, state } from "./state.js";
@@ -11,17 +12,6 @@ import { deviceQuery, linkSince, sleep, watch } from "./watch.js";
 export const DEVICE_NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export const validDevice = (name) => name === "" || (DEVICE_NAME.test(name) && !name.includes("--"));
-
-// guessPlatform picks the platform of the browser showing the UI, which is
-// often the device being set up.
-export function guessPlatform() {
-  const ua = navigator.userAgent;
-  if (/iPhone|iPad|Macintosh/.test(ua)) return "apple";
-  if (/Android/.test(ua)) return "android";
-  if (/Windows/.test(ua)) return "windows";
-  if (/Linux/.test(ua)) return "linux";
-  return "";
-}
 
 // deviceField is the device name input that the setup link and the
 // settings by hand share, validated as people type.
@@ -111,7 +101,10 @@ export function setupLinkFlow(p, deviceName, { onConnected } = {}) {
       const until = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(link.expires));
       const status = h("div", { class: "watch", role: "status" });
       // Node.append would write a missing part as the text "null".
+      // The live status comes first, above the code: on a phone the code
+      // fills the screen, and "Connected" mustn't happen out of view.
       clear(out).append(...[
+        status,
         h("div", { class: "send-link" },
           link.qr ? qrCode(link.qr, `QR code for the setup link for ${p.name || p.id}`) : null,
           h("div", { class: "send-text" },
@@ -119,9 +112,8 @@ export function setupLinkFlow(p, deviceName, { onConnected } = {}) {
               h("span", { class: "muted", text: `, or send it the link. It works until ${until}, once per device.` })),
             url,
             h("div", { class: "send-actions" }, share, copy))),
-        status,
       ].filter(Boolean));
-      enter(out.firstElementChild);
+      enter(out.lastElementChild);
       make.textContent = "";
       make.append(icon("link"), "Make a new link");
       watching = watchFor(status, p, device, link, onConnected);
@@ -179,12 +171,24 @@ function watchFor(status, p, device, link, onConnected) {
       h("p", { class: "muted", text: `It asked its first question at ${at}, over ${TRANSPORTS[found.transport] || found.transport}.` }),
       h("a", { class: "button small", href: routeHash("logs", "", { profile: p.id, client: found.client }) }, icon("log"), "See its activity")));
     burst(status);
+    revealStatus(status);
     onConnected?.(found);
   });
   return ctl;
 }
 
-// renderSetup fills body with a setup's endpoints and instructions.
+// revealStatus brings a status that changed into view, if it's out of it,
+// smoothly unless someone prefers reduced motion, without moving focus.
+function revealStatus(el) {
+  const r = el.getBoundingClientRect();
+  if (r.top >= 0 && r.bottom <= innerHeight) return;
+  el.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+}
+
+// renderSetup fills body with a setup's endpoints, then a picker of
+// platforms, grouped and searchable, that opens one platform's steps in
+// its place: a list, then its detail, which fits a 320-pixel phone as
+// well as a desktop.
 export function renderSetup(body, setup) {
   clear(body);
 
@@ -200,82 +204,137 @@ export function renderSetup(body, setup) {
     ])));
   }
 
-  const platforms = setup.platforms || [];
-  if (!platforms.length) return;
+  const platforms = (setup.platforms || []).filter((p) => p.id !== "none");
+  if (!platforms.length) {
+    const none = (setup.platforms || []).find((p) => p.id === "none");
+    if (none) body.append(h("ol", { class: "steps" }, none.steps.map((step) => h("li", { text: step }))));
+    return;
+  }
+  const picker = h("div", { class: "picker" });
+  body.append(picker);
+  const ids = platforms.map((p) => p.id);
+  const suggested = guessPlatform(navigator.userAgent, ids, navigator.maxTouchPoints || 0);
 
-  const ids = platforms.map((pl) => pl.id);
-  let current = ids.includes(state.connect.platform) ? state.connect.platform
-    : ids.includes(guessPlatform()) ? guessPlatform() : ids[0];
-
-  const tabs = h("div", { class: "segmented", role: "tablist", "aria-label": "Platform" });
-  const panel = h("div", { class: "platform", role: "tabpanel" });
-
-  const select = (platformID, focus = false) => {
-    current = platformID;
-    state.connect.platform = platformID;
-    for (const tab of tabs.children) {
-      const on = tab.dataset.platform === platformID;
-      tab.setAttribute("aria-selected", String(on));
-      tab.tabIndex = on ? 0 : -1;
-      if (on && focus) tab.focus();
-    }
-    const pl = platforms.find((x) => x.id === platformID);
-    panel.setAttribute("aria-label", pl.name);
-    clear(panel).append(h("ol", { class: "steps" }, pl.steps.map((step) => h("li", { text: step }))));
-    if (pl.id === "apple" && pl.download) panel.append(appleDownloads(setup));
+  const showList = (focusID = "") => {
+    state.connect.platform = "";
+    const search = h("input", {
+      type: "search", class: "picker-search", placeholder: "Find a device: iPhone, Xbox, router…",
+      "aria-label": "Find a device", autocomplete: "off", spellcheck: "false", value: state.connect.query || "",
+    });
+    const results = h("div", { class: "picker-results" });
+    const found = h("p", { class: "visually-hidden", role: "status" });
+    const fill = () => {
+      state.connect.query = search.value;
+      const groups = groupPlatforms(setup, search.value);
+      const n = groups.reduce((sum, g) => sum + g.platforms.length, 0);
+      found.textContent = search.value ? `${n} ${n === 1 ? "kind of device" : "kinds of device"} found` : "";
+      clear(results);
+      if (!groups.length) {
+        results.append(h("p", { class: "muted", role: "status", text: `Nothing called "${search.value.trim()}". Try its maker, or "smart TV", "console", or "router".` }));
+        return;
+      }
+      if (!search.value && suggested) {
+        const pl = platforms.find((p) => p.id === suggested);
+        results.append(h("section", { class: "picker-group" }, h("h4", { text: "This device" }), h("ul", { class: "picker-list" }, platformRow(pl, showDetail))));
+      }
+      for (const { group, platforms: list } of groups) {
+        results.append(h("section", { class: "picker-group", "aria-label": group.name || "Devices" },
+          group.name ? h("h4", { text: group.name }) : null,
+          h("ul", { class: "picker-list" }, list.map((pl) => platformRow(pl, showDetail)))));
+      }
+    };
+    search.addEventListener("input", fill);
+    // Arrow keys move through the list, and from the search into it.
+    picker.onkeydown = (e) => {
+      const step = { ArrowDown: 1, ArrowUp: -1 }[e.key];
+      if (!step || !picker.contains(document.activeElement)) return;
+      const rows = [...picker.querySelectorAll(".picker-row")];
+      const i = rows.indexOf(document.activeElement);
+      if (i < 0 && document.activeElement !== search) return;
+      e.preventDefault();
+      const next = i < 0 ? (step > 0 ? 0 : -1) : i + step;
+      if (next < 0) search.focus();
+      else rows[Math.min(next, rows.length - 1)]?.focus();
+    };
+    fill();
+    clear(picker).append(search, found, results);
+    if (focusID) picker.querySelector(`[data-platform="${CSS.escape(focusID)}"]`)?.focus();
   };
 
-  for (const pl of platforms) {
-    tabs.append(h("button", {
-      type: "button", role: "tab", text: pl.name, "data-platform": pl.id,
-      onClick: () => select(pl.id),
-    }));
+  const showDetail = (pl) => {
+    state.connect.platform = pl.id;
+    picker.onkeydown = null;
+    const back = h("button", { type: "button", class: "back picker-back", onClick: () => showList(pl.id) }, icon("chevron-left"), "All devices");
+    clear(picker).append(back, platformDetail(setup, pl));
+    enter(picker.lastElementChild);
+    // Focus moves to what opened, so a screen reader reads its name.
+    picker.querySelector(".platform-head h4")?.focus({ preventScroll: true });
+  };
+
+  const remembered = platforms.find((p) => p.id === state.connect.platform);
+  if (remembered) showDetail(remembered);
+  else showList();
+}
+
+// levelBadge says how well a platform protects a device, in a word and a
+// symbol as well as a color.
+function levelBadge(pl) {
+  const l = level(pl);
+  return l ? h("span", { class: `badge prot ${l.tone}` }, statusIcon(l.icon), l.label) : null;
+}
+
+// platformRow is a platform in the picker's list.
+function platformRow(pl, open) {
+  return h("li", {}, h("button", { type: "button", class: "picker-row", "data-platform": pl.id, onClick: () => open(pl) },
+    h("span", { class: "picker-name", text: pl.name }),
+    levelBadge(pl),
+    icon("chevron-right", "chevron")));
+}
+
+// platformDetail is everything about setting up one platform: how well
+// it's protected, its steps and files, how to check, and its caveats.
+function platformDetail(setup, pl) {
+  const signing = signingState(pl.signing);
+  const out = h("div", { class: "platform", role: "region", "aria-label": pl.name },
+    h("div", { class: "platform-head" }, h("h4", { text: pl.name, tabindex: "-1" }), levelBadge(pl)),
+    pl.protection?.summary ? h("p", { class: "muted platform-summary", text: pl.protection.summary }) : null,
+    h("ol", { class: "steps" }, pl.steps.map((step) => h("li", { text: step }))));
+  if (pl.downloads?.length) {
+    out.append(h("div", { class: "downloads" }, pl.downloads.map((d, i) => h("button", {
+      type: "button", class: i === 0 ? "primary" : "",
+      onClick: (e) => downloadFile(d, e.currentTarget),
+    }, icon("download"), d.name))));
   }
-  // Arrow keys move between tabs, as WAI-ARIA's tabs pattern describes.
-  tabs.addEventListener("keydown", (e) => {
-    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
-    if (!step) return;
-    e.preventDefault();
-    const i = ids.indexOf(current);
-    select(ids[(i + step + ids.length) % ids.length], true);
-  });
-
-  body.append(tabs, panel);
-  select(current);
+  if (signing) {
+    out.append(h("p", { class: `signing ${signing.verified ? "ok" : "warn"}` },
+      h("span", { class: `status ${signing.verified ? "ok" : "warn"}` }, statusIcon(signing.verified ? "check" : "warn"), signing.label),
+      h("span", { class: "muted", text: " " + signing.line })));
+  }
+  const facts = [
+    ["Check it worked", pl.check],
+    ["How doh knows it's this device", pl.identified],
+  ].filter(([, v]) => v);
+  if (facts.length) out.append(h("dl", { class: "platform-facts" }, facts.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])));
+  // The signing note is said above, with its state; not again here.
+  const notes = (pl.notes || []).filter((n) => n !== pl.signing?.note);
+  if (notes.length) out.append(h("ul", { class: "platform-notes muted" }, notes.map((n) => h("li", { text: n }))));
+  return out;
 }
 
-// appleDownloads offers configuration profiles for Apple devices.
-export function appleDownloads(setup) {
-  const buttons = h("div", { class: "downloads" });
-  const offer = (label, protocol, primary) => buttons.append(h("button", {
-    type: "button", class: primary ? "primary" : "", text: label,
-    onClick: (e) => downloadMobileConfig(setup, protocol, e.currentTarget),
-  }));
-  if (setup.doh_url) offer("Download configuration profile", "https", true);
-  if (setup.dot_host) offer(setup.doh_url ? "DNS-over-TLS version" : "Download configuration profile", "tls", !setup.doh_url);
-  buttons.append(h("p", { class: "muted hint", text: "Configuration profiles aren't signed, so devices show them as unverified. Downloading again replaces the installed one." }));
-  return buttons;
-}
-
-// downloadMobileConfig fetches a configuration profile, so a failure can be
-// shown here rather than saved as a file, and saves it through a temporary
-// object URL.
-export async function downloadMobileConfig(setup, protocol, button) {
+// downloadFile fetches a setup file, so a failure can be shown here rather
+// than saved as a file, and saves it through a temporary object URL.
+export async function downloadFile(d, button) {
   button.disabled = true;
   try {
-    const resp = await api("GET", `/profiles/${encodeURIComponent(setup.profile)}/apple.mobileconfig`, {
-      query: { device: setup.device, protocol }, raw: true,
-    });
-    const blob = await resp.blob();
-    const name = [setup.profile, setup.device].filter(Boolean).join("-") + ".mobileconfig";
-
-    const url = URL.createObjectURL(blob);
-    const a = h("a", { href: url, download: name, hidden: true });
+    const path = d.path.startsWith(API) ? d.path.slice(API.length) : d.path;
+    const resp = await api("GET", path, { raw: true });
+    const url = URL.createObjectURL(await resp.blob());
+    const a = h("a", { href: url, download: d.file, hidden: true });
     document.body.append(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
-    toast(`Downloaded ${name}`);
+    toast(`Downloaded ${d.file}`);
   } catch (err) {
     report(err);
   } finally {

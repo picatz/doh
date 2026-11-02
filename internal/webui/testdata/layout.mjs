@@ -29,7 +29,7 @@ const ROUTES = [
   "#/overview", "#/setup", "#/profiles", "#/profiles/kids",
   ...["connect", "protection", "apps", "rules", "devices", "settings"].map((tab) => `#/profiles/kids?tab=${tab}`),
   "#/logs", "#/explain", "#/settings",
-  ...["account", "people", "alerts", "api", "tenants", "server"].map((s) => `#/settings/${s}`),
+  ...["account", "people", "alerts", "api", "tenants", "server", "audit"].map((s) => `#/settings/${s}`),
   "#/security",
 ];
 

@@ -58,10 +58,11 @@ export function commands(query) {
     list.push(place("settings-" + s.id, `Settings: ${s.title}`, "i-" + s.icon, ["settings", s.id], {
       account: ["passkeys", "sign out", "theme", "appearance", "me"],
       people: ["invite", "household", "family", "users"],
-      alerts: ["notifications", "ntfy", "webhooks", "quiet hours"],
+      alerts: ["notifications", "push", "email", "ntfy", "webhooks", "quiet hours"],
       api: ["service accounts", "keys", "tokens", "automation", "home assistant"],
       tenants: ["households", "customers", "organizations"],
       server: ["version", "upstreams", "blocklists", "lists", "status"],
+      audit: ["audit", "activity log", "who changed", "changes", "history"],
     }[s.id] || []));
   }
 
@@ -95,7 +96,7 @@ export function commands(query) {
       first ? { id: "connect", group: "Actions", title: "Connect a device", icon: "i-phone", keywords: ["setup link", "qr", "phone", "tablet", "add device"], run: () => go("profiles", first.id, { tab: "connect" }) } : null,
       { id: "new-profile", group: "Actions", title: "New profile", icon: "i-plus", keywords: ["create", "add"], run: () => { go("profiles"); openCreate(); } },
       { id: "invite", group: "Actions", title: "Invite someone", icon: "i-people", keywords: ["person", "sign-in link", "household"], run: () => go("settings", "people") },
-      { id: "add-alert", group: "Actions", title: "Add an alert destination", icon: "i-bell", keywords: ["ntfy", "webhook", "notifications"], run: () => { go("settings", "alerts"); openAddDestination(); } },
+      { id: "add-alert", group: "Actions", title: "Add an alert destination", icon: "i-bell", keywords: ["ntfy", "webhook", "email", "push", "notifications"], run: () => { go("settings", "alerts"); openAddDestination(); } },
       { id: "new-sa", group: "Actions", title: "New service account", icon: "i-key", keywords: ["create", "token", "api key", "automation"], run: () => { go("settings", "api"); openCreateAccount(); } },
     );
     if (isOperator()) list.push({ id: "new-tenant", group: "Actions", title: "New tenant", icon: "i-tenants", keywords: ["create", "household"], run: () => { go("settings", "tenants"); openCreateTenant(); } });

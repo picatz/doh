@@ -2,13 +2,14 @@
 // until it's done. The checklist is worked out from what the server knows
 // (setup.js); this module draws it, and does each step in place.
 
-import { openAddDestination } from "./alerts.js";
+import { notifyThisBrowser, openAddDestination } from "./alerts.js";
 import { api, APIError, report } from "./api.js";
 import { deviceField, setupLinkFlow } from "./connect.js";
 import { $, buddy, clear, copyButton, h, icon, plural, toast } from "./dom.js";
 import { burst, enter } from "./motion.js";
 import { registerPasskey } from "./people.js";
 import { readPrefs, setPref } from "./prefs.js";
+import { pushSupported } from "./push.js";
 import { sector } from "./ring.js";
 import { go } from "./router.js";
 import { routeHash } from "./routes.js";
@@ -226,10 +227,18 @@ const STEP_BODIES = {
       document.addEventListener("doh:alerts-changed", () => advance("alerts").catch(report), { once: true });
       openAddDestination(type);
     };
+    const push = pushSupported();
+    const notify = (e) => {
+      document.addEventListener("doh:alerts-changed", () => advance("alerts").catch(report), { once: true });
+      notifyThisBrowser(e.currentTarget);
+    };
     return [
-      h("p", { class: "muted", text: "With the free ntfy app, alerts arrive on your phone. Threats come through at once; new devices and failing lookups, too, outside quiet hours." }),
+      h("p", { class: "muted", text: push
+        ? "Get alerts as notifications in this browser, or on your phone with the free ntfy app. Threats come through at once; new devices and failing lookups, too, outside quiet hours."
+        : "With the free ntfy app, alerts arrive on your phone. Threats come through at once; new devices and failing lookups, too, outside quiet hours." }),
       h("div", { class: "row-actions" },
-        h("button", { type: "button", class: "primary", onClick: () => add("ntfy") }, icon("bell"), "Add ntfy"),
+        push ? h("button", { type: "button", class: "primary", onClick: notify }, icon("bell"), "Notify this browser") : null,
+        h("button", { type: "button", class: push ? "" : "primary", onClick: () => add("ntfy") }, push ? null : icon("bell"), "Add ntfy"),
         h("button", { type: "button", onClick: () => add("webhook") }, "Add a webhook")),
     ];
   },
