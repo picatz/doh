@@ -1,6 +1,7 @@
 package qr
 
 import (
+	"encoding/xml"
 	"fmt"
 	"image"
 	"image/color"
@@ -246,8 +247,13 @@ func num(v float64) string {
 
 func hex(c color.RGBA) string { return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B) }
 
+// escape escapes s for an XML attribute value. Characters XML can't
+// hold, such as control characters and invalid UTF-8, become U+FFFD, so
+// any label gives a well-formed image.
 func escape(s string) string {
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;").Replace(s)
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s)) // writes to a strings.Builder don't fail
+	return b.String()
 }
 
 // Image renders the drawing at scale pixels per unit, antialiased.

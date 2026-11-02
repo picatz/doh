@@ -152,7 +152,7 @@ func TestDrawing_SVG(t *testing.T) {
 	svg := d.SVG(`a "label" & <more>`)
 	for _, want := range []string{
 		`viewBox="0 0 29 29"`,
-		`role="img" aria-label="a &quot;label&quot; &amp; &lt;more&gt;"`,
+		`role="img" aria-label="a &#34;label&#34; &amp; &lt;more&gt;"`,
 		`fill="#0000ff"`, `fill="#ff0000"`, `fill="#000000"`,
 		`fill="#010203" fill-rule="evenodd"`,
 		`fill="#040506"`,
