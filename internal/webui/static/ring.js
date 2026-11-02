@@ -72,6 +72,24 @@ export function sprinkles(hour, blocked, glaze) {
 // hourOf returns the hour of the local clock a bucket starts at.
 export const hourOf = (bucket) => new Date(bucket.start).getHours();
 
+// hoursOf groups buckets by the hour of the clock they start at, adding
+// up any that share one, as on the day clocks fall back and an hour
+// happens twice. Each hour keeps its earliest start.
+export function hoursOf(buckets) {
+  const hours = new Map();
+  for (const b of buckets) {
+    const h = hourOf(b), seen = hours.get(h);
+    hours.set(h, seen ? {
+      start: seen.start,
+      allowed: (seen.allowed || 0) + (b.allowed || 0),
+      blocked: (seen.blocked || 0) + (b.blocked || 0),
+      rewritten: (seen.rewritten || 0) + (b.rewritten || 0),
+      errors: (seen.errors || 0) + (b.errors || 0),
+    } : b);
+  }
+  return hours;
+}
+
 // totalOf returns how many queries a bucket counts.
 export const totalOf = (b) => (b.allowed || 0) + (b.blocked || 0) + (b.rewritten || 0) + (b.errors || 0);
 
@@ -85,8 +103,7 @@ const el = (tag, attrs = {}) => {
 // midnight; now is the current time. describe(bucket, hour) says an hour
 // in words; open(bucket, hour) shows its queries. It returns the SVG.
 export function drawRing(buckets, { now = new Date(), describe, open, label }) {
-  const byHour = new Map();
-  for (const b of buckets) byHour.set(hourOf(b), b);
+  const byHour = hoursOf(buckets);
   const busiest = Math.max(0, ...buckets.map(totalOf));
   const current = now.getHours() + now.getMinutes() / 60;
 

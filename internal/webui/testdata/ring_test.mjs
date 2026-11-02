@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { angle, point, sector, thickness, sprinkleCount, sprinkles, totalOf, SIZE } from "../static/ring.js";
+import { angle, point, sector, thickness, sprinkleCount, sprinkles, totalOf, hoursOf, SIZE } from "../static/ring.js";
 
 const close = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-6, `${msg}: ${a} ≉ ${b}`);
 
@@ -43,4 +43,17 @@ test("sprinkles grow with each tenfold, up to four, and stay put", () => {
 test("totalOf counts every status", () => {
   assert.equal(totalOf({ allowed: 3, blocked: 2, rewritten: 1, errors: 4 }), 10);
   assert.equal(totalOf({}), 0);
+});
+
+test("an hour that happens twice is counted once, with both its queries", () => {
+  const at = (h) => new Date(2026, 10, 1, h).toISOString();
+  const hours = hoursOf([
+    { start: at(1), allowed: 3, blocked: 1 },
+    { start: at(2), allowed: 5 },
+    { start: new Date(new Date(at(1)).getTime() + 864e5).toISOString(), allowed: 2, blocked: 4, errors: 1 },
+  ]);
+  assert.equal(hours.size, 2);
+  const one = hours.get(1);
+  assert.deepEqual([one.allowed, one.blocked, one.errors], [5, 5, 1]);
+  assert.equal(one.start, at(1), "the hour keeps its earliest start");
 });
