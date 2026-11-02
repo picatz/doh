@@ -381,6 +381,30 @@ It works the same by mouse, touch, and keyboard, on phones, tablets, and desktop
 
 Setting up a phone from a laptop is awkward, so the Connect tab can make a setup link instead: `https://<hostname>/setup/<code>`, served by the public DoH listener, to open on the device itself. It shows one button to install the Apple configuration profile, then every platform, grouped, with its protection level, steps, and setup files, served under the link for its device. A link works for 30 minutes and only says how to reach one profile, which its ID already does; it reveals nothing else, the page runs no scripts, and it isn't cached or indexed. The Connect tab shows it as a QR code to scan with the device's camera, in doh's colors with its donut in the middle (the donut covers no more than half of what each part of the code can correct, so it still reads in poor light), and `doh setup <profile> --link` prints one in the terminal. Making one takes an admin, and needs `--hostname` and DoH.
 
+### Signed configuration profiles
+
+Apple configuration profiles are signed, as a CMS SignedData message ([RFC 5652](https://www.rfc-editor.org/rfc/rfc5652.html)) with SHA-256, so devices can check who made them and that nothing changed them on the way. doh signs with, in order:
+
+1. `--profile-signing-cert` and `--profile-signing-key` (or `tls.profile_signing` in the config file): a PEM certificate chain, signer first, and its ECDSA or RSA key, reloaded when they change. A key that doesn't match the certificate, a key that can't sign (such as Ed25519), or a certificate whose key usage forbids signatures stops the server at startup with an error; an expired or not-yet-valid one is logged as a warning, and still used.
+2. The TLS certificate from `--tls-cert`, if it can sign; if not, profiles are unsigned and the server says so in its log.
+3. With ACME, the certificate for `--hostname`. If it hasn't been obtained yet, signing waits up to 10 seconds for it, then serves the profile unsigned.
+
+Otherwise, such as with `--plaintext` behind a proxy, profiles are unsigned, as before. The setup API's Apple platform (`GET /api/v1/profiles/{id}/setup`) reports it under `signing`: `signed`, the `signer`'s name and when its certificate `expires`, and `trusted`, whether the chain verifies against the server's own system roots now; when a profile will show as unverified, a `note` says why, and the same note is added to the Apple steps and the setup link page. Signed or not, profiles are served as `application/x-apple-aspen-config`.
+
+What devices show:
+
+- **Verified**, on iPhone and iPad (Settings) and Mac (System Settings, Profiles), when the signature checks out and the certificate is valid and chains to a root the device trusts, as a public certificate authority's such as Let's Encrypt's does. This is how Apple's devices treat signed profiles; doh's tests check the signatures with OpenSSL, not on a device.
+- **Unverified** (or Not Verified) for unsigned profiles, and for those signed with a self-signed certificate or one from a private authority the device doesn't trust, or that has expired. They install and work the same: signing changes what people are shown, not what the profile does.
+
+Caveats:
+
+- **Certificates expire.** A Let's Encrypt certificate lasts 90 days or less. A profile is signed when it's downloaded, so a file downloaded long ago, and opened after its certificate expired, shows as unverified; download it again. Profiles already installed stay installed and keep working when the certificate expires or is renewed, though a device may then show them as unverified.
+- **The TLS key signs profiles too,** unless separate signing files are given. Anyone with that key could sign profiles in the server's name, as they could already impersonate the server.
+- **A TLS certificate is only for server authentication.** Apple devices accept such certificates for profiles, as is common practice; OpenSSL needs `-purpose any` to verify them. `trusted` uses the server's roots, which are close to, but not the same as, a device's.
+- Signing proves who served the profile and that it's unchanged, not that its settings are what you meant; the content isn't encrypted.
+
+To check a downloaded profile yourself: `openssl cms -verify -inform DER -in kids.mobileconfig -purpose any` (with `-CAfile` for a private root) prints the profile if the signature is good.
+
 ### Signing in
 
 Browsers never hold an API token. Instead:
@@ -623,4 +647,5 @@ Common findings:
 - Webhook secrets are kept in `alerts.json`, readable only by the server's user, since doh needs them to sign. Tenants' deliveries connect directly, never through `HTTPS_PROXY`; the operator's https deliveries use it.
 - Push subscriptions' keys and email unsubscribe tokens are kept in `alerts.json` too, and the VAPID key in `push-vapid.pem`. Push services see when a browser is sent something, and how large it is, though not what. Email goes through the operator's mail server in whatever way it delivers onward; the confirmation and alert rate limits are kept in memory, so a restart resets them.
 - Web Push and email are tested against RFC 8291's example, RFC 8292's example token, and a fake SMTP server; delivery through real push services and mail providers hasn't been verified by tests.
+- Signed configuration profiles show as verified only while the signing certificate is valid and the device trusts its root; see [Signed configuration profiles](#signed-configuration-profiles). That a device shows **Verified** hasn't been checked on a device by doh's tests, only the signature, with OpenSSL.
 - Client addresses identify devices only as well as the network does. Behind NAT, a whole network shares one address; over DoH, use per-device paths instead. Apps on the same device can't be told apart.

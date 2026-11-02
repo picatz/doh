@@ -184,6 +184,11 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 		DoHURL:  setup.DoHURL,
 		DoTHost: setup.DoTHost,
 	}
+	for _, p := range setup.Platforms {
+		if p.ID == "apple" && p.Signing != nil {
+			page.SigningNote = p.Signing.Note
+		}
+	}
 	if setup.DoHURL != "" || setup.DoTHost != "" {
 		page.Download = base + mobileConfigFile
 	}
@@ -207,6 +212,9 @@ type setupPageData struct {
 
 	// Download is the Apple configuration profile, for one-tap install.
 	Download string
+
+	// SigningNote says why the profile shows as unverified, if it will.
+	SigningNote string
 
 	Groups []setupPageGroup
 }

@@ -130,6 +130,13 @@ type Server struct {
 
 	// acmeHTTP serves ACME HTTP-01 challenges, if enabled.
 	acmeHTTP http.Handler
+
+	// acme obtains certificates, if ACME is enabled.
+	acme *autocert.Manager
+
+	// profileSigner signs Apple configuration profiles, if the server has
+	// a certificate to sign them with.
+	profileSigner *profileSigner
 }
 
 // New returns a server for config, logging to logger.
@@ -244,6 +251,10 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 	s.handler = logRequests(logger, mux)
 
 	if err := s.configureTLS(); err != nil {
+		s.Close()
+		return nil, err
+	}
+	if err := s.configureProfileSigning(); err != nil {
 		s.Close()
 		return nil, err
 	}
@@ -412,6 +423,7 @@ func (s *Server) configureTLS() error {
 		if acmeConfig.HTTPListen != "" {
 			s.acmeHTTP = manager.HTTPHandler(nil)
 		}
+		s.acme = manager
 	} else {
 		reloader, err := newCertReloader(s.config.TLS.CertFile, s.config.TLS.KeyFile, s.logger)
 		if err != nil {

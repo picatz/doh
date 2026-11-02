@@ -14,6 +14,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/cms/cmstest"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
 )
@@ -274,10 +275,23 @@ func TestAdminAPI_Setup(t *testing.T) {
 	download := func(path string) (*http.Response, []byte) {
 		return c.do(http.MethodGet, path, "")
 	}
-	resp, first := download(platforms["apple"].Download)
+	// It's signed with the TLS certificate; content returns what's signed.
+	content := func(b []byte) []byte {
+		t.Helper()
+		m, err := cmstest.Decode(b)
+		if err != nil {
+			t.Fatalf("mobileconfig isn't signed: %v", err)
+		}
+		if err := m.Verify(); err != nil {
+			t.Fatal(err)
+		}
+		return m.Content
+	}
+	resp, signed := download(platforms["apple"].Download)
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != api.MobileConfigType {
 		t.Fatalf("mobileconfig = %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
+	first := content(signed)
 	if !strings.Contains(resp.Header.Get("Content-Disposition"), `filename="kids-tablet.mobileconfig"`) {
 		t.Errorf("Content-Disposition %q", resp.Header.Get("Content-Disposition"))
 	}
@@ -289,14 +303,15 @@ func TestAdminAPI_Setup(t *testing.T) {
 			t.Errorf("mobileconfig lacks %q:\n%s", want, first)
 		}
 	}
-	if _, again := download(platforms["apple"].Download); string(again) != string(first) {
+	if _, again := download(platforms["apple"].Download); string(content(again)) != string(first) {
 		t.Error("mobileconfig changed between downloads")
 	}
-	if _, other := download("/api/v1/profiles/kids/apple.mobileconfig"); string(other) == string(first) {
+	if _, other := download("/api/v1/profiles/kids/apple.mobileconfig"); string(content(other)) == string(first) {
 		t.Error("a different device got the same configuration profile")
 	}
 
-	_, tlsConfig := download("/api/v1/profiles/kids/apple.mobileconfig?protocol=tls")
+	_, tlsSigned := download("/api/v1/profiles/kids/apple.mobileconfig?protocol=tls")
+	tlsConfig := content(tlsSigned)
 	if !strings.Contains(string(tlsConfig), "<string>TLS</string>") || !strings.Contains(string(tlsConfig), "kids."+testHostname) {
 		t.Errorf("DoT mobileconfig:\n%s", tlsConfig)
 	}

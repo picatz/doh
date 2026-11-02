@@ -477,9 +477,41 @@ type Platform struct {
 
 	// Notes are limits and caveats worth knowing.
 	Notes []string `json:"notes,omitempty"`
+
+	// Signing, set with an Apple configuration profile's Download, says
+	// whether the server signs it, and with what.
+	Signing *ProfileSigning `json:"signing,omitempty"`
 }
 
-// MobileConfigType is the media type of Apple configuration profiles.
+// ProfileSigning describes how a configuration profile is signed. Apple
+// devices show a signed profile as Verified only if its certificate
+// chains to a root they trust and is valid; otherwise, or unsigned, they
+// show it as Unverified, though it installs and works the same.
+type ProfileSigning struct {
+	// Signed reports whether the profile is signed.
+	Signed bool `json:"signed"`
+
+	// Signer is the signing certificate's subject common name, or else its
+	// first DNS name, if signed.
+	Signer string `json:"signer,omitempty"`
+
+	// Expires is when the signing certificate expires, if signed. A
+	// downloaded profile's signature doesn't change, so a profile
+	// downloaded after this shows as unverified until the certificate is
+	// renewed; installed profiles stay installed and keep working.
+	Expires *time.Time `json:"expires,omitempty"`
+
+	// Trusted reports whether the signing certificate's chain verifies
+	// against this server's system roots now: a close guide to, though no
+	// guarantee of, whether Apple devices show the profile as Verified.
+	Trusted bool `json:"trusted"`
+
+	// Note explains an unsigned or untrusted profile, for people.
+	Note string `json:"note,omitempty"`
+}
+
+// MobileConfigType is the media type of Apple configuration profiles,
+// signed or not.
 const MobileConfigType = "application/x-apple-aspen-config"
 
 // TextFileType is the media type of the setup files that aren't Apple

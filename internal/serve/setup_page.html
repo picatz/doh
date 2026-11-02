@@ -64,6 +64,7 @@ details[open] summary { margin-bottom: .4rem; }
     <li>iPhone and iPad: open Settings, tap Profile Downloaded, then Install. Mac: open System Settings, and install it where downloaded profiles are listed.</li>
     <li>It works on every network. Remove it from the same place to stop.</li>
   </ol>
+  {{with .SigningNote}}<p>{{.}}</p>{{end}}
 </section>{{end}}
 
 {{range .Groups}}<section aria-label="{{.Name}}">

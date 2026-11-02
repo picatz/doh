@@ -67,6 +67,7 @@ func (s *Server) setupFor(ctx context.Context, pr *policy.Profile, device string
 		isDefault: pr.ID == policy.DefaultProfile,
 		listed:    len(pr.Clients) > 0 || len(pr.Devices) > 0,
 		dotPort:   dotPort,
+		signing:   s.profileSigner.status(),
 	})
 	return setup
 }
@@ -160,8 +161,9 @@ func (s *Server) setupRequest(w http.ResponseWriter, r *http.Request) (*policy.P
 // the encrypted DNS settings payload Apple documents for iOS 14, macOS 11,
 // and later.
 //
-// The configuration profile isn't signed, so devices show it as
-// unverified. Its identifiers are derived from the server, profile, and
+// The configuration profile is signed, if the server has a certificate
+// to sign it with (see [Server.configureProfileSigning]), so devices can
+// show it as verified. Its identifiers are derived from the server, profile, and
 // device, so downloading it again replaces the installed copy rather than
 // adding another.
 func (s *Server) apiMobileConfig(w http.ResponseWriter, r *http.Request) {
@@ -224,9 +226,16 @@ func (s *Server) serveMobileConfig(w http.ResponseWriter, r *http.Request, pr *p
 		name, id, filename = name+" ("+device+")", id+"."+device, filename+"-"+device
 	}
 
+	body := plist.Marshal(mobileConfig(name, id, dns, extra...))
+	if signed, ok := s.profileSigner.sign(body); ok {
+		body = signed
+	}
+
+	// Signed or not, a configuration profile has the same media type.
 	w.Header().Set("Content-Type", api.MobileConfigType)
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`.mobileconfig"`)
-	_ = plist.Encode(w, mobileConfig(name, id, dns, extra...))
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	_, _ = w.Write(body)
 }
 
 // serveSetupFile writes one of setupFiles for pr and device, made from the

@@ -28,6 +28,9 @@ type setupInputs struct {
 	// listed is set when the profile lists clients or devices by address.
 	listed bool
 
+	// signing is whether, and how, configuration profiles are signed.
+	signing *api.ProfileSigning
+
 	// dotPort is the port the DoT listener is on, if it's on.
 	dotPort string
 }
@@ -259,8 +262,22 @@ func (b *platformBuilder) routerStep(what string) string {
 	return "Best: set your router to hand out " + b.dnsAddrs() + " as the DNS server (see Whole network), and give " + what + " a DHCP reservation so its address stays the same."
 }
 
-// mobileConfigs offers Apple configuration profiles on p.
+// profileNote is what to say about configuration profiles' signatures:
+// the signer's note when there is one, or else nothing if they're signed.
+func (b *platformBuilder) profileNote() []string {
+	switch {
+	case b.signing == nil:
+		return []string{unsignedNote}
+	case b.signing.Note != "":
+		return []string{b.signing.Note}
+	}
+	return nil
+}
+
+// mobileConfigs offers Apple configuration profiles on p, and says
+// whether they're signed.
 func (b *platformBuilder) mobileConfigs(p *api.Platform) {
+	p.Signing = b.signing
 	filename := b.Profile
 	if b.Device != "" {
 		filename += "-" + b.Device
@@ -294,7 +311,7 @@ func (b *platformBuilder) apple() {
 	)
 	b.mobileConfigs(p)
 	p.Check, p.Identified = b.check(), b.identifiedEncrypted()
-	p.Notes = []string{"Needs iOS or iPadOS 14 or later.", unsignedNote, portalNote, lockNote, relayNote}
+	p.Notes = slices.Concat([]string{"Needs iOS or iPadOS 14 or later."}, b.profileNote(), []string{portalNote, lockNote, relayNote})
 }
 
 func (b *platformBuilder) visionPro() {
@@ -308,7 +325,7 @@ func (b *platformBuilder) visionPro() {
 	)
 	b.mobileConfigs(p)
 	p.Check, p.Identified = b.check(), b.identifiedEncrypted()
-	p.Notes = []string{"Apple supports configuration profiles on visionOS 1.1 and later. doh hasn't been tried on one, so check the Activity view after installing.", unsignedNote}
+	p.Notes = append([]string{"Apple supports configuration profiles on visionOS 1.1 and later. doh hasn't been tried on one, so check the Activity view after installing."}, b.profileNote()...)
 }
 
 func (b *platformBuilder) android() {
@@ -358,10 +375,9 @@ func (b *platformBuilder) mac() {
 	)
 	b.mobileConfigs(p)
 	p.Check, p.Identified = b.check(), b.identifiedEncrypted()
-	p.Notes = []string{
-		"Needs macOS 11 or later.", unsignedNote, relayNote,
+	p.Notes = slices.Concat([]string{"Needs macOS 11 or later."}, b.profileNote(), []string{relayNote,
 		"Browsers set to their own secure DNS provider skip it: set them to use the system's settings (or this server, under Browsers).",
-	}
+	})
 }
 
 func (b *platformBuilder) windows() {

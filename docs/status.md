@@ -17,6 +17,7 @@ makes it stale.
 | Sharing | tenants (households, customers) with their own profiles, people, and service accounts, seeing nothing of each other | negative tests: other tenants' resources read as not found |
 | Identity | passkey sign-in (WebAuthn, written here), single-use links, service accounts with expiring, rotatable keys, workload identity federation (OIDC token exchange, [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html)) so automation needs no stored secret, DPoP ([RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html)) to bind keys and exchanged tokens to a client's key, setup links for devices, shown as QR codes (an ISO/IEC 18004 encoder written here, drawn in doh's colors with its donut) | negative tests: forged, expired, replayed, revoked, cross-tenant; for federation, wrong issuer, audience, subject, or claims, `alg: none`, HMAC with a public key, unknown keys, over-long tokens, and rate limits, with a mutation check that the tests catch a broken matcher; for DPoP, no proof, the Bearer scheme, another key, wrong method or URL (scheme, host, port, path, origin behind a proxy), stale or future `iat`, replayed `jti`, missing or wrong `ath`, `alg: none`, HMAC, disallowed algorithms, malformed proofs, wrong `typ`, and private keys in `jwk`, with mutation checks that the tests catch a broken `ath`, `jkt`, replay, or scheme check; every QR version, level, and mask, and the branded code as drawn, donut and all, is decoded by ZBar, an independent decoder, in CI; a test checks every module's color in the drawing against the code |
 | Web UI | its own identity ([design.md](design.md)); installable as an app (manifest, icons drawn from the mark by `go generate`, a service worker that shows notifications and caches nothing); adaptive shell for phones, tablets, and desktops; ⌘K; the Overview ring; light, dark, high-contrast, and forced colors; keyboard and screen reader use | Go tests on markup and scripts' safety (CSP, no unsafe DOM, one Trusted Types policy, only for the service worker's URL), the committed icons regenerated and compared byte for byte, the manifest's icons checked against their sizes, WCAG contrast computed from the color tokens, and node tests for each module; `TestLayout` drives Chrome over a real server, through every view at 320 to 1440 pixels wide in both themes, and fails on anything that scrolls sideways or sticks out, a control under 24 pixels to tap, or a console error (it runs where Chrome and Node are, as in CI) |
+| Configuration profiles | Apple configuration profiles for encrypted DNS, signed (CMS SignedData, [RFC 5652](https://www.rfc-editor.org/rfc/rfc5652.html), an encoder written here) with `--profile-signing-cert`, the TLS certificate, or the ACME certificate, else unsigned, as the setup API's `signing` says | `internal/cms` and `internal/serve` tests: OpenSSL (`openssl cms -verify`, an independent implementation) verifies ECDSA and RSA signatures against a test root and outputs the exact profile, and a decoder written apart from the encoder checks the structure; negative tests: tampered content, an unrelated root, mismatched or Ed25519 keys refused at startup, expired certificates warned about; mutation checks that a wrong digest, wrong signed attributes, or changed content fail OpenSSL. Not checked on a device: that iPhones and Macs show **Verified** |
 | Releases | static, reproducible builds for nine platforms, with SHA-256 sums and signed build provenance | `make dist` twice gives identical sums; `gh attestation verify` |
 
 Every change runs `gofmt`, `go vet ./...`, and `go test -race ./...` in CI
@@ -53,6 +54,11 @@ These are also stated where each feature is documented; see
   version and maker; Apple TV needs Apple Configurator or MDM; many TVs,
   consoles, and smart devices only take plain DNS by address, unencrypted on
   the network, and some ignore the network's DNS entirely.
+- **Signed profiles show as verified only while their certificate is
+  valid and trusted.** A Let's Encrypt certificate lasts 90 days or less,
+  and a downloaded profile keeps the signature it was downloaded with;
+  installed profiles keep working either way. See
+  [protections.md](protections.md#signed-configuration-profiles).
 - **Detection is heuristic,** names-based, and as good as its lists; see
   the Limits in [protections.md](protections.md#limits).
 
@@ -66,8 +72,8 @@ In rough order of what it would mean for people using doh:
 2. **Shared state for replicas:** sessions, setup links, stats, DPoP
    replay caches, and alerts' windows behind an interface with a SQLite
    (single node) and a networked backend.
-3. **Signed configuration profiles** for Apple devices, so they don't
-   show as unverified.
-4. **DoH over HTTP/3,** tracked in
+3. **DoH over HTTP/3,** tracked in
    [picatz/doh#73](https://github.com/picatz/doh/issues/73), waiting on
    Go's own HTTP/3.
+4. **SBOMs for releases,** published and attested next to each binary,
+   are planned.
