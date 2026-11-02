@@ -259,7 +259,7 @@ $ doh log --json -q google | jq .   # JSON lines
 
 Alerts tell someone when something on the network needs them, without opening the web UI: as a notification from the web UI installed on a phone or computer ([Web Push](#web-push)), by [email](#email), through [ntfy](https://ntfy.sh), or to anything that takes a webhook, such as Home Assistant.
 
-Set them up in the web UI's **Security** view (Alerts: what to hear about, quiet hours, where they go, and a test), or from the command line:
+Set them up in the web UI's **Settings › Alerts** ( what to hear about, quiet hours, where they go, and a test), or from the command line:
 
 ```sh
 doh alerts add-ntfy https://ntfy.sh/smith-family-7f3a --name "Family phones"
@@ -384,11 +384,28 @@ With `--admin-listen`, the admin listener serves a web UI at `/` and a JSON API 
 
 Its Overview shows today as a ring: a 24-hour clock with midnight at the top, each hour's glaze as thick as its traffic, and a sprinkle for blocked queries. Point at an hour for its numbers, or open it for its queries; every number on the page links to the queries behind it, and what needs attention, such as failed queries or a list that didn't load, comes first, with what to do about it.
 
-It works the same by mouse, touch, and keyboard, on phones, tablets, and desktops, in light and dark themes. Every view has a URL. Press <kbd>⌘K</kbd> (<kbd>Ctrl K</kbd>) to jump anywhere, or type a domain to explain, find, block, or allow it; changes made this way can be undone from the notice that confirms them. Press <kbd>?</kbd> for every shortcut. [docs/design.md](design.md) describes the principles behind it.
+**Settings** holds everything that isn't the network itself: Account & passkeys (and the theme), People (who can sign in, and invitations for more), Alerts, Service accounts & API, Tenants (the operator's), and Server (how it runs, and its blocklists). On wide screens a section sits beside the list of them; on phones, the list leads to each, with a way back. A profile's sections, from connecting a device to its settings, work the same way.
+
+It works the same by mouse, touch, and keyboard, on phones, tablets, and desktops, in light and dark themes. Every view has a URL; old ones, such as `#/security`, land where things moved. Press <kbd>⌘K</kbd> (<kbd>Ctrl K</kbd>) to jump anywhere, or type a domain to explain, find, block, or allow it; changes made this way can be undone from the notice that confirms them. Press <kbd>?</kbd> for every shortcut. [docs/design.md](design.md) describes the principles behind it.
+
+### Setting up
+
+A new server opens the web UI on a **setup guide** rather than an empty Overview, for an admin, when no one has a passkey, no device is named, and nothing but the server itself has asked it anything. Its steps:
+
+1. **Add a passkey**, in place.
+2. **Connect your first device**: choose a profile, name the device, and make a [setup link](#setup-links), then watch it connect (below).
+3. **Turn on alerts**: add ntfy or a webhook.
+4. **Protect the whole network** (the operator's only): set the router's DHCP DNS server to doh's plain-DNS address, which the guide shows, with steps that apply to most routers and what to do when one won't allow it.
+
+Each step is worked out from what the server knows (who's signed in, the profiles, the alert destinations, and the devices it has answered), so it checks itself off: the network step once two devices other than the server itself have asked over plain DNS, which is what a router handing out doh's address looks like, or when someone says they've done it. That choice, and putting the guide away, are the only things kept, in the browser (`doh.prefs`), as booleans. The guide stays on the Overview and in the sidebar until it's done or put away, and in Settings as Setup guide after that.
+
+**Seeing a device connect.** After making a setup link, the UI says it's waiting for that device, and turns into "Connected" (with when, and over what) the moment the server answers the device's first query: a named device's query on that profile since the link was made, or with no name, a device new to the profile since then. It asks `GET /api/v1/devices` every two seconds at first, then less often, up to every ten; it stops when the device connects, the link expires, or the page moves on, and waits while the page is hidden.
+
+`GET /api/v1/devices` lists the devices the server has answered since it started, most recently seen first, at most 200: each one's profile, device name (from its DoH path or the profile's devices), address, how it last asked, and when it was first and last seen, with `profile`, `device`, `since`, and `new=true` (first seen since) to narrow it. The server remembers them in memory, at most 4,096, forgetting the least recently seen, whether or not their profile logs queries. Readers may list them; tenants see only their own profiles' devices.
 
 ### Setup links
 
-Setting up a phone from a laptop is awkward, so the Connect tab can make a setup link instead: `https://<hostname>/setup/<code>`, served by the public DoH listener, to open on the device itself. It shows one button to install the Apple configuration profile, then every platform, grouped, with its protection level, steps, and setup files, served under the link for its device. A link works for 30 minutes, across restarts (it's kept, as a hash of its code, in `state.db`), and only says how to reach one profile, which its ID already does; it reveals nothing else, the page runs no scripts, and it isn't cached or indexed. The Connect tab shows it as a QR code to scan with the device's camera, in doh's colors with its donut in the middle (the donut covers no more than half of what each part of the code can correct, so it still reads in poor light), and `doh setup <profile> --link` prints one in the terminal. Making one takes an admin, and needs `--hostname` and DoH.
+Setting up a phone from a laptop is awkward, so a profile's Connect a device section, and the setup guide, can make a setup link instead: `https://<hostname>/setup/<code>`, served by the public DoH listener, to open on the device itself. It shows one button to install the Apple configuration profile, then every platform, grouped, with its protection level, steps, and setup files, served under the link for its device. A link works for 30 minutes, across restarts (it's kept, as a hash of its code, in `state.db`), and only says how to reach one profile, which its ID already does; it reveals nothing else, the page runs no scripts, and it isn't cached or indexed. The Connect tab shows it as a QR code to scan with the device's camera, in doh's colors with its donut in the middle (the donut covers no more than half of what each part of the code can correct, so it still reads in poor light), and `doh setup <profile> --link` prints one in the terminal. Making one takes an admin, and needs `--hostname` and DoH.
 
 ### Signed configuration profiles
 
@@ -476,7 +493,7 @@ doh sa key rotate "Home Assistant" --grace 1h                  # a new key; the 
 doh sa key revoke "Home Assistant" 3f2a9c0d1e4b5a67            # stops a key at once
 ```
 
-The web UI's Security view does the same.
+The web UI's **Settings › Service accounts & API** does the same.
 
 - **Keys always expire**, within a year (90 days by default). A key's secret, `doh_sa_<key ID>_<256 random bits>`, is shown once and kept only as a SHA-256 hash; the prefix makes a leaked key easy to spot and to scan for.
 - **Rotation has no downtime.** Rotating adds a new key and lets the old one keep working for up to a week, so whatever uses it can switch over first.
@@ -692,4 +709,5 @@ Common findings:
 - Push subscriptions' keys and email unsubscribe tokens are kept in `alerts.json` too, and the VAPID key in `push-vapid.pem`. Push services see when a browser is sent something, and how large it is, though not what. Email goes through the operator's mail server in whatever way it delivers onward; the confirmation and alert rate limits are kept in memory, so a restart resets them.
 - Web Push and email are tested against RFC 8291's example, RFC 8292's example token, and a fake SMTP server; delivery through real push services and mail providers hasn't been verified by tests.
 - Signed configuration profiles show as verified only while the signing certificate is valid and the device trusts its root; see [Signed configuration profiles](#signed-configuration-profiles). That a device shows **Verified** hasn't been checked on a device by doh's tests, only the signature, with OpenSSL.
+- The devices the server has answered, behind the web UI's setup guide and its "Connected", are remembered in memory since the server started, at most 4,096; a restart forgets them, so a device set up just before one shows as connected only when it next asks. The guide's network step guesses a router is sending devices to doh when two devices other than the server ask over plain DNS; devices set up by hand look the same.
 - Client addresses identify devices only as well as the network does. Behind NAT, a whole network shares one address; over DoH, use per-device paths instead. Apps on the same device can't be told apart.
