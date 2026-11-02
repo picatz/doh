@@ -16,6 +16,19 @@ const firefoxCanary = "use-application-dns.net"
 // See https://developer.apple.com/support/prepare-your-network-for-icloud-private-relay/.
 var privateRelayCanaries = newDomainSet([]string{"mask.icloud.com", "mask-h2.icloud.com"})
 
+// Canary reports whether name is, or is under, a canary domain: one that
+// software such as Firefox or iCloud Private Relay looks up to ask whether
+// the network allows it to route around the network's resolver. Blocking
+// a canary answers that question; it isn't an attempt to get around
+// filtering.
+func Canary(name string) bool {
+	if name == firefoxCanary {
+		return true
+	}
+	_, ok := privateRelayCanaries.match(name)
+	return ok
+}
+
 // encryptedDNS are well-known public encrypted DNS services, which devices
 // and apps can use to route around this resolver. The resolver's own
 // upstreams are always exempt.

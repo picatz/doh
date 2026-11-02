@@ -121,5 +121,6 @@ func (s *Server) apiDeleteTenant(w http.ResponseWriter, r *http.Request) {
 	} else if n > 0 {
 		s.audit(r, "service accounts deleted with their tenant", slog.String("deleted_tenant", id), slog.Int("count", n))
 	}
+	s.forgetTenantAlerts(id)
 	w.WriteHeader(http.StatusNoContent)
 }

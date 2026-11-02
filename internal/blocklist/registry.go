@@ -23,6 +23,7 @@ type Registry struct {
 
 	mu      sync.Mutex
 	entries map[Source]*registryEntry
+	onFail  func(Source, error)
 }
 
 type registryEntry struct {
@@ -52,6 +53,15 @@ func NewRegistry(loader *Loader, logger *slog.Logger) *Registry {
 		cancel:  cancel,
 		entries: make(map[Source]*registryEntry),
 	}
+}
+
+// OnFailure sets f to be called, from the goroutine that loaded it, each
+// time a list fails to load, other than because the registry is closing.
+// f must not block for long or call back into the registry.
+func (r *Registry) OnFailure(f func(src Source, err error)) {
+	r.mu.Lock()
+	r.onFail = f
+	r.mu.Unlock()
 }
 
 // Sync makes sources the registry's lists: it starts loading any that
@@ -98,6 +108,9 @@ func (r *Registry) startLoad(src Source, e *registryEntry) {
 			e.err = err
 			if r.ctx.Err() == nil {
 				r.logger.Warn("blocklist: loading failed", slog.String("source", src.Name), slog.Any("error", err))
+				if r.onFail != nil {
+					r.onFail(src, err)
+				}
 			}
 			return
 		}

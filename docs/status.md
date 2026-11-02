@@ -12,6 +12,7 @@ makes it stale.
 | Protection | threat intelligence and other lists, look-alike names, rebinding, tunneling, newly registered domains (RDAP), bypass methods, safe search, blocked TLDs, CNAME checks | `internal/filter` tests, check by check; `doh explain` shows every decision |
 | Profiles | per-device policy by DoH path, host name, or address; 93 apps blockable by name; schedules in each profile's time zone; rewrites; local zones | `internal/policy`, `filter`, and `services` tests |
 | Visibility | Activity (query log) with device names learned from the network, stats, a per-hour timeline, live streaming | `internal/querylog` and `hostnames` tests (with `testing/synctest`) |
+| Alerts | threats blocked, new devices, failing lookups, and lists that didn't load, pushed to [ntfy](https://ntfy.sh) or to webhooks signed as [Standard Webhooks](https://www.standardwebhooks.com/) describes; repeats coalesced, bursts summarized, quiet hours in each tenant's time zone; `doh alerts` and the API (no web UI yet) | `internal/alerts` tests with `testing/synctest` (coalescing, bursts, the learning period, failing thresholds, quiet hours across midnight), the specification's signature test vector, and negative tests: tenants never get others' or the operator's alerts, tenants' deliveries to loopback, private, link-local, and metadata addresses are refused when added and when dialed, redirects aren't followed, secrets are shown once, readers and service accounts are refused, other tenants' alerts read as not found, a full queue drops instead of blocking |
 | Sharing | tenants (households, customers) with their own profiles, people, and service accounts, seeing nothing of each other | negative tests: other tenants' resources read as not found |
 | Identity | passkey sign-in (WebAuthn, written here), single-use links, service accounts with expiring, rotatable keys, workload identity federation (OIDC token exchange, [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html)) so automation needs no stored secret, DPoP ([RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html)) to bind keys and exchanged tokens to a client's key, setup links for devices, shown as QR codes (an ISO/IEC 18004 encoder written here, drawn in doh's colors with its donut) | negative tests: forged, expired, replayed, revoked, cross-tenant; for federation, wrong issuer, audience, subject, or claims, `alg: none`, HMAC with a public key, unknown keys, over-long tokens, and rate limits, with a mutation check that the tests catch a broken matcher; for DPoP, no proof, the Bearer scheme, another key, wrong method or URL (scheme, host, port, path, origin behind a proxy), stale or future `iat`, replayed `jti`, missing or wrong `ath`, `alg: none`, HMAC, disallowed algorithms, malformed proofs, wrong `typ`, and private keys in `jwk`, with mutation checks that the tests catch a broken `ath`, `jkt`, replay, or scheme check; every QR version, level, and mask, and the branded code as drawn, donut and all, is decoded by ZBar, an independent decoder, in CI; a test checks every module's color in the drawing against the code |
 | Web UI | its own identity ([design.md](design.md)); adaptive shell for phones, tablets, and desktops; ⌘K; the Overview ring; light, dark, high-contrast, and forced colors; keyboard and screen reader use | Go tests on markup and scripts' safety (CSP, no unsafe DOM), node tests for each module, and driven in Chromium at three widths in both themes |
@@ -39,8 +40,11 @@ These are also stated where each feature is documented; see
   caches, which doesn't exist yet. One server comfortably serves a large
   household, school, or small company; past that, scale out with separate
   servers that follow one policy (`--policy`).
-- **No alerts.** Things that need attention show on the Overview; nothing
-  is pushed to anyone yet.
+- **Alerts are best effort.** Deliveries are retried for under a minute,
+  then recorded as failed; pending ones are lost on restart, and under a
+  flood of queries some are skipped rather than slow down answering.
+  They come from the query log, so profiles that don't log get none.
+  Email isn't a destination yet.
 - **Detection is heuristic,** names-based, and as good as its lists; see
   the Limits in [protections.md](protections.md#limits).
 
@@ -48,13 +52,11 @@ These are also stated where each feature is documented; see
 
 In rough order of what it would mean for people using doh:
 
-1. **Alerts.** Tell a household's admins, by email, a webhook, or a push
-   service such as ntfy, when a threat is blocked on their network, a
-   device appears, or queries start failing. The Overview's "needs
-   attention" items are the starting set.
-2. **Shared state for replicas:** sessions, setup links, stats, and DPoP
-   replay caches behind an interface with a SQLite (single node) and a
-   networked backend.
+1. **Alerts in the web UI,** and email as a destination, so setting them
+   up needs no command line.
+2. **Shared state for replicas:** sessions, setup links, stats, DPoP
+   replay caches, and alerts' windows behind an interface with a SQLite
+   (single node) and a networked backend.
 3. **Signed configuration profiles** for Apple devices, so they don't
    show as unverified.
 4. **DoH over HTTP/3,** tracked in

@@ -592,3 +592,45 @@ func TestClient_ExchangeToken(t *testing.T) {
 		t.Errorf("exchange over remote plaintext err = %v", err)
 	}
 }
+
+func TestClient_Alerts(t *testing.T) {
+	var got []string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = append(got, r.Method+" "+r.URL.RequestURI()+" "+r.Header.Get("Content-Type")+" "+string(body))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/alerts/destinations":
+			writeJSON(w, http.StatusCreated, api.NewAlertDestination{Secret: "whsec_x"})
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			writeJSON(w, http.StatusOK, api.Alerts{Tenant: r.URL.Query().Get("tenant")})
+		}
+	})
+	ctx := t.Context()
+	if a, err := c.Alerts(ctx, "smiths"); err != nil || a.Tenant != "smiths" {
+		t.Errorf("Alerts = %+v, %v", a, err)
+	}
+	if _, err := c.PatchAlerts(ctx, "", map[string]any{"kinds": []string{"threat"}}); err != nil {
+		t.Error(err)
+	}
+	if d, err := c.AddAlertDestination(ctx, "", api.AlertDestinationRequest{Type: "webhook", URL: "https://hooks.example/doh"}); err != nil || d.Secret != "whsec_x" {
+		t.Errorf("AddAlertDestination = %+v, %v", d, err)
+	}
+	if err := c.RemoveAlertDestination(ctx, "smiths", "a/b"); err != nil {
+		t.Error(err)
+	}
+	if _, err := c.TestAlerts(ctx, ""); err != nil {
+		t.Error(err)
+	}
+	want := []string{
+		"GET /api/v1/alerts?tenant=smiths  ",
+		`PATCH /api/v1/alerts ` + api.MergePatchType + ` {"kinds":["threat"]}`,
+		`POST /api/v1/alerts/destinations application/json {"type":"webhook","url":"https://hooks.example/doh"}`,
+		"DELETE /api/v1/alerts/destinations/a%2Fb?tenant=smiths  ",
+		"POST /api/v1/alerts/test  ",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("requests:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

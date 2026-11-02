@@ -989,5 +989,6 @@ func clientCommands() []*cobra.Command {
 		newTokenCommand(),
 		newServicesCommand(),
 		newScheduleCommand(),
+		newAlertsCommand(),
 	}
 }

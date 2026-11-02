@@ -58,6 +58,11 @@
 //	GET    /api/v1/profiles/{id}/setup?device=    Setup
 //	POST   /api/v1/profiles/{id}/setup-links?device=   → 201 SetupLink
 //	GET    /api/v1/profiles/{id}/apple.mobileconfig?device=&protocol=   Apple configuration profile
+//	GET    /api/v1/alerts?tenant=                 Alerts (admin)
+//	PATCH  /api/v1/alerts?tenant=                 merge patch of alerts.Settings → Alerts (admin)
+//	POST   /api/v1/alerts/destinations?tenant=    AlertDestinationRequest → 201 NewAlertDestination (admin)
+//	DELETE /api/v1/alerts/destinations/{id}?tenant=   204 (admin)
+//	POST   /api/v1/alerts/test?tenant=            AlertTest (admin)
 //
 // POST /token is the exception to needing a credential: it's an OAuth 2.0
 // token exchange ([RFC 8693]), where a workload trades an identity token
@@ -66,6 +71,15 @@
 // ([TokenExchangeRequest]), and reports errors as an [OAuthError]. An
 // exchange with a DPoP proof in its DPoP header ([RFC 9449, Section 5])
 // gets an access token bound to the proof's key, with token_type "DPoP".
+//
+// The alerts endpoints need a person or the operator's token, with an
+// admin role, even to read: alerts send query names to their
+// destinations, and a destination's URL, such as an ntfy topic, lets
+// whoever knows it read them. Service accounts are refused, as they are
+// for managing people. Each request is about the caller's own tenant, or
+// the operator's own alerts; the operator may name a tenant with
+// ?tenant=. A webhook's signing secret is returned only when it's
+// created.
 //
 // The logs, stream, and stats endpoints take the filter parameters that
 // querylog.ParseFilter reads: profile, device, client, status, reason, q,
@@ -84,6 +98,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/picatz/doh/internal/alerts"
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/serviceaccount"
@@ -442,6 +457,54 @@ type NewKey struct {
 	Account string             `json:"account"`
 	Key     serviceaccount.Key `json:"key"`
 	Secret  string             `json:"secret"`
+}
+
+// Alerts are a tenant's, or the operator's, alert settings and
+// destinations, and how recent deliveries went.
+type Alerts struct {
+	// Tenant is whose alerts these are, or empty for the operator's.
+	Tenant string `json:"tenant,omitempty"`
+
+	// Settings are which kinds of alert are sent, and when.
+	Settings alerts.Settings `json:"settings"`
+
+	// AvailableKinds are the kinds of alert this tenant, or the operator,
+	// can turn on.
+	AvailableKinds []alerts.Kind `json:"available_kinds"`
+
+	// Destinations are where alerts are sent, without their secrets, and
+	// with any password in their URLs hidden.
+	Destinations []alerts.Destination `json:"destinations"`
+
+	// Deliveries are the most recent deliveries since the server started,
+	// newest first.
+	Deliveries []alerts.Delivery `json:"deliveries"`
+}
+
+// AlertDestinationRequest adds a place to send alerts.
+type AlertDestinationRequest struct {
+	// Type is "webhook" or "ntfy".
+	Type alerts.DestinationType `json:"type"`
+
+	// URL is where alerts are posted: https, and for a tenant, a service
+	// on the internet. Nothing is ever added to it.
+	URL string `json:"url"`
+
+	// Name says what it is, such as "Mom's phone".
+	Name string `json:"name,omitempty"`
+}
+
+// NewAlertDestination is a new destination, with, for a webhook, the
+// secret its deliveries are signed with. The secret is shown only this
+// once.
+type NewAlertDestination struct {
+	Destination alerts.Destination `json:"destination"`
+	Secret      string             `json:"secret,omitempty"`
+}
+
+// AlertTest reports how a test alert to each destination went.
+type AlertTest struct {
+	Deliveries []alerts.Delivery `json:"deliveries"`
 }
 
 // SetupLink is a short-lived link to a page that sets a device up for a
