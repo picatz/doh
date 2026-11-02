@@ -230,7 +230,7 @@ It works the same by mouse, touch, and keyboard, on phones, tablets, and desktop
 
 ### Setup links
 
-Setting up a phone from a laptop is awkward, so the Connect tab can make a setup link instead: `https://<hostname>/setup/<code>`, served by the public DoH listener, to open on the device itself. It shows one button to install the Apple configuration profile and plain steps for other platforms. A link works for 30 minutes and only says how to reach one profile, which its ID already does; it reveals nothing else, the page runs no scripts, and it isn't cached or indexed. The Connect tab shows it as a QR code to scan with the device's camera, and `doh setup <profile> --link` prints one in the terminal. Making one takes an admin, and needs `--hostname` and DoH.
+Setting up a phone from a laptop is awkward, so the Connect tab can make a setup link instead: `https://<hostname>/setup/<code>`, served by the public DoH listener, to open on the device itself. It shows one button to install the Apple configuration profile and plain steps for other platforms. A link works for 30 minutes and only says how to reach one profile, which its ID already does; it reveals nothing else, the page runs no scripts, and it isn't cached or indexed. The Connect tab shows it as a QR code to scan with the device's camera, in doh's colors with its donut in the middle (the donut covers no more than half of what each part of the code can correct, so it still reads in poor light), and `doh setup <profile> --link` prints one in the terminal. Making one takes an admin, and needs `--hostname` and DoH.
 
 ### Signing in
 

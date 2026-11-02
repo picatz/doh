@@ -947,24 +947,10 @@ function connectSection(p) {
     sendSection(p, () => (validDevice(device.value.trim().toLowerCase()) ? device.value.trim().toLowerCase() : "")));
 }
 
-// qrCode draws a QR code from the server's path data, dark on light in
-// every theme, so cameras read it.
+// qrCode shows the server's QR code as an image: an image runs no
+// scripts, and the page's policy allows data: images.
 function qrCode(q, label) {
-  const svg = document.createElementNS(SVG, "svg");
-  svg.setAttribute("viewBox", `0 0 ${q.size} ${q.size}`);
-  svg.setAttribute("class", "qr");
-  svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", label);
-  svg.setAttribute("shape-rendering", "crispEdges");
-  const bg = document.createElementNS(SVG, "rect");
-  bg.setAttribute("width", String(q.size));
-  bg.setAttribute("height", String(q.size));
-  bg.setAttribute("fill", "#fff");
-  const path = document.createElementNS(SVG, "path");
-  path.setAttribute("d", q.path);
-  path.setAttribute("fill", "#000");
-  svg.append(bg, path);
-  return svg;
+  return h("img", { class: "qr", src: `data:image/svg+xml,${encodeURIComponent(q.svg)}`, alt: label, width: 176, height: 176 });
 }
 
 // sendSection makes a short-lived link to a setup page for the device to

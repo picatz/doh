@@ -7,7 +7,9 @@
 // prefer. That covers URLs, which is what doh needs; it doesn't do
 // numeric, alphanumeric, or kanji modes, or larger versions.
 //
-// A [Code] renders as SVG path data, for pages to draw, or as text for a
+// [Code.Draw] draws a code in colors, with rounded modules and room for a
+// logo, as a [Drawing] that renders as SVG or as an image; [Code.Hole]
+// works out how much room is safe. [Code.WriteText] writes a code for a
 // terminal.
 //
 // [ISO/IEC 18004]: https://www.iso.org/standard/83389.html
@@ -59,8 +61,11 @@ type Code struct {
 	Mask int
 
 	size     int
-	modules  []bool // dark modules, row by row
-	function []bool // finder, timing, alignment, format, and version modules
+	modules  []bool  // dark modules, row by row
+	function []bool  // finder, timing, alignment, format, and version modules
+	codeword []int16 // the codeword each data module is part of, or -1
+	blockOf  []int8  // the error correction block of each codeword
+	ec       int     // error correction codewords per block
 }
 
 // Size returns how many modules the code has on a side, without a quiet
@@ -104,6 +109,21 @@ func EncodeMask(data []byte, level Level, version, mask int) (*Code, error) {
 		return nil, fmt.Errorf("%w: %d bytes, at most %d at version %d-%v", ErrTooLong, len(data), capacity(version, level), version, level)
 	}
 	return encode(data, version, level, mask), nil
+}
+
+// EncodeVersion encodes data at exactly version, choosing the mask with
+// the lowest penalty. A larger version than Encode would choose leaves
+// more room for [Code.Hole].
+func EncodeVersion(data []byte, level Level, version int) (*Code, error) {
+	switch {
+	case level < L || level > H:
+		return nil, fmt.Errorf("qr: invalid level %d", level)
+	case version < 1 || version > MaxVersion:
+		return nil, fmt.Errorf("qr: version %d isn't 1 to %d", version, MaxVersion)
+	case len(data) > capacity(version, level):
+		return nil, fmt.Errorf("%w: %d bytes, at most %d at version %d-%v", ErrTooLong, len(data), capacity(version, level), version, level)
+	}
+	return encode(data, version, level, -1), nil
 }
 
 // blocks describes a version and level's error correction: the codewords
@@ -155,11 +175,14 @@ func capacity(version int, level Level) int {
 
 // encode builds the code. A mask of -1 chooses the best.
 func encode(data []byte, version int, level Level, mask int) *Code {
-	codewords := interleave(dataCodewords(data, version, level), table[version][level])
+	bl := table[version][level]
+	codewords := interleave(dataCodewords(data, version, level), bl)
 
-	c := &Code{Version: version, Level: level, size: 17 + 4*version}
+	c := &Code{Version: version, Level: level, size: 17 + 4*version, ec: bl.ec}
 	c.modules = make([]bool, c.size*c.size)
 	c.function = make([]bool, c.size*c.size)
+	c.codeword = make([]int16, c.size*c.size)
+	c.blockOf = blockOf(bl)
 	c.drawFunctionPatterns()
 	c.drawCodewords(codewords)
 
@@ -226,6 +249,32 @@ func interleave(data []byte, bl blocks) []byte {
 	for i := range bl.ec {
 		for _, ec := range ecs {
 			out = append(out, ec[i])
+		}
+	}
+	return out
+}
+
+// blockOf returns the block each codeword interleave places comes from,
+// in the order it places them.
+func blockOf(bl blocks) []int8 {
+	sizes := make([]int, 0, bl.count1+bl.count2)
+	for range bl.count1 {
+		sizes = append(sizes, bl.data1)
+	}
+	for range bl.count2 {
+		sizes = append(sizes, bl.data2)
+	}
+	var out []int8
+	for i := range max(bl.data1, bl.data2) {
+		for b, n := range sizes {
+			if i < n {
+				out = append(out, int8(b))
+			}
+		}
+	}
+	for range bl.ec {
+		for b := range sizes {
+			out = append(out, int8(b))
 		}
 	}
 	return out
@@ -307,6 +356,7 @@ func remainder(data, gen []byte) []byte {
 func (c *Code) set(x, y int, dark bool) {
 	c.modules[y*c.size+x] = dark
 	c.function[y*c.size+x] = true
+	c.codeword[y*c.size+x] = -1
 }
 
 // drawFunctionPatterns draws the finder, separator, timing, and alignment
@@ -433,8 +483,10 @@ func (c *Code) drawCodewords(codewords []byte) {
 					continue
 				}
 				// Past the codewords, remainder bits are light.
+				c.codeword[y*n+x] = -1
 				if i < len(codewords)*8 {
 					c.modules[y*n+x] = codewords[i/8]>>uint(7-i%8)&1 != 0
+					c.codeword[y*n+x] = int16(i / 8)
 					i++
 				}
 			}
@@ -567,35 +619,6 @@ func (c *Code) penalty() int {
 	percent := darkCount * 100 / (n * n)
 	p += abs(percent-50) / 5 * 10
 	return p
-}
-
-// SVGPath returns SVG path data that draws the code's dark modules, one
-// unit per module, offset by a quiet zone of quiet modules on each side:
-// draw it in a view box quiet×2 + Size units square.
-func (c *Code) SVGPath(quiet int) string {
-	var b strings.Builder
-	for y := range c.size {
-		for x := 0; x < c.size; {
-			if !c.Dark(x, y) {
-				x++
-				continue
-			}
-			run := 1
-			for c.Dark(x+run, y) {
-				run++
-			}
-			fmt.Fprintf(&b, "M%d %dh%dv1h-%dz", x+quiet, y+quiet, run, run)
-			x += run
-		}
-	}
-	return b.String()
-}
-
-// SVG returns the code as a standalone SVG image, dark on light.
-func (c *Code) SVG(quiet int) string {
-	side := c.size + 2*quiet
-	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" shape-rendering="crispEdges"><rect width="%d" height="%d" fill="#fff"/><path d="%s" fill="#000"/></svg>`,
-		side, side, side, side, c.SVGPath(quiet))
 }
 
 // WriteText writes the code for a terminal: two rows per line with half
