@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/picatz/doh/internal/blocklist"
@@ -20,6 +21,7 @@ import (
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
 	"github.com/picatz/doh/internal/rdap"
+	"github.com/picatz/doh/internal/safebrowsing"
 )
 
 // baselineLoadTimeout bounds how long New waits for the Blocklist
@@ -71,6 +73,10 @@ func (s *Server) configurePolicy(ctx context.Context) error {
 		}
 	}
 
+	if err := s.configureSafeBrowsing(); err != nil {
+		return err
+	}
+
 	p := &policy.Policy{Version: policy.Version, Profiles: []policy.Profile{{ID: policy.DefaultProfile}}}
 
 	if s.config.policyEnabled() {
@@ -102,6 +108,49 @@ func (s *Server) configurePolicy(ctx context.Context) error {
 	return s.applyPolicy(p)
 }
 
+// configureSafeBrowsing sets up Safe Browsing lookups if the config has
+// an API key file.
+func (s *Server) configureSafeBrowsing() error {
+	c := s.config.SafeBrowsing
+	if c.KeyFile == "" {
+		return nil
+	}
+	key, err := os.ReadFile(c.KeyFile)
+	if err != nil {
+		return fmt.Errorf("serve: safe browsing key file: %w", err)
+	}
+	s.browsing, err = safebrowsing.New(safebrowsing.Options{
+		Key:    strings.TrimSpace(string(key)),
+		Lists:  c.Lists,
+		Client: &http.Client{Timeout: time.Minute, CheckRedirect: refuseRedirects},
+		Logger: s.logger,
+	})
+	if err != nil {
+		return fmt.Errorf("serve: safe browsing: %w", err)
+	}
+	return nil
+}
+
+// reputation returns the Safe Browsing checker as a filter.Reputation, or
+// nil if there's none.
+func (s *Server) reputation() filter.Reputation {
+	if s.browsing == nil {
+		return nil
+	}
+	return browsingReputation{s.browsing}
+}
+
+// browsingReputation adapts a safebrowsing.Checker to filter.Reputation.
+type browsingReputation struct{ c *safebrowsing.Checker }
+
+func (r browsingReputation) Lookup(ctx context.Context, name string) (string, bool, error) {
+	t, ok, err := r.c.Lookup(ctx, name)
+	if !ok || err != nil {
+		return "", false, err
+	}
+	return t.String(), true, nil
+}
+
 // refuseRedirects keeps a policy fetch from following redirects, which
 // could send its bearer token elsewhere.
 func refuseRedirects(*http.Request, []*http.Request) error {
@@ -112,12 +161,13 @@ func refuseRedirects(*http.Request, []*http.Request) error {
 // any new lists it uses.
 func (s *Server) applyPolicy(p *policy.Policy) error {
 	engine, err := filter.New(p, filter.Options{
-		Lists:    s.lists,
-		Ages:     s.ages,
-		State:    s.state,
-		Exempt:   s.exempt,
-		Local:    s.forwardDomains(),
-		Baseline: s.baseline,
+		Lists:      s.lists,
+		Ages:       s.ages,
+		Reputation: s.reputation(),
+		State:      s.state,
+		Exempt:     s.exempt,
+		Local:      s.forwardDomains(),
+		Baseline:   s.baseline,
 	})
 	if err != nil {
 		return err

@@ -617,6 +617,9 @@ func toggles(p policy.Profile) []toggle {
 		{"homograph", s.Homograph},
 		{"newly_registered", s.NewlyRegistered},
 		{"tunneling", s.Tunneling},
+		{"typosquatting", s.Typosquatting},
+		{"dga", s.DGA},
+		{"safe_browsing", s.SafeBrowsing},
 		{"bypass", s.Bypass},
 		{"safe_search", p.SafeSearch},
 	}

@@ -16,8 +16,11 @@
 //	tld               the profile's blocked top-level domains
 //	list              the profile's blocklists, unless a list has an exception for the name
 //	homograph         Security.Homograph
+//	typosquatting     Security.Typosquatting
 //	tunneling         Security.Tunneling
+//	dga               Security.DGA
 //	newly-registered  Security.NewlyRegistered
+//	safe-browsing     Security.SafeBrowsing, if the server has a Reputation service
 //	safe-search       SafeSearch, answering with the provider's safe host
 //
 // Answers are then checked too, unless the name was allowed:
@@ -56,6 +59,9 @@ const (
 	ReasonTLD             = "tld"
 	ReasonList            = "list"
 	ReasonHomograph       = "homograph"
+	ReasonTyposquatting   = "typosquatting"
+	ReasonDGA             = "dga"
+	ReasonSafeBrowsing    = "safe-browsing"
 	ReasonTunneling       = "tunneling"
 	ReasonNewlyRegistered = "newly-registered"
 	ReasonSafeSearch      = "safe-search"
@@ -77,6 +83,10 @@ type Options struct {
 	// domain checks are skipped.
 	Ages *rdap.Ages
 
+	// Reputation looks names up in a threat intelligence service, such
+	// as Google Safe Browsing. If nil, Safe Browsing checks are skipped.
+	Reputation Reputation
+
 	// State carries per-client state, such as tunneling detection, across
 	// engines as the policy changes. If nil, a new one is used.
 	State *State
@@ -97,6 +107,14 @@ type Options struct {
 
 	// Now returns the current time, for schedules. Nil means time.Now.
 	Now func() time.Time
+}
+
+// Reputation looks names up in a threat intelligence service.
+type Reputation interface {
+	// Lookup reports whether name, or a parent domain of it, is listed,
+	// and why, as a reason for people. An error means the service
+	// couldn't answer, and the name is allowed.
+	Lookup(ctx context.Context, name string) (reason string, listed bool, err error)
 }
 
 // Baseline is policy applied to every profile, such as from command-line
@@ -244,7 +262,8 @@ func New(p *policy.Policy, opts Options) (*Engine, error) {
 		sec := cfg.Security
 		pr.filters = len(pr.lists) > 0 || len(pr.deny) > 0 || len(pr.tlds) > 0 || cfg.SafeSearch ||
 			len(cfg.Services) > 0 || len(cfg.Schedules) > 0 ||
-			sec.Rebinding || sec.Homograph || sec.NewlyRegistered || sec.Tunneling || sec.Bypass
+			sec.Rebinding || sec.Homograph || sec.NewlyRegistered || sec.Tunneling || sec.Bypass ||
+			sec.Typosquatting || sec.DGA || sec.SafeBrowsing
 
 		claim := func(s, device string) {
 			prefix, _ := policy.ParsePrefix(s) // validated
@@ -461,6 +480,16 @@ func (p *Profile) Check(ctx context.Context, q Query, t *Trace) Decision {
 
 	registrable := Registrable(name)
 
+	if sec.Typosquatting {
+		if why, ok := typosquat(name, registrable); ok {
+			t.Add(ReasonTyposquatting, api.CheckMatch, "%s", why)
+			return block(ReasonTyposquatting, registrable, "", why)
+		}
+		t.Add(ReasonTyposquatting, api.CheckPass, "doesn't look like a brand's domain")
+	} else {
+		t.Add(ReasonTyposquatting, api.CheckSkip, "typosquatting protection is off")
+	}
+
 	if sec.Tunneling {
 		if d, ok := p.tunneling(q, name, registrable); ok {
 			t.Add(ReasonTunneling, api.CheckMatch, "%s", d.Detail)
@@ -471,12 +500,29 @@ func (p *Profile) Check(ctx context.Context, q Query, t *Trace) Decision {
 		t.Add(ReasonTunneling, api.CheckSkip, "tunneling protection is off")
 	}
 
+	if sec.DGA {
+		if registrable == "" || p.engine.isLocal(name) {
+			t.Add(ReasonDGA, api.CheckSkip, "not a registered domain")
+		} else if why, ok := dga(registrable, DefaultDGAThreshold); ok {
+			t.Add(ReasonDGA, api.CheckMatch, "%s", why)
+			return block(ReasonDGA, registrable, "", why)
+		} else {
+			t.Add(ReasonDGA, api.CheckPass, "doesn't look machine-generated")
+		}
+	} else {
+		t.Add(ReasonDGA, api.CheckSkip, "machine-generated domain protection is off")
+	}
+
 	if sec.NewlyRegistered {
 		if d, ok := p.newlyRegistered(ctx, registrable, t); ok {
 			return d
 		}
 	} else {
 		t.Add(ReasonNewlyRegistered, api.CheckSkip, "newly registered domain protection is off")
+	}
+
+	if d, ok := p.safeBrowsing(ctx, name, t); ok {
+		return d
 	}
 
 	if p.config.SafeSearch {
@@ -584,6 +630,33 @@ func (p *Profile) newlyRegistered(ctx context.Context, registrable string, t *Tr
 	}
 
 	t.Add(ReasonNewlyRegistered, api.CheckPass, "%s was registered %s ago", registrable, humanAge(age))
+	return Decision{}, false
+}
+
+// safeBrowsing reports whether name is on the reputation service's lists.
+func (p *Profile) safeBrowsing(ctx context.Context, name string, t *Trace) (Decision, bool) {
+	rep := p.engine.opts.Reputation
+	switch {
+	case !p.config.Security.SafeBrowsing:
+		t.Add(ReasonSafeBrowsing, api.CheckSkip, "Safe Browsing is off")
+		return Decision{}, false
+	case rep == nil:
+		t.Add(ReasonSafeBrowsing, api.CheckSkip, "Safe Browsing isn't set up on this server")
+		return Decision{}, false
+	case p.engine.isLocal(name):
+		t.Add(ReasonSafeBrowsing, api.CheckSkip, "local names aren't looked up")
+		return Decision{}, false
+	}
+	why, listed, err := rep.Lookup(ctx, name)
+	switch {
+	case err != nil:
+		t.Add(ReasonSafeBrowsing, api.CheckPass, "lookup failed (allowed): %v", err)
+		return Decision{}, false
+	case listed:
+		t.Add(ReasonSafeBrowsing, api.CheckMatch, "%s", why)
+		return block(ReasonSafeBrowsing, name, "", why), true
+	}
+	t.Add(ReasonSafeBrowsing, api.CheckPass, "not on Safe Browsing's lists")
 	return Decision{}, false
 }
 
@@ -834,6 +907,15 @@ func Features() []api.Feature {
 		{ID: "tunneling", Category: blocklist.CategorySecurity,
 			Title:       "DNS tunneling protection",
 			Description: "Blocks queries that look like data smuggled through DNS: long random labels, NULL records, and bursts of unique names under one domain. Some security software queries this way; allow its domains if needed."},
+		{ID: "typosquatting", Category: blocklist.CategorySecurity,
+			Title:       "Typosquatting protection",
+			Description: "Blocks domains a small edit away from banks, payment, email, shopping, and shipping brands phishing imitates most, such as paypa1.com, paypal-login.com, or paypal.com.example.net, but never the brands' own domains. Rarely, a legitimate site with a similar name is blocked; allow it if so."},
+		{ID: "dga", Category: blocklist.CategorySecurity,
+			Title:       "Machine-generated domains",
+			Description: "Blocks domains whose names look generated by malware to find its servers, such as xjwqkzrtvbnmplk.com, judged by how unlike popular domains' names their letters are. Catches about half of random-letter names; long words in some languages can be blocked by mistake."},
+		{ID: "safe_browsing", Category: blocklist.CategorySecurity,
+			Title:       "Google Safe Browsing",
+			Description: "Checks names against Google Safe Browsing's malware and phishing lists, kept on this server. Only when a name matches the local copy is a 4-byte hash prefix, never the name, sent to Google to confirm. Needs an API key on the server."},
 		{ID: "bypass", Category: blocklist.CategorySecurity,
 			Title:       "Block bypass methods",
 			Description: "Stops devices routing around this resolver through iCloud Private Relay or public encrypted DNS services."},

@@ -67,11 +67,14 @@ Answer: NXDOMAIN
 | 8 | `tld` | Blocked top-level domains. |
 | 9 | `list` | Blocklists, unless any of the profile's lists has an exception for the name. |
 | 10 | `homograph` | Look-alike internationalized names. |
-| 11 | `tunneling` | Data smuggled through DNS. |
-| 12 | `newly-registered` | Domains registered recently. |
-| 13 | `safe-search` | Safe search hosts for search engines and YouTube. |
-| 14 | `cname` | Answers whose CNAME targets are denied, under a blocked TLD, or on a blocklist. |
-| 15 | `rebinding` | Answers that point public names at local addresses. |
+| 11 | `typosquatting` | ASCII look-alikes of well-known brands' domains. |
+| 12 | `tunneling` | Data smuggled through DNS. |
+| 13 | `dga` | Domains whose names look machine-generated. |
+| 14 | `newly-registered` | Domains registered recently. |
+| 15 | `safe-browsing` | Names on Google Safe Browsing's lists, if the server has an API key. |
+| 16 | `safe-search` | Safe search hosts for search engines and YouTube. |
+| 17 | `cname` | Answers whose CNAME targets are denied, under a blocked TLD, or on a blocklist. |
+| 18 | `rebinding` | Answers that point public names at local addresses. |
 
 Blocked names get `NXDOMAIN` (or, with `block_response: "null"`, `0.0.0.0` and `::`), a synthetic SOA so they're cached for only a minute, and an [Extended DNS Error](https://www.rfc-editor.org/rfc/rfc8914.html#section-4.16) naming the reason, such as `blocked: rebinding` or `blocked by threat-intel`.
 
@@ -85,16 +88,21 @@ New policies turn on the protections that don't cause false positives on typical
 | Look-alike domains | `security.homograph` | on | Decodes [Punycode](https://www.rfc-editor.org/rfc/rfc3492.html) labels and blocks names that mix scripts beyond what [UTS #39's Highly Restrictive level](https://www.unicode.org/reports/tr39/#Restriction_Level_Detection) allows (`аpple.com` with a Cyrillic `а`), are spelled entirely in Cyrillic or Greek letters that look Latin (`аррӏе.com`) outside TLDs where those scripts are expected, contain invisible characters, use deceptive Latin letters such as `ɡ`, or aren't valid IDNA. Plain ASCII names are never affected. |
 | Newly registered domains | `security.newly_registered`, `security.newly_registered_days` | off | Looks up each registered domain's creation date with [RDAP](https://www.rfc-editor.org/rfc/rfc9083.html#section-4.5), finding the registry through [IANA's bootstrap](https://www.rfc-editor.org/rfc/rfc9224.html), and blocks domains younger than 30 days (or your threshold). Lookups are cached (on disk, in the data directory) and shared by concurrent queries; if a lookup fails or the TLD has no RDAP service, the name is allowed. |
 | DNS tunneling | `security.tunneling` | off | Blocks `NULL` queries, labels of 52 or more characters, labels of 30 or more characters with the randomness of encoded data (≥ 4.2 bits per character, above any hex hash), and, per client, a domain after 100 unique names under it in a minute, for 10 minutes. |
+| Typosquatting | `security.typosquatting` | off | Compares each registered domain with an embedded list of 108 brands phishing imitates most (banks, payments, email, big tech, shopping, shipping, a few government services), each with the domains it uses, and blocks domains whose label adds hyphens (`pay-pal.com`), swaps look-alike characters (`paypa1.com`, `rnicrosoft.com`, `vvalmart.com`), is a letter off (Damerau-Levenshtein distance 1, or 2 for `bankofamerica`), or adds risk words such as `login`, `verify`, or `account` (`paypal-login.com`, `securepaypal.com`); and names that put a brand's domain inside another (`paypal.com.example.net`) or pair a brand with a risk word in subdomains (`paypal-login.web.app`). Brands that are ordinary words or short (`apple`, `chase`, `ups`) are matched only by look-alike characters and risk words, never by edit distance. A brand's own domains, its exact name under any suffix (`paypal.co.uk`), content delivery networks and DNS blocklists (`www.paypal.com.edgekey.net`), and internationalized names are never flagged. `doh explain` says which brand, as in `looks like paypal.com: paypa1.com swaps look-alike characters`. |
+| Machine-generated domains | `security.dga` | off | Scores each registered domain's label (8 or more characters) by how surprising its letter pairs are under a bigram model of popular domains' names, with small penalties for switching between letters and digits and for long consonant runs, and blocks labels over a conservative threshold, as malware's domain generation algorithms make them (`xjwqkzrtvbnmplk.com`, hex and base-36 names). Names built from words or syllables aren't caught. |
+| Google Safe Browsing | `security.safe_browsing` | off | Needs `--safe-browsing-key-file` on the server. Keeps Google's phishing, malware, and unwanted software lists of 4-byte hash prefixes locally ([v5 local list mode](https://developers.google.com/safe-browsing/reference/Local.List.Mode)), updated as often as Google allows, and checks the hashes of each name and up to four of its parents against them. Only when one matches is that 4-byte prefix, never the name, sent to Google to fetch the full hashes, which are cached as long as Google says. If Google can't be reached, names are allowed. |
 | Bypass methods | `security.bypass` | off | Answers [iCloud Private Relay's canaries](https://developer.apple.com/support/prepare-your-network-for-icloud-private-relay/) negatively and blocks well-known public encrypted DNS services (except your upstreams). For broader coverage, add the `bypass-services` list. |
 | Safe search | `safe_search` | off | Answers Google, Bing, DuckDuckGo, and Pixabay with their safe search hosts, and YouTube with restricted mode, as each provider documents. Applies to every record type, so HTTPS records can't route around it. |
 
 [Firefox's canary domain](https://support.mozilla.org/kb/canary-domain-use-application-dnsnet) gets `NXDOMAIN` in every profile that blocks anything, so Firefox keeps using this resolver instead of enabling its own DoH.
 
-Every check also runs on **CNAME targets** in answers, against the profile's deny list, blocked TLDs, and blocklists. This uncovers trackers cloaked behind a first-party name, such as `metrics.shop.example CNAME collect.tracker.example`.
+Every check also runs on **CNAME targets** in answers, against the profile's deny list, blocked TLDs, and blocklists. This uncovers trackers cloaked behind a first-party name, such as `metrics.shop.example CNAME collect.tracker.example`. Typosquatting, machine-generated domain, and Safe Browsing checks apply to the queried name only: CNAME targets are infrastructure names people never see, where look-alike and random-looking names are normal (`www.paypal.com.edgekey.net`, `d3ag4hukkh62yn.cloudfront.net`).
+
+Typosquatting and machine-generated domain protection are off by default because they're heuristic, and measured against popular domains they flag some legitimate ones (see [status.md](status.md#threat-detection-measurements)): turn them on where a rare false positive is worth catching more phishing, and allow what they get wrong.
 
 ## Blocklists
 
-Profiles list blocklists by preset name, URL, or file path, optionally named as `name=location`. Each list is downloaded once, however many profiles use it, cached on disk, revalidated with conditional requests, and refreshed daily (`--blocklist-refresh`). Lists a profile adds load in the background; until they do, they block nothing, and `doh status` shows them loading.
+Profiles list blocklists by preset name, URL, or file path, optionally named as `name=location`. Each list is downloaded once, however many profiles use it, cached on disk, and checked for changes on a schedule by category: security presets every 2 hours, since their sources publish several times a day, and others daily, each spread by up to 10% either way (`--blocklist-refresh` for the default, `--blocklist-refresh-category security=1h` for a category, or `refresh` and `refresh_categories` in the config file). Checks are conditional requests (`If-None-Match`, `If-Modified-Since`), so an unchanged list costs a `304 Not Modified` and isn't parsed again; lists by URL that aren't presets use the default interval. Lists a profile adds load in the background; until they do, they block nothing, and `doh status` shows them loading.
 
 | Category | Presets |
 | --- | --- |
@@ -633,7 +641,8 @@ Common findings:
 
 ## Limits
 
-- Detection is heuristic. Look-alike checks cover internationalized names only, not ASCII typosquats such as `paypa1.com`. Tunneling detection can flag security software that queries hashes over DNS; allow its domains if so.
+- Detection is heuristic. Homograph checks cover internationalized names; typosquatting checks cover ASCII look-alikes of the embedded brands only, not of every site, and not swapped TLDs (`paypal.co` isn't flagged, since brands own too many to list). They flag some legitimate domains a letter from a brand, such as `goodie.pl` for google; brands close to ordinary words are matched exactly for that reason. Machine-generated domain scoring catches about half of names made of random letters at its threshold, nearly all hex and base-36 names, and almost none built from words or syllables; it flags some legitimate names, such as long words in Polish or other languages the model rarely saw, and CDN shards. Tunneling detection can flag security software that queries hashes over DNS; allow its domains if so.
+- Safe Browsing sees host names only, so entries for particular pages on otherwise good sites never match, and it fails open: while Google can't be reached, or the lists haven't loaded, names are allowed. The lists are kept in memory and fetched again after a restart. Google sees the 4-byte hash prefixes of names that match its lists locally, and the server's address, as with any Safe Browsing client; its terms of service apply.
 - Newly registered domain checks depend on registries' RDAP services. Many country-code TLDs (such as `.io`, `.sh`, `.de`, and `.co`) have none, so their names are never blocked as new. Registries see which domains are looked up, though not who asked, and each domain is looked up at most about once a month.
 - There's no "newly active" signal: a long-registered domain that has just started resolving isn't detected.
 - Blocking works on names. Apps that hard-code IP addresses, or use encrypted DNS services that aren't blocked, aren't filtered; bypass protection and the `bypass-services` list make that harder, not impossible.

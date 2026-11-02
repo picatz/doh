@@ -9,7 +9,7 @@ makes it stale.
 | Area | What it does | Verified by |
 | --- | --- | --- |
 | Resolving | DoH ([RFC 8484](https://www.rfc-editor.org/rfc/rfc8484.html)), DoT ([RFC 7858](https://www.rfc-editor.org/rfc/rfc7858.html)), DoQ ([RFC 9250](https://www.rfc-editor.org/rfc/rfc9250.html), experimental), and plain DNS; hedged upstreams, caching, serve-stale ([RFC 8767](https://www.rfc-editor.org/rfc/rfc8767.html)), padding, Extended DNS Errors | unit and integration tests; DoQ interop with public resolvers is opt-in (`DOH_LIVE_TESTS=1`) |
-| Protection | threat intelligence and other lists, look-alike names, rebinding, tunneling, newly registered domains (RDAP), bypass methods, safe search, blocked TLDs, CNAME checks | `internal/filter` tests, check by check; `doh explain` shows every decision |
+| Protection | threat intelligence and other lists (security lists checked every 2 hours, others daily, by conditional request), look-alike names, typosquatting, machine-generated domains, Google Safe Browsing (opt-in, v5 local lists), rebinding, tunneling, newly registered domains (RDAP), bypass methods, safe search, blocked TLDs, CNAME checks | `internal/filter` tests, check by check, with negative tests on popular domains, brands' own domains, CDN names, and IDNs; fuzz targets for the scorers and parsers; `testing/synctest` for list refresh and Safe Browsing's waits; mutation checks that the tests catch a broken detector; `doh explain` shows every decision. Safe Browsing is tested against an in-process fake of the API, never Google (see below) |
 | Profiles | per-device policy by DoH path, host name, or address; 93 apps blockable by name; schedules in each profile's time zone; rewrites; local zones | `internal/policy`, `filter`, and `services` tests |
 | Device setup | instructions for 17 platforms in 7 groups (phones and tablets, computers, TV and streaming, consoles, smart home, browsers, whole network), each with its protection level, a check, and how the device is identified; generated files: Apple configuration profiles (DoH, DoT, locked), a Windows PowerShell script, a systemd-resolved drop-in, and an OpenWrt script, from the admin API and setup links | golden tests of every file; configuration profiles parsed back with `internal/plist`; the OpenWrt script parsed by `dash -n`; the PowerShell script checked for ASCII, no network fetching, and `ShouldProcess` before every change, but not run or parsed by PowerShell here; negative tests: other tenants' profiles, expired links, the link's device overriding the query, invalid devices and variants. No real devices were tried: menu paths, Apple TV and Vision Pro installs, Android TV's adb settings, and router steps are documented, not verified |
 | Visibility | Activity (query log) with device names learned from the network, stats, a per-hour timeline, live streaming | `internal/querylog` and `hostnames` tests (with `testing/synctest`) |
@@ -61,6 +61,15 @@ CBOR (picatz/cbor, through the WebAuthn and COSE targets), the server's
 own config file and the state files it writes, `/etc/resolv.conf` for
 `doh doctor`, and session cookies, which are only hashed and looked up.
 
+## Threat detection measurements
+
+Measured on 2026-11-02 against the [Tranco list](https://tranco-list.eu/list/V354N) V354N. Popular isn't the same as legitimate: Tranco ranks some malicious and machine-generated domains too, so "flagged popular domains" overstates false positives in some places and the brands' look-alikes in it are often real typosquats.
+
+- **Typosquatting** flags 181 of the top 1,000,000 domains (0.018%). The brand list and its exceptions were tuned on this same list, so this is an optimistic figure for false positives, not a held-out one. Reviewing what's flagged, most are typo registrations (`faceboook.com`, `instgram.com`, `micosoft.icu`), and some are legitimate businesses a letter from a brand (`goodie.pl`, `sportify.tw`, `netfilm.world`), which is why it's off by default. Of the top 10,000, two are flagged (`oneidrive.org`, `googll.store`), whose owners aren't known. It takes about 0.1 to 1.2 µs a name, without allocating, once the registrable domain is known.
+- **Machine-generated domains**, at the default threshold, flag 4 of the 4,852 scored labels (0.08%) among the top 10,000 domains, which the model wasn't trained on (it learned from ranks 10,001 to 40,000), and 0.74% of scored labels past rank 40,000, most of which are random strings themselves. Recall on names from reimplemented generators (constructions after published analyses, not checked against captured samples): CryptoLocker-like 47%, Ramnit-like 44%, Necurs-like 53%, Conficker-like 9% (most are too short to score), MD5-hex (Bamital-like) and base-36 (newGOZ-like) 100%, pronounceable (Simda-like) 0%, and dictionary words (Suppobox-like) 0%. Precision, if as many generated names as popular ones were queried, is 0.998. Lower thresholds catch more and flag more: `TestDGA_Curve` prints the trade-off. It takes 0.2 to 0.8 µs a label, without allocating.
+- **Google Safe Browsing** is implemented against the v5 API's published protocol buffer definitions (`google/security/safebrowsing/v5/safebrowsing.proto`), the reference documentation, and Firefox's v5 client (for the query parameters' encoding), and tested only against an in-process fake. What hasn't been verified against Google: that the API accepts the key in the `X-Goog-Api-Key` header, the exact base64 form it expects for `version` and `hashPrefixes`, and that the checksum is computed as the docs describe (SHA-256 over the sorted 4-byte prefixes). A mismatch would show as update or search errors in the log, and names would be allowed.
+- **List refresh**: checked live once that GitHub's raw host, which serves the HaGeZi presets, answers `If-None-Match` with `304 Not Modified` and an empty body.
+
 ## Limits
 
 These are also stated where each feature is documented; see
@@ -107,10 +116,13 @@ In rough order of what it would mean for people using doh:
 1. **Notifications in the Security view:** wire `push.js` into the
    redesigned UI, and check delivery through Google's, Mozilla's, and
    Apple's push services on real devices.
-2. **Shared state for replicas:** sessions, setup links, stats, DPoP
+2. **Safe Browsing against the live API,** then persisting its lists
+   across restarts, and the web UI's presets choosing the new
+   protections (they're toggles in the Security view now).
+3. **Shared state for replicas:** sessions, setup links, stats, DPoP
    replay caches, and alerts' windows behind an interface with a SQLite
    (single node) and a networked backend.
-3. **DoH over HTTP/3,** tracked in
+4. **DoH over HTTP/3,** tracked in
    [picatz/doh#73](https://github.com/picatz/doh/issues/73), waiting on
    Go's own HTTP/3.
 4. **SBOMs for releases,** published and attested next to each binary,

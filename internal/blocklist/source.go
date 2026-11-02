@@ -108,6 +108,19 @@ var Presets = func() map[string]string {
 // blocks ads, trackers, and malware while rarely breaking sites.
 const DefaultPreset = "hagezi-normal"
 
+// presetCategories maps each preset's URL to its category.
+var presetCategories = func() map[string]string {
+	m := make(map[string]string, len(Catalog))
+	for _, p := range Catalog {
+		m[p.URL] = p.Category
+	}
+	return m
+}()
+
+// Category returns the category of the preset src loads, whatever it's
+// named, or "" if it isn't a preset's.
+func Category(src Source) string { return presetCategories[src.Location] }
+
 // PresetNames returns the preset names, sorted.
 func PresetNames() []string {
 	return slices.Sorted(maps.Keys(Presets))
@@ -230,13 +243,72 @@ func (l *Loader) Load(ctx context.Context, sources []Source, block, allow []stri
 
 // LoadSource loads one source into its own list.
 func (l *Loader) LoadSource(ctx context.Context, src Source) (*List, error) {
+	list, _, err := l.reloadSource(ctx, src, nil)
+	return list, err
+}
+
+// Version identifies the content a list was loaded from: a URL's
+// validators (its ETag and Last-Modified), or a file's size and
+// modification time. Comparing versions tells whether a list changed
+// without parsing it again.
+type Version struct {
+	ETag, LastModified string
+	Size               int64
+	ModTime            time.Time
+}
+
+// reloadSource loads src into its own list, unless it's unchanged since
+// have, the version of the list the caller already has: then it returns
+// a nil list and have, having parsed nothing. A nil have always loads.
+func (l *Loader) reloadSource(ctx context.Context, src Source, have *Version) (*List, *Version, error) {
+	var (
+		body []byte
+		v    *Version
+		err  error
+	)
+	if isURL(src.Location) {
+		body, v, err = l.fetch(ctx, src.Location, have)
+	} else {
+		body, v, err = l.readFile(src.Location, have)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if body == nil {
+		return nil, have, nil // unchanged
+	}
+
 	var b Builder
-	if _, err := l.loadSource(ctx, &b, src); err != nil {
-		return nil, err
+	if _, err := b.Add(src.Name, bytes.NewReader(body)); err != nil {
+		return nil, nil, err
 	}
 	// Name the source even if it has no rules, so verdicts can cite it.
 	b.source(src.Name)
-	return b.List(), nil
+	return b.List(), v, nil
+}
+
+// readFile reads the list at path, unless its size and modification time
+// match have, in which case it returns a nil body.
+func (l *Loader) readFile(path string, have *Version) ([]byte, *Version, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+
+	var v *Version
+	if fi, err := f.Stat(); err == nil {
+		v = &Version{Size: fi.Size(), ModTime: fi.ModTime()}
+		if have != nil && *have == *v {
+			return nil, have, nil
+		}
+	}
+
+	body, err := l.readLimited(f)
+	if err != nil {
+		return nil, nil, fmt.Errorf("blocklist: %s: %w", path, err)
+	}
+	return body, v, nil
 }
 
 func (l *Loader) logger() *slog.Logger {
@@ -248,26 +320,18 @@ func (l *Loader) logger() *slog.Logger {
 
 // loadSource adds the rules from src to b.
 func (l *Loader) loadSource(ctx context.Context, b *Builder, src Source) (int, error) {
-	if !isURL(src.Location) {
-		f, err := os.Open(src.Location)
-		if err != nil {
-			return 0, err
-		}
-		defer f.Close()
-
-		body, err := l.readLimited(f)
-		if err != nil {
-			return 0, fmt.Errorf("blocklist: %s: %w", src.Location, err)
-		}
-
-		return b.Add(src.Name, bytes.NewReader(body))
+	var (
+		body []byte
+		err  error
+	)
+	if isURL(src.Location) {
+		body, _, err = l.fetch(ctx, src.Location, nil)
+	} else {
+		body, _, err = l.readFile(src.Location, nil)
 	}
-
-	body, err := l.fetch(ctx, src.Location)
 	if err != nil {
 		return 0, err
 	}
-
 	return b.Add(src.Name, bytes.NewReader(body))
 }
 
@@ -295,7 +359,13 @@ type cacheEntry struct {
 
 // fetch downloads url, revalidating a cached copy if there is one, and
 // falling back to the cached copy if the download fails.
-func (l *Loader) fetch(ctx context.Context, url string) ([]byte, error) {
+//
+// If have is the version of the list the caller already has and the
+// server says it hasn't changed, fetch returns a nil body, so an
+// unchanged list costs one conditional request, with nothing downloaded
+// or parsed. have's validators are sent when there's no cached copy, so
+// this works without a cache directory too.
+func (l *Loader) fetch(ctx context.Context, url string, have *Version) ([]byte, *Version, error) {
 	root := l.openCache()
 	if root != nil {
 		defer root.Close()
@@ -303,27 +373,50 @@ func (l *Loader) fetch(ctx context.Context, url string) ([]byte, error) {
 
 	key := cacheKey(url)
 	cached, entry := readCache(root, key)
+	validators := entry
+	if validators == nil && have != nil {
+		validators = &cacheEntry{ETag: have.ETag, LastModified: have.LastModified}
+	}
 
-	body, validators, err := l.download(ctx, url, entry)
+	body, fresh, err := l.download(ctx, url, validators)
 	switch {
 	case err != nil && cached != nil:
 		l.logger().WarnContext(ctx, "blocklist: download failed, using cached copy",
 			slog.String("url", url), slog.Time("fetched", entry.Fetched), slog.Any("error", err))
-		return cached, nil
+		return unlessHave(cached, entry.version(), have)
 	case err != nil:
-		return nil, err
+		return nil, nil, err
+	case body == nil && validators == entry:
+		// Not modified since the cached copy, which the caller may
+		// already have.
+		return unlessHave(cached, entry.version(), have)
 	case body == nil:
-		return cached, nil // not modified since the cached copy
+		return nil, have, nil // not modified since the caller's copy
 	}
 
 	if root != nil {
-		validators.URL, validators.Fetched = url, time.Now().UTC()
-		if err := writeCache(root, key, body, validators); err != nil {
+		fresh.URL, fresh.Fetched = url, time.Now().UTC()
+		if err := writeCache(root, key, body, fresh); err != nil {
 			l.logger().WarnContext(ctx, "blocklist: caching list", slog.String("url", url), slog.Any("error", err))
 		}
 	}
 
-	return body, nil
+	v := fresh.version()
+	return body, &v, nil
+}
+
+// unlessHave returns body and its version v, or a nil body if the caller
+// already has v.
+func unlessHave(body []byte, v Version, have *Version) ([]byte, *Version, error) {
+	if have != nil && *have == v {
+		return nil, have, nil
+	}
+	return body, &v, nil
+}
+
+// version returns the Version of a list downloaded with these validators.
+func (e *cacheEntry) version() Version {
+	return Version{ETag: e.ETag, LastModified: e.LastModified}
 }
 
 // download fetches url, sending validators from cached so an unchanged list
@@ -336,12 +429,15 @@ func (l *Loader) download(ctx context.Context, url string, cached *cacheEntry) (
 	}
 	req.Header.Set("User-Agent", "doh (+https://github.com/picatz/doh)")
 
+	conditional := false
 	if cached != nil {
 		if cached.ETag != "" {
 			req.Header.Set("If-None-Match", cached.ETag)
+			conditional = true
 		}
 		if cached.LastModified != "" {
 			req.Header.Set("If-Modified-Since", cached.LastModified)
+			conditional = true
 		}
 	}
 
@@ -352,7 +448,7 @@ func (l *Loader) download(ctx context.Context, url string, cached *cacheEntry) (
 	defer resp.Body.Close()
 
 	switch {
-	case resp.StatusCode == http.StatusNotModified && cached != nil:
+	case resp.StatusCode == http.StatusNotModified && conditional:
 		return nil, cacheEntry{}, nil
 	case resp.StatusCode != http.StatusOK:
 		return nil, cacheEntry{}, fmt.Errorf("blocklist: %s: %s", url, resp.Status)

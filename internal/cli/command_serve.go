@@ -92,8 +92,20 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v []string) { c.Blocklist.Allow = v }),
 	option((*pflag.FlagSet).String, "block-response", serve.BlockNXDomain, "answer blocked names with nxdomain, or null (0.0.0.0 and ::)",
 		func(c *serve.Config, v string) { c.Blocklist.Response = v }),
-	option((*pflag.FlagSet).Duration, "blocklist-refresh", serve.DefaultBlocklistRefresh, "how often to reload blocklists",
+	option((*pflag.FlagSet).Duration, "blocklist-refresh", serve.DefaultBlocklistRefresh, "how often to check blocklists for changes, unless their category has its own interval",
 		func(c *serve.Config, v time.Duration) { c.Blocklist.Refresh = serve.Duration(v) }),
+	option((*pflag.FlagSet).StringToString, "blocklist-refresh-category", map[string]string{blocklist.CategorySecurity: serve.DefaultSecurityRefresh.String()},
+		"how often to check preset blocklists of a category for changes, as category=duration (security, privacy, parental)",
+		func(c *serve.Config, v map[string]string) {
+			c.Blocklist.RefreshCategories = make(map[string]serve.Duration, len(v))
+			for category, s := range v {
+				// Invalid durations are kept as zero, which Validate rejects.
+				d, _ := time.ParseDuration(s)
+				c.Blocklist.RefreshCategories[category] = serve.Duration(d)
+			}
+		}),
+	option((*pflag.FlagSet).String, "safe-browsing-key-file", "", "file holding a Google Safe Browsing API key, for profiles with safe_browsing on; only 4-byte hash prefixes of names on its local lists are sent to Google",
+		func(c *serve.Config, v string) { c.SafeBrowsing.KeyFile = v }),
 	option((*pflag.FlagSet).Int, "cache-size", serve.DefaultCacheSize, "most upstream answers to cache, for as long as their records live; 0 disables the cache",
 		func(c *serve.Config, v int) { c.Cache.Size, c.Cache.Disabled = v, v == 0 }),
 	option((*pflag.FlagSet).String, "data-dir", "", "directory for the policy, admin API tokens, query log, and registration cache (default $STATE_DIRECTORY, or doh in the user config dir)",
