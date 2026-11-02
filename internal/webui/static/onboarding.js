@@ -264,7 +264,7 @@ const STEP_BODIES = {
     const verify = h("div", { class: "verify", role: "status" },
       h("h4", { text: "Check it worked" }),
       seen.length
-        ? h("p", {}, `doh has answered ${plural(seen.length, "device")} over plain DNS since it started${since ? `, ${since}` : ""}: `,
+        ? h("p", {}, `doh has answered ${plural(seen.length, "device")} over plain DNS${since ? ` since ${since}` : ""}: `,
           h("span", { class: "mono", text: seen.slice(0, 6).map((c) => names.get(c) || c).join(", ") }), seen.length > 6 ? "…" : "", ".",
           seen.length >= ROUTER_SEEN ? " That's what a router sending devices here looks like." : " Once a second device appears, this step checks itself off.")
         : h("p", { class: "muted", text: "No device has asked doh over plain DNS yet. After you change the router, reconnect a device, then check again." }),

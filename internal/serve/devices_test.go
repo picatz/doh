@@ -138,7 +138,7 @@ func TestDevices_TenantsSeeOnlyTheirOwn(t *testing.T) {
 }
 
 func TestSeenDevices_Bounded(t *testing.T) {
-	d := newSeenDevices()
+	d := newSeenDevices(time.Now())
 	start := time.Now()
 	for i := range maxSeenDevices + 10 {
 		addr := netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)})

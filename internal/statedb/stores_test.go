@@ -554,3 +554,54 @@ var (
 	_ alerts.DeviceImporter = alertMemory{}
 	_ audit.Store           = auditStore{}
 )
+
+func TestSeenDevices_MergeBoundAndSurviveReopening(t *testing.T) {
+	db, path := openTest(t)
+	ctx := t.Context()
+	t0 := time.Now().Truncate(time.Microsecond)
+	d := db.SeenDevices()
+	tablet := SeenDevice{Profile: "kids", Device: "tablet", Client: "192.168.1.20", Tenant: "smiths", Transport: "doh", First: t0, Last: t0}
+	if err := d.Save(ctx, []SeenDevice{tablet}, 3); err != nil {
+		t.Fatal(err)
+	}
+	// Saved again, later, it keeps its first sighting; an older batch
+	// never moves its last sighting back.
+	later := tablet
+	later.First, later.Last, later.Transport = t0.Add(time.Hour), t0.Add(time.Hour), "dot"
+	stale := later
+	stale.First, stale.Last = t0.Add(time.Minute), t0.Add(time.Minute)
+	for _, s := range []SeenDevice{later, stale} {
+		if err := d.Save(ctx, []SeenDevice{s}, 3); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var more []SeenDevice
+	for i := range 3 {
+		more = append(more, SeenDevice{Profile: "default", Client: "10.0.0." + strconv.Itoa(i), First: t0, Last: t0.Add(time.Duration(i) * time.Second)})
+	}
+	if err := d.Save(ctx, more, 3); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	db, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	got, err := db.SeenDevices().Load(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bounded at 3, keeping the most recently seen: the tablet, then the
+	// two newest of the rest.
+	if len(got) != 3 || got[0].Device != "tablet" || got[1].Client != "10.0.0.2" || got[2].Client != "10.0.0.1" {
+		t.Fatalf("after reopening: %+v", got)
+	}
+	if g := got[0]; g.Tenant != "smiths" || g.Transport != "dot" || !g.First.Equal(t0) || !g.Last.Equal(t0.Add(time.Hour)) {
+		t.Errorf("tablet = %+v", g)
+	}
+	if got, _ := db.SeenDevices().Load(ctx, 1); len(got) != 1 || got[0].Device != "tablet" {
+		t.Errorf("Load(1) = %+v", got)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/jose/pkg/jwa"
@@ -301,13 +302,15 @@ func TestState_SurvivesRestart(t *testing.T) {
 	}
 
 	// run serves the admin listener at addr ("" for any port), until
-	// stopped.
+	// stopped, as srv.
+	var srv *Server
 	run := func(addr string) (base string, public http.Handler, stop func()) {
 		t.Helper()
 		s, err := New(config, slog.New(slog.NewTextHandler(io.MultiWriter(log, t.Output()), nil)))
 		if err != nil {
 			t.Fatal(err)
 		}
+		srv = s
 		ln, err := net.Listen("tcp", cmp.Or(addr, "127.0.0.1:0"))
 		if err != nil {
 			t.Fatal(err)
@@ -348,6 +351,7 @@ func TestState_SurvivesRestart(t *testing.T) {
 	if status := browser.do(http.MethodPatch, "/api/v1/profiles/kids", `{"services":["tiktok"]}`, nil); status != http.StatusOK {
 		t.Fatalf("change = %d", status)
 	}
+	ask(t, srv, "doh", "kids", "tablet", "192.0.2.10")
 	stop()
 
 	// The same address, so the proof's URL still matches.
@@ -364,6 +368,11 @@ func TestState_SurvivesRestart(t *testing.T) {
 	}
 	if resp, body := dpopRequest(t, bound, http.MethodGet, "/api/v1/status", "DPoP", proof); resp.StatusCode != http.StatusUnauthorized || !strings.Contains(log.String(), "replayed") {
 		t.Errorf("after a restart, a replayed proof = %d %s, want refused as a replay", resp.StatusCode, body)
+	}
+	var seen api.SeenDevices
+	if resp, body := operator.do(http.MethodGet, "/api/v1/devices?profile=kids&device=tablet", ""); resp.StatusCode != http.StatusOK ||
+		json.Unmarshal(body, &seen) != nil || len(seen.Devices) != 1 || seen.Devices[0].Client != "192.0.2.10" || seen.Since.After(seen.Devices[0].First) {
+		t.Errorf("after a restart, the devices seen = %d %s, want the tablet, remembered since before it", resp.StatusCode, body)
 	}
 	page := auditPage(t, operator, "?action=profile.updated")
 	if len(page.Events) != 1 || page.Events[0].Details["services.added"] != "tiktok" || page.Events[0].Actor.Kind != audit.ActorLink {

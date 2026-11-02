@@ -181,7 +181,7 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		exchangeLimiter:  newExchangeLimiter(),
 		alertPageLimiter: newAlertPageLimiter(),
 		adminHosts:       adminHostPatterns(config),
-		seen:             newSeenDevices(),
+		seen:             newSeenDevices(time.Now()),
 	}
 
 	if err := s.configureState(context.Background()); err != nil {
@@ -356,6 +356,9 @@ func (s *Server) closeState() {
 	if s.stateDB == nil {
 		return
 	}
+	if err := s.seen.save(context.Background(), s.stateDB.SeenDevices()); err != nil {
+		s.logger.Warn("saving the devices seen", slog.Any("error", err))
+	}
 	if err := s.stateDB.Close(); err != nil {
 		s.logger.Warn("closing the state database", slog.Any("error", err))
 	}
@@ -384,6 +387,10 @@ func (s *Server) configureState(ctx context.Context) error {
 		s.exchangeProofs = newProofVerifier(proofs)
 	}
 	if err != nil {
+		db.Close()
+		return fmt.Errorf("serve: %w", err)
+	}
+	if err := s.seen.load(ctx, db.SeenDevices()); err != nil {
 		db.Close()
 		return fmt.Errorf("serve: %w", err)
 	}
@@ -641,6 +648,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	if s.stateDB != nil {
 		g.Go(func() error { return s.sweepState(ctx) })
+		g.Go(func() error { return s.saveSeen(ctx) })
 	}
 
 	return g.Wait()
