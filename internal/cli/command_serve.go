@@ -66,6 +66,10 @@ var serveOptions = []serveOption{
 		func(c *serve.Config, v string) { c.TLS.CertFile = v }),
 	option((*pflag.FlagSet).String, "tls-key", "", "TLS private key file (PEM)",
 		func(c *serve.Config, v string) { c.TLS.KeyFile = v }),
+	option((*pflag.FlagSet).String, "profile-signing-cert", "", "certificate chain file (PEM) to sign Apple configuration profiles with (default the TLS certificate)",
+		func(c *serve.Config, v string) { c.TLS.ProfileSigning.CertFile = v }),
+	option((*pflag.FlagSet).String, "profile-signing-key", "", "private key file (PEM, ECDSA or RSA) for --profile-signing-cert",
+		func(c *serve.Config, v string) { c.TLS.ProfileSigning.KeyFile = v }),
 	option((*pflag.FlagSet).String, "tls-min-version", "1.2", "oldest TLS version to accept: 1.2 or 1.3 (TLS 1.3 is preferred either way)",
 		func(c *serve.Config, v string) { c.TLS.MinVersion = v }),
 	option((*pflag.FlagSet).StringSlice, "acme-domain", nil, "domains to obtain ACME certificates for, enabling ACME",
@@ -179,7 +183,9 @@ experimental), or plain DNS (udp://host[:53], tcp://host[:53], or just host).
 DoH requires TLS unless --plaintext is set, for running behind a reverse proxy
 or load balancer that terminates TLS. Certificates come from files, reloaded
 when they change, or are obtained automatically from Let's Encrypt (or another
-ACME certificate authority) with --acme-domain.
+ACME certificate authority) with --acme-domain. Apple configuration profiles
+are signed with that certificate, so devices can show them as verified, or with
+--profile-signing-cert and --profile-signing-key.
 
 With --dns-listen, plain DNS is also served over UDP and TCP, so any device can
 use the server as its resolver. With --dns-listen and no TLS or --plaintext

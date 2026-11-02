@@ -364,6 +364,11 @@ type TLSConfig struct {
 	// ACME obtains and renews certificates automatically.
 	ACME ACMEConfig `json:"acme,omitzero"`
 
+	// ProfileSigning chooses the certificate Apple configuration profiles
+	// are signed with. By default, they're signed with the server's own
+	// certificate, from files or ACME, if it has one.
+	ProfileSigning ProfileSigningConfig `json:"profile_signing,omitzero"`
+
 	// MinVersion is the oldest TLS version accepted: "1.2" (the default)
 	// or "1.3". Either way, TLS 1.3 is negotiated with clients that
 	// support it.
@@ -380,6 +385,17 @@ func (t TLSConfig) minVersion() (uint16, error) {
 	default:
 		return 0, fmt.Errorf("tls: min_version %q must be 1.2 or 1.3", t.MinVersion)
 	}
+}
+
+// ProfileSigningConfig configures the certificate Apple configuration
+// profiles are signed with, so devices can show them as verified.
+type ProfileSigningConfig struct {
+	// CertFile and KeyFile are a PEM-encoded certificate chain, signer
+	// first, and its private key (ECDSA or RSA). They're reloaded when they
+	// change on disk. Without them, profiles are signed with the TLS
+	// certificate, if the server has one, or else aren't signed.
+	CertFile string `json:"cert_file,omitempty"`
+	KeyFile  string `json:"key_file,omitempty"`
 }
 
 // ACMEConfig configures automatic certificates using the ACME protocol
@@ -601,6 +617,10 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("no TLS certificate configured: set a certificate and key, an ACME domain, or plaintext to serve behind a TLS-terminating proxy (or dns_listen to serve only plain DNS)"))
 	case !c.servesDoH() && listen != "":
 		errs = append(errs, errors.New("listen needs a TLS certificate, an ACME domain, or plaintext; without them only plain DNS is served on dns_listen"))
+	}
+
+	if ps := c.TLS.ProfileSigning; (ps.CertFile == "") != (ps.KeyFile == "") {
+		errs = append(errs, errors.New("tls: profile_signing cert_file and key_file must be set together"))
 	}
 
 	if _, err := c.TLS.minVersion(); err != nil {

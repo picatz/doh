@@ -197,7 +197,7 @@ Android
 $ doh setup kids --device ipad --mobileconfig ipad.mobileconfig   # open it on the iPad
 ```
 
-The web UI's **Connect** tab shows the same, for every platform, with one-click configuration profile downloads. With `--hostname`, it also makes **setup links**: a link to send to the phone or tablet you're setting up, over AirDrop, a message, or the share sheet, or as a QR code to scan with its camera, that opens a page with one-tap install on Apple devices and plain steps for others. Each works for 30 minutes. `doh setup <profile> --link` prints the same QR code in a terminal.
+The web UI's **Connect** tab shows the same, for every platform, with one-click configuration profile downloads. With `--hostname`, it also makes **setup links**: a link to send to the phone or tablet you're setting up, over AirDrop, a message, or the share sheet, or as a QR code to scan with its camera, that opens a page with one-tap install on Apple devices and plain steps for others. Each works for 30 minutes. `doh setup <profile> --link` prints the same QR code in a terminal. Configuration profiles are signed with the server's certificate, or `--profile-signing-cert`, so Apple devices can show them as verified; see [Signed configuration profiles](docs/protections.md#signed-configuration-profiles).
 
 #### DNS-over-QUIC (experimental)
 
@@ -354,7 +354,9 @@ experimental), or plain DNS (udp://host[:53], tcp://host[:53], or just host).
 DoH requires TLS unless --plaintext is set, for running behind a reverse proxy
 or load balancer that terminates TLS. Certificates come from files, reloaded
 when they change, or are obtained automatically from Let's Encrypt (or another
-ACME certificate authority) with --acme-domain.
+ACME certificate authority) with --acme-domain. Apple configuration profiles
+are signed with that certificate, so devices can show them as verified, or with
+--profile-signing-cert and --profile-signing-key.
 
 With --dns-listen, plain DNS is also served over UDP and TCP, so any device can
 use the server as its resolver. With --dns-listen and no TLS or --plaintext
@@ -434,6 +436,8 @@ Flags:
       --plaintext                      serve unencrypted HTTP, behind a TLS-terminating proxy
       --policy string                  policy file (default policy.json in --data-dir), URL of another doh server's /api/v1/policy to follow read-only, or "off"
       --policy-token-file string       file holding the bearer token for a --policy URL
+      --profile-signing-cert string    certificate chain file (PEM) to sign Apple configuration profiles with (default the TLS certificate)
+      --profile-signing-key string     private key file (PEM, ECDSA or RSA) for --profile-signing-cert
       --query-log-retention duration   how long to keep daily query log files (default 168h)
       --slow-query duration            save a flight recorder snapshot to --trace-dir when a query takes this long
       --timeout duration               maximum time to answer each query (default 5s)
