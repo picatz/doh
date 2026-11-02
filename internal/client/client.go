@@ -5,6 +5,7 @@ package client
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -87,9 +88,9 @@ func IsLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// base returns the parsed server URL, refusing to send a token over plain
-// HTTP to a remote host.
-func (c *Client) base() (*url.URL, error) {
+// base returns the parsed server URL, refusing to send a credential, such
+// as the API token, over plain HTTP to a remote host.
+func (c *Client) base(credential bool) (*url.URL, error) {
 	addr := c.Addr
 	if addr == "" {
 		addr = DefaultAddr
@@ -106,8 +107,8 @@ func (c *Client) base() (*url.URL, error) {
 	switch u.Scheme {
 	case "https":
 	case "http":
-		if c.Token != "" && !IsLoopback(u.Hostname()) {
-			return nil, fmt.Errorf("doh: refusing to send the API token over plain HTTP to %s; use https:// or a loopback address (such as an SSH tunnel)", u.Host)
+		if credential && !IsLoopback(u.Hostname()) {
+			return nil, fmt.Errorf("doh: refusing to send a credential over plain HTTP to %s; use https:// or a loopback address (such as an SSH tunnel)", u.Host)
 		}
 	default:
 		return nil, fmt.Errorf("doh: address %q must be an http or https URL", c.Addr)
@@ -123,7 +124,14 @@ func (c *Client) base() (*url.URL, error) {
 // request builds a request for path, relative to [api.Prefix], with query
 // parameters q.
 func (c *Client) request(ctx context.Context, method, path string, q url.Values, body io.Reader) (*http.Request, error) {
-	u, err := c.base()
+	return c.newRequest(ctx, method, path, q, body, c.Token, c.Token != "")
+}
+
+// newRequest builds a request as request does, sending token, if it's
+// not empty, as a bearer token. If credential, the request carries one,
+// so it's refused over plain HTTP to a remote host.
+func (c *Client) newRequest(ctx context.Context, method, path string, q url.Values, body io.Reader, token string, credential bool) (*http.Request, error) {
+	u, err := c.base(credential)
 	if err != nil {
 		return nil, err
 	}
@@ -143,8 +151,8 @@ func (c *Client) request(ctx context.Context, method, path string, q url.Values,
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/json")
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	return req, nil
 }
@@ -391,6 +399,76 @@ func (c *Client) RotateServiceAccountKey(ctx context.Context, account, key strin
 func (c *Client) DeleteServiceAccountKey(ctx context.Context, account, key string) error {
 	_, err := c.call(ctx, http.MethodDelete, "/service-accounts"+segment(account)+"/keys"+segment(key), nil, nil, "", nil, nil)
 	return err
+}
+
+// TrustRules returns a service account's trust rules: the workload
+// identity tokens it accepts in exchange for access tokens.
+func (c *Client) TrustRules(ctx context.Context, account string) ([]serviceaccount.TrustRule, error) {
+	var out api.TrustRules
+	if _, err := c.get(ctx, "/service-accounts"+segment(account)+"/federation", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Rules, nil
+}
+
+// AddTrustRule adds a trust rule to a service account.
+func (c *Client) AddTrustRule(ctx context.Context, account string, req api.TrustRuleRequest) (*serviceaccount.TrustRule, error) {
+	var out serviceaccount.TrustRule
+	if _, err := c.call(ctx, http.MethodPost, "/service-accounts"+segment(account)+"/federation", nil, req, "application/json", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteTrustRule removes a trust rule from a service account, revoking
+// the access tokens it issued at once.
+func (c *Client) DeleteTrustRule(ctx context.Context, account, rule string) error {
+	_, err := c.call(ctx, http.MethodDelete, "/service-accounts"+segment(account)+"/federation"+segment(rule), nil, nil, "", nil, nil)
+	return err
+}
+
+// ExchangeToken trades a workload's identity token for a service
+// account's short-lived access token ([RFC 8693, Section 2]). It sends no
+// API token of its own. Since the identity token is a credential, it's
+// only sent over HTTPS, or plain HTTP to a loopback address.
+//
+// A refusal is an [*Error] whose message is the OAuth error code and
+// description ([RFC 6749, Section 5.2]).
+//
+// [RFC 8693, Section 2]: https://www.rfc-editor.org/rfc/rfc8693.html#section-2
+// [RFC 6749, Section 5.2]: https://www.rfc-editor.org/rfc/rfc6749.html#section-5.2
+func (c *Client) ExchangeToken(ctx context.Context, req api.TokenExchangeRequest) (*api.TokenResponse, error) {
+	r, err := c.newRequest(ctx, http.MethodPost, "/token", nil, strings.NewReader(req.Form().Encode()), "", true)
+	if err != nil {
+		return nil, err
+	}
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.httpClient(false).Do(r)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		var e api.OAuthError
+		if err := json.Unmarshal(body, &e); err != nil || e.Error == "" {
+			return nil, decodeError(resp.StatusCode, body)
+		}
+		msg := e.Error
+		if e.Description != "" {
+			msg += ": " + e.Description
+		}
+		return nil, &Error{Status: resp.StatusCode, Message: msg}
+	}
+	var out api.TokenResponse
+	if err := json.Unmarshal(body, &out); err != nil || out.AccessToken == "" {
+		return nil, fmt.Errorf("doh: decoding the token response: %w", cmp.Or(err, errors.New("no access token")))
+	}
+	return &out, nil
 }
 
 // deviceQuery returns the query parameters naming device, if any.

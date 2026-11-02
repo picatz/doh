@@ -10,6 +10,11 @@
 // the old one keep working for a grace period, so automation can switch
 // over before it stops. Removing a key, or its account, revokes it at
 // once.
+//
+// Automation that has an identity of its own, such as a GitHub Actions
+// job or a Kubernetes pod, needn't keep a key at all: an account's trust
+// rules say which of its identity provider's tokens it accepts, and
+// [Store.IssueToken] trades one for a short-lived access token.
 package serviceaccount
 
 import (
@@ -99,6 +104,10 @@ type Account struct {
 
 	// Keys are its keys, without their secrets.
 	Keys []Key `json:"keys"`
+
+	// Federation are its trust rules: the identity tokens it accepts in
+	// exchange for short-lived access tokens.
+	Federation []TrustRule `json:"federation,omitempty"`
 }
 
 // Key is a service account's credential.
@@ -136,6 +145,11 @@ type Store struct {
 	accounts []*Account
 	keys     map[string]*Account // by key ID
 	used     map[string]time.Time
+
+	// tokens are the access tokens issued, by their secret's digest, and
+	// maxTokens how many may be kept, if not MaxAccessTokens.
+	tokens    map[[sha256.Size]byte]*AccessToken
+	maxTokens int
 }
 
 // Option configures a [Store].
@@ -149,7 +163,13 @@ func WithClock(now func() time.Time) Option {
 // Open opens the store persisted at path, which needn't exist yet. With an
 // empty path, the store is kept only in memory.
 func Open(path string, opts ...Option) (*Store, error) {
-	s := &Store{path: path, now: time.Now, keys: make(map[string]*Account), used: make(map[string]time.Time)}
+	s := &Store{
+		path:   path,
+		now:    time.Now,
+		keys:   make(map[string]*Account),
+		used:   make(map[string]time.Time),
+		tokens: make(map[[sha256.Size]byte]*AccessToken),
+	}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -219,7 +239,8 @@ func (s *Store) Create(n NewAccount) (Account, error) {
 	return s.view(a), nil
 }
 
-// Delete removes the account with id, revoking its keys.
+// Delete removes the account with id, revoking its keys and access
+// tokens.
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -230,7 +251,8 @@ func (s *Store) Delete(id string) error {
 	return s.remove(func(a *Account) bool { return a.ID == id })
 }
 
-// DeleteTenant removes every account of tenant, revoking their keys, and
+// DeleteTenant removes every account of tenant, revoking their keys and
+// access tokens, and
 // returns how many there were.
 func (s *Store) DeleteTenant(tenant string) (int, error) {
 	if tenant == "" {
@@ -254,13 +276,17 @@ func (s *Store) DeleteTenant(tenant string) (int, error) {
 // change. s.mu must be held.
 func (s *Store) remove(drop func(*Account) bool) error {
 	before := slices.Clone(s.accounts)
-	return s.commit(func() {
+	err := s.commit(func() {
 		s.accounts = slices.DeleteFunc(s.accounts, drop)
 		s.reindex()
 	}, func() {
 		s.accounts = before
 		s.reindex()
 	})
+	if err == nil {
+		s.pruneTokens()
+	}
+	return err
 }
 
 // AddKey adds a key to an account, expiring at expires, and returns it
@@ -416,6 +442,10 @@ func (s *Store) view(a *Account) Account {
 		}
 		v.Keys[i].digest = [sha256.Size]byte{}
 	}
+	v.Federation = nil
+	for _, r := range a.Federation {
+		v.Federation = append(v.Federation, cloneRule(r))
+	}
 	return v
 }
 
@@ -448,6 +478,12 @@ func newAccountID() (string, error) {
 		return "", err
 	}
 	return strings.ToLower(base32.StdEncoding.EncodeToString(b[:])), nil
+}
+
+// ValidAccountID reports whether id is shaped like an account ID, so
+// callers can tell a malformed ID from an unknown one.
+func ValidAccountID(id string) bool {
+	return len(id) == 16 && !strings.ContainsFunc(id, func(r rune) bool { return (r < 'a' || r > 'z') && (r < '2' || r > '7') })
 }
 
 // keyIDLen is the length of a key ID: 16 hex characters, 64 bits.
@@ -510,6 +546,10 @@ type fileAccount struct {
 	Created   time.Time `json:"created"`
 	CreatedBy string    `json:"created_by,omitempty"`
 	Keys      []fileKey `json:"keys"`
+
+	// Federation was added after version 1 was; files without it still
+	// load.
+	Federation []TrustRule `json:"federation,omitempty"`
 }
 
 type fileKey struct {
@@ -556,6 +596,14 @@ func (s *Store) load() error {
 			a.Keys = append(a.Keys, k)
 			seen[k.ID] = true
 		}
+		rules := make(map[string]bool)
+		for _, r := range fa.Federation {
+			if len(r.ID) != keyIDLen || rules[r.ID] || len(rules) >= MaxTrustRules || r.validate(a.Tenant == "") != nil {
+				return fmt.Errorf("serviceaccount: %s: invalid trust rule %q of account %q", s.path, r.ID, a.ID)
+			}
+			a.Federation = append(a.Federation, cloneRule(r))
+			rules[r.ID] = true
+		}
 		s.accounts = append(s.accounts, &a)
 	}
 	s.reindex()
@@ -570,7 +618,7 @@ func (s *Store) save() error {
 	}
 	f := file{Version: 1, Accounts: make([]fileAccount, len(s.accounts))}
 	for i, a := range s.accounts {
-		fa := fileAccount{ID: a.ID, Name: a.Name, Tenant: a.Tenant, Role: a.Role, Created: a.Created, CreatedBy: a.CreatedBy, Keys: make([]fileKey, len(a.Keys))}
+		fa := fileAccount{ID: a.ID, Name: a.Name, Tenant: a.Tenant, Role: a.Role, Created: a.Created, CreatedBy: a.CreatedBy, Keys: make([]fileKey, len(a.Keys)), Federation: a.Federation}
 		for j, k := range a.Keys {
 			fa.Keys[j] = fileKey{ID: k.ID, Digest: k.digest[:], Created: k.Created, Expires: k.Expires, LastUsed: k.LastUsed}
 		}

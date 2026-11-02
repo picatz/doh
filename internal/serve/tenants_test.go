@@ -23,7 +23,9 @@ type tenantFixture struct {
 	smith    *uiBrowser
 }
 
-func newTenantFixture(t *testing.T) *tenantFixture {
+// newTenantFixture starts a server with the smiths tenant, signed in as
+// its admin, after calling each prepare on the server.
+func newTenantFixture(t *testing.T, prepare ...func(*Server)) *tenantFixture {
 	t.Helper()
 	up, _ := startZone(t, nil)
 	s, dataDir := newPolicyServer(t, up, &policy.Policy{
@@ -34,6 +36,9 @@ func newTenantFixture(t *testing.T) *tenantFixture {
 			{ID: "smith-home", Tenant: "smiths"},
 		},
 	})
+	for _, f := range prepare {
+		f(s)
+	}
 	adminURL := startAdmin(t, s)
 	operator := apiClient{t, adminURL, token(t, dataDir, AdminTokenFile)}
 

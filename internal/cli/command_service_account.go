@@ -33,14 +33,21 @@ replace it, with a grace period while automation switches over; revoke one, or
 delete its account, to stop it at once. Deleting a tenant deletes its service
 accounts.
 
+Automation with an identity of its own, such as a GitHub Actions job, needn't
+keep a key at all: trust its identity tokens with "doh sa trust add", and it
+exchanges one for a short-lived access token with "doh token exchange".
+
 Service accounts can't manage people, sign-in links, or service accounts,
-including their own keys: that takes a person, or the operator's token.
+including their own keys and trust rules: that takes a person, or the
+operator's token.
 
 Accounts can be named by ID or, when it's unique, by name; keys by ID.`,
 		Example: `  doh service-account create "Home Assistant"
   doh sa create Backups --admin --secret-file backups.key
   doh sa list
   doh sa key rotate "Home Assistant" --grace 1h
+  doh sa create CI --admin --no-key
+  doh sa trust add CI --github-repo octo/app --audience https://dns.example.com
   doh sa delete "Home Assistant"`,
 		Args: cobra.NoArgs,
 	}
@@ -50,7 +57,7 @@ Accounts can be named by ID or, when it's unique, by name; keys by ID.`,
 		Args:  cobra.NoArgs,
 	}
 	key.AddCommand(newKeyAddCommand(), newKeyRotateCommand(), newKeyRevokeCommand())
-	cmd.AddCommand(newServiceAccountListCommand(), newServiceAccountCreateCommand(), newServiceAccountDeleteCommand(), key)
+	cmd.AddCommand(newServiceAccountListCommand(), newServiceAccountCreateCommand(), newServiceAccountDeleteCommand(), key, newTrustCommand())
 	return cmd
 }
 

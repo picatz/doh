@@ -13,7 +13,7 @@ makes it stale.
 | Profiles | per-device policy by DoH path, host name, or address; 93 apps blockable by name; schedules in each profile's time zone; rewrites; local zones | `internal/policy`, `filter`, and `services` tests |
 | Visibility | Activity (query log) with device names learned from the network, stats, a per-hour timeline, live streaming | `internal/querylog` and `hostnames` tests (with `testing/synctest`) |
 | Sharing | tenants (households, customers) with their own profiles, people, and service accounts, seeing nothing of each other | negative tests: other tenants' resources read as not found |
-| Identity | passkey sign-in (WebAuthn, written here), single-use links, service accounts with expiring, rotatable keys, setup links for devices | negative tests: forged, expired, replayed, revoked, cross-tenant |
+| Identity | passkey sign-in (WebAuthn, written here), single-use links, service accounts with expiring, rotatable keys, workload identity federation (OIDC token exchange, [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html)) so automation needs no stored secret, setup links for devices | negative tests: forged, expired, replayed, revoked, cross-tenant; for federation, wrong issuer, audience, subject, or claims, `alg: none`, HMAC with a public key, unknown keys, over-long tokens, and rate limits, with a mutation check that the tests catch a broken matcher |
 | Web UI | its own identity ([design.md](design.md)); adaptive shell for phones, tablets, and desktops; ⌘K; the Overview ring; light, dark, high-contrast, and forced colors; keyboard and screen reader use | Go tests on markup and scripts' safety (CSP, no unsafe DOM), node tests for each module, and driven in Chromium at three widths in both themes |
 | Releases | static, reproducible builds for nine platforms, with SHA-256 sums and signed build provenance | `make dist` twice gives identical sums; `gh attestation verify` |
 
@@ -25,9 +25,11 @@ Every change runs `gofmt`, `go vet ./...`, and `go test -race ./...` in CI
 These are also stated where each feature is documented; see
 [protections.md, Limits](protections.md#limits).
 
-- **Credentials are bearer tokens.** Service account keys and the
-  operator's tokens work for whoever holds them until they expire or are
-  revoked. They aren't yet bound to a client key (DPoP).
+- **Credentials are bearer tokens.** Service account keys, exchanged
+  access tokens, and the operator's tokens work for whoever holds them
+  until they expire or are revoked. They aren't yet bound to a client key
+  (DPoP). Federation trusts the identity provider, so rules should be as
+  narrow as it allows.
 - **State is per process.** Sessions, setup links, and stats over the
   in-memory query log live in one process; the policy, people, service
   accounts, and log files are on disk. Running several replicas behind a

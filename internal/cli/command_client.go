@@ -935,6 +935,7 @@ func clientCommands() []*cobra.Command {
 		newTenantCommand(),
 		newPeopleCommand(),
 		newServiceAccountCommand(),
+		newTokenCommand(),
 		newServicesCommand(),
 		newScheduleCommand(),
 	}
