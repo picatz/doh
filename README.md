@@ -21,6 +21,15 @@ With [Go](https://go.dev/doc/install) 1.27 or later:
 $ go install github.com/picatz/doh@latest
 ```
 
+Or download a build for Linux, macOS, Windows, or FreeBSD from [releases](https://github.com/picatz/doh/releases). Each file is attested with [build provenance](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations): signed proof that it was built from this repository's source, by its release workflow. Check one before running it:
+
+```console
+$ gh attestation verify doh_1.2.3_linux_amd64.tar.gz --repo picatz/doh
+$ sha256sum --check --ignore-missing SHA256SUMS
+```
+
+Builds are reproducible (`make dist` builds the same bytes from the same commit), static, and depend on nothing at runtime.
+
 ## Querying
 
 Query a domain's `A` records. Without `--servers`, Google, Cloudflare, and Quad9 are queried concurrently, and each response is printed as a line of JSON as it arrives:

@@ -1,9 +1,11 @@
 # Default is to run help target
 .DEFAULT_GOAL := help
 
-# VERSION := $(shell git describe --tags --always --dirty)
-# BUILD := $(shell git rev-parse HEAD)
-# PROJECTNAME := $(shell basename "$(PWD)")
+.PHONY: check
+check: ## Run every check CI runs: formatting, vet, and tests with the race detector
+	@test -z "$$(gofmt -l .)" || { gofmt -d .; exit 1; }
+	@go vet ./...
+	@go test -race ./...
 
 .PHONY: test
 test: ## Run tests
@@ -16,6 +18,10 @@ test-live: ## Run tests, including those that query public DoH resolvers
 .PHONY: build
 build: ## Build binary
 	@go build -o doh
+
+.PHONY: dist
+dist: ## Build release archives for every platform into dist/, reproducibly
+	@./scripts/build-release.sh
 
 .PHONY: help
 help: ## Print this help message
