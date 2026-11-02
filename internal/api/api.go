@@ -4,9 +4,14 @@
 //
 // Every endpoint is under [Prefix] and needs a bearer token
 // ([RFC 6750, Section 2.1]) or a signed-in web UI session: admin for every
-// request, or reader for GET requests only. Browsers sign in at
-// signin.Prefix, with sign-in links from POST /signin-links, or passkeys. Errors are reported as an [Error]
-// with a 4xx or 5xx status.
+// request, or reader for GET requests only. A service account key or
+// access token bound to a DPoP key is sent as "Authorization: DPoP
+// <token>" instead, with a DPoP proof signed by that key in the DPoP
+// header ([RFC 9449, Section 7.1]); refusals are 401 with a DPoP
+// WWW-Authenticate challenge naming invalid_token or invalid_dpop_proof.
+// Browsers sign in at signin.Prefix, with sign-in links from POST
+// /signin-links, or passkeys. Errors are reported as an [Error] with a
+// 4xx or 5xx status.
 //
 // The policy is versioned with entity tags: responses that return or
 // change it carry an ETag header, and changes may be made conditional with
@@ -58,7 +63,9 @@
 // token exchange ([RFC 8693]), where a workload trades an identity token
 // from its own provider, such as GitHub Actions, for a short-lived access
 // token of a service account whose trust rules accept it. It takes a form
-// ([TokenExchangeRequest]), and reports errors as an [OAuthError].
+// ([TokenExchangeRequest]), and reports errors as an [OAuthError]. An
+// exchange with a DPoP proof in its DPoP header ([RFC 9449, Section 5])
+// gets an access token bound to the proof's key, with token_type "DPoP".
 //
 // The logs, stream, and stats endpoints take the filter parameters that
 // querylog.ParseFilter reads: profile, device, client, status, reason, q,
@@ -66,6 +73,8 @@
 // such as 1h, for a timeline from since.
 //
 // [RFC 6750, Section 2.1]: https://www.rfc-editor.org/rfc/rfc6750.html#section-2.1
+// [RFC 9449, Section 7.1]: https://www.rfc-editor.org/rfc/rfc9449.html#section-7.1
+// [RFC 9449, Section 5]: https://www.rfc-editor.org/rfc/rfc9449.html#section-5
 // [RFC 9110, Section 13.1.1]: https://www.rfc-editor.org/rfc/rfc9110.html#section-13.1.1
 // [RFC 7396]: https://www.rfc-editor.org/rfc/rfc7396.html
 // [RFC 8693]: https://www.rfc-editor.org/rfc/rfc8693.html
@@ -401,6 +410,15 @@ type KeyRequest struct {
 	// Expires is when the key stops working: within a year. It defaults
 	// to 90 days from now.
 	Expires time.Time `json:"expires,omitzero"`
+
+	// JKT, if set, binds the key to a DPoP key the client holds: it's
+	// the base64url SHA-256 JWK thumbprint ([RFC 7638]) of the key's
+	// public half. Requests using the key then need a DPoP proof signed
+	// by it ([RFC 9449, Section 7.1]).
+	//
+	// [RFC 7638]: https://www.rfc-editor.org/rfc/rfc7638.html
+	// [RFC 9449, Section 7.1]: https://www.rfc-editor.org/rfc/rfc9449.html#section-7.1
+	JKT string `json:"jkt,omitempty"`
 }
 
 // RotateKeyRequest replaces a key with a new one.
@@ -411,10 +429,15 @@ type RotateKeyRequest struct {
 	// PreviousExpires is when the old key stops working: now, the
 	// default, or within a week, so automation can switch over.
 	PreviousExpires time.Time `json:"previous_expires,omitzero"`
+
+	// JKT binds the new key to a DPoP key, as in [KeyRequest]. The new
+	// key is bound only if it's set, whether or not the old one was.
+	JKT string `json:"jkt,omitempty"`
 }
 
 // NewKey is a service account's new key, with its secret. The secret is
-// shown only this once; send it as a bearer token.
+// shown only this once; send it as a bearer token, or, if the key is
+// bound to a DPoP key, with the DPoP scheme and a proof.
 type NewKey struct {
 	Account string             `json:"account"`
 	Key     serviceaccount.Key `json:"key"`
@@ -477,6 +500,10 @@ type TrustRuleRequest struct {
 	// TokenLifetime is how many seconds access tokens last: 60 to 3600,
 	// 900 by default.
 	TokenLifetime int `json:"token_lifetime,omitzero"`
+
+	// RequireDPoP refuses exchanges that carry no DPoP proof, so every
+	// access token the rule issues is bound to a key.
+	RequireDPoP bool `json:"require_dpop,omitzero"`
 }
 
 // Token exchange parameters ([RFC 8693, Section 3]).
@@ -530,14 +557,18 @@ func (r TokenExchangeRequest) Form() url.Values {
 //
 // [RFC 8693, Section 2.2.1]: https://www.rfc-editor.org/rfc/rfc8693.html#section-2.2.1
 type TokenResponse struct {
-	// AccessToken is the issued token, to send as a bearer token. It's
+	// AccessToken is the issued token, to send as TokenType says. It's
 	// kept only in the server's memory, so it doesn't survive a restart.
 	AccessToken string `json:"access_token"`
 
 	// IssuedTokenType is [TokenTypeAccessToken].
 	IssuedTokenType string `json:"issued_token_type"`
 
-	// TokenType is "Bearer".
+	// TokenType is "Bearer", or "DPoP" if the exchange carried a DPoP
+	// proof ([RFC 9449, Section 5]): the token is bound to the proof's
+	// key, and is sent with the DPoP scheme and a proof by that key.
+	//
+	// [RFC 9449, Section 5]: https://www.rfc-editor.org/rfc/rfc9449.html#section-5
 	TokenType string `json:"token_type"`
 
 	// ExpiresIn is how many seconds the token lasts.

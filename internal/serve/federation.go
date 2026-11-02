@@ -13,6 +13,7 @@ import (
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/ratelimit"
 	"github.com/picatz/doh/internal/serviceaccount"
+	"github.com/picatz/jose/pkg/dpop"
 )
 
 // maxExchangeBody bounds a token exchange request: room for an identity
@@ -57,7 +58,14 @@ func writeOAuthError(w http.ResponseWriter, status int, code, description string
 // whether an account exists; the reason is logged. Clients that fail too
 // often are slowed down.
 //
+// An exchange with a DPoP proof ([RFC 9449, Section 5]) gets an access
+// token bound to the proof's key; a trust rule may require one. The
+// proof is checked only once the identity token is accepted, so only a
+// workload with one can fill the replay cache, and any refusal of it is
+// invalid_dpop_proof.
+//
 // [RFC 8693, Section 2]: https://www.rfc-editor.org/rfc/rfc8693.html#section-2
+// [RFC 9449, Section 5]: https://www.rfc-editor.org/rfc/rfc9449.html#section-5
 func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) {
 	// Token responses are never cached (RFC 6749, Section 5.1).
 	w.Header().Set("Cache-Control", "no-store")
@@ -150,8 +158,23 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) {
 		fail(errInvalidGrant, refused, err.Error(), account)
 		return
 	}
+	// Any DPoP proof binds the access token to its key.
+	var bind []serviceaccount.CredentialOption
+	switch {
+	case len(r.Header.Values(dpop.HeaderName)) > 0:
+		proof, err := s.verifyProof(s.exchangeProofs, r, "", "")
+		if err != nil {
+			fail(errInvalidProof, "the DPoP proof wasn't accepted", err.Error(), account)
+			return
+		}
+		bind = append(bind, serviceaccount.BoundTo(proof.Thumbprint))
+	case rule.RequireDPoP:
+		fail(errInvalidProof, "this service account issues only DPoP-bound access tokens; send a DPoP proof", "no DPoP proof", account, slog.String("rule", rule.ID))
+		return
+	}
+
 	subject, _ := claims["sub"].(string)
-	at, secret, err := s.accounts.IssueToken(a.ID, rule.ID, subject)
+	at, secret, err := s.accounts.IssueToken(a.ID, rule.ID, subject, bind...)
 	switch {
 	case errors.Is(err, serviceaccount.ErrNotFound):
 		// The account or rule was removed meanwhile.
@@ -163,12 +186,17 @@ func (s *Server) apiToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tokenType := "Bearer"
+	if at.Bound() {
+		tokenType = dpop.TokenType
+	}
 	s.logger.LogAttrs(r.Context(), slog.LevelInfo, "admin: access token issued", account, slog.String("rule", rule.ID),
-		slog.String("issuer", rule.Issuer), slog.String("subject", subject), slog.Time("expires", at.Expires), slog.String("client", client))
+		slog.String("issuer", rule.Issuer), slog.String("subject", subject), slog.Time("expires", at.Expires),
+		slog.String("jkt", at.JKT), slog.String("client", client))
 	writeJSON(w, http.StatusOK, api.TokenResponse{
 		AccessToken:     secret,
 		IssuedTokenType: api.TokenTypeAccessToken,
-		TokenType:       "Bearer",
+		TokenType:       tokenType,
 		ExpiresIn:       int(at.Expires.Sub(at.Issued) / time.Second),
 	})
 }
@@ -232,13 +260,15 @@ func (s *Server) apiAddTrustRule(w http.ResponseWriter, r *http.Request) {
 		Subject:       req.Subject,
 		Claims:        req.Claims,
 		TokenLifetime: req.TokenLifetime,
+		RequireDPoP:   req.RequireDPoP,
 		CreatedBy:     principalOf(r).by,
 	})
 	if s.writeAccountError(w, err) {
 		return
 	}
 	s.audit(r, "service account trust rule added", slog.String("account", a.ID), slog.String("rule", rule.ID),
-		slog.String("issuer", rule.Issuer), slog.String("audience", rule.Audience), slog.String("subject", rule.Subject))
+		slog.String("issuer", rule.Issuer), slog.String("audience", rule.Audience), slog.String("subject", rule.Subject),
+		slog.Bool("require_dpop", rule.RequireDPoP))
 	w.Header().Set("Location", api.Prefix+"/service-accounts/"+a.ID+"/federation/"+rule.ID)
 	writeJSON(w, http.StatusCreated, rule)
 }

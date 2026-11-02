@@ -328,11 +328,58 @@ With doh installed, `doh token exchange --account SERVICE_ACCOUNT_ID --subject-t
 - **Access tokens are short-lived.** They're `doh_at_<256 random bits>`, last 15 minutes by default (1 minute to an hour, with `--token-lifetime`), and act exactly as the service account would, including that they can't manage people, keys, or trust rules. They're kept only in memory, as SHA-256 hashes, so a restart ends them all, by design; exchange again. At most 10,000 are kept at once, forgetting the oldest beyond that.
 - **Revocation is immediate.** Removing a rule, or deleting its account or tenant, stops the access tokens it issued at once. Adding and removing rules, and each exchange, are logged.
 
+#### Binding credentials with DPoP
+
+On its own, a key or an access token is a bearer credential: whoever copies it, from a CI log, a backup, or a config file, can use it. [DPoP](https://www.rfc-editor.org/rfc/rfc9449.html) (RFC 9449) binds it to a private key the client holds instead. Every request then also carries a **proof**, a short-lived JWT signed by that key for that request's method and URL, so a copied credential is useless without the key, and a captured request can't be replayed or redirected to another endpoint.
+
+```sh
+doh sa key add CI --dpop --secret-file ci.key      # ci.key holds the secret, ci.key.dpop its new P-256 private key
+doh sa create Backups --admin --dpop --secret-file backups.key
+doh status --token-file ci.key                     # finds ci.key.dpop beside it, and signs each request
+DOH_TOKEN="$(cat ci.key)" DOH_DPOP_KEY_FILE=ci.key.dpop doh status
+doh sa key rotate CI --secret-file ci-2.key        # a bound key's replacement is bound too, to a new key
+doh sa trust add Deploys --github-repo octo/app --audience https://admin.dns.example.com --require-dpop
+```
+
+- **Keys are made where they're used.** `--dpop` makes an ECDSA P-256 key on the machine running `doh`, sends only its [RFC 7638](https://www.rfc-editor.org/rfc/rfc7638.html) thumbprint (`jkt`) to the server, and writes the secret to `--secret-file` and the private key, as a PEM `PRIVATE KEY` (PKCS #8), to the file beside it with `.dpop` appended. Both are new files, readable only by you; existing files are never overwritten. `doh sa list` marks bound keys `(DPoP)`.
+- **Every client command signs.** `--dpop-key FILE` (`DOH_DPOP_KEY_FILE`) names the key; without it, a `--token-file`'s `.dpop` sibling is used if there is one. Keys may be PKCS #8 or SEC 1 (`EC PRIVATE KEY`, as `openssl ecparam` writes) PEM: ECDSA P-256, Ed25519, or RSA of at least 2,048 bits.
+- **A bound credential needs the DPoP scheme.** Requests send `Authorization: DPoP <credential>` and the proof in a `DPoP` header ([RFC 9449, Section 7.1](https://www.rfc-editor.org/rfc/rfc9449.html#section-7.1)). A bound credential sent as a bearer token is refused, and so is an unbound one sent with the DPoP scheme. Unbound keys, access tokens, and the operator's tokens work as bearer tokens, as before.
+- **Proofs are checked in full** ([Section 4.3](https://www.rfc-editor.org/rfc/rfc9449.html#section-4.3)): `typ` must be `dpop+jwt`; it must be signed with ES256, EdDSA, or RS256, never `none` or HMAC, by the public key in its own `jwk` header, which must have no private parts and the credential's thumbprint; `htm` must be the request's method and `htu` its URL without the query; `iat` must be within a minute of the server's clock, either way; `ath` must be the SHA-256 of the credential; and its `jti` must be new: each proof is accepted once. The server remembers up to 50,000 proofs per replay cache for those two minutes, and refuses new ones beyond that rather than forget any; token exchanges have a cache of their own. Proof verification is [`picatz/jose`](https://github.com/picatz/jose)'s `dpop` package.
+- **Refusals say little.** They're `401` with `WWW-Authenticate: DPoP error="invalid_token"` (the wrong scheme, or an unknown credential) or `error="invalid_dpop_proof"` (anything wrong with the proof), and the algorithms accepted; which check failed is only in the server's log, as `admin: credential refused`. A bound key's last use is recorded only once its proof is accepted.
+- **Behind a proxy, set `--admin-origin`.** A proof names the URL its client used, which a TLS-terminating proxy hides from the server. With `--admin-origin`, `htu` must be one of those origins with the request's path, which the proxy must forward unchanged; requests to a loopback address, such as through an SSH tunnel, may also name the address they were sent to. Without `--admin-origin`, `htu` must match the request's own `Host`, and `https` only if it came over TLS.
+- **Exchanged tokens can be bound too.** A token exchange that carries a proof gets an access token bound to the proof's key, with `"token_type": "DPoP"` ([Section 5](https://www.rfc-editor.org/rfc/rfc9449.html#section-5)); `doh token exchange --new-dpop-key FILE` makes a key for it, or `--dpop-key` uses one. A rule added with `--require-dpop` refuses exchanges without a proof (`400 invalid_dpop_proof`), so none of its access tokens is a bearer token. The proof is checked only after the identity token is accepted. DPoP protects the access token, not the identity token: whoever has a workload's identity token can sign a proof of their own, so rules must still be as narrow as the provider allows.
+- **Older versions can't read bound keys.** Bound keys and `--require-dpop` rules add `jkt` and `require_dpop` fields to `service-accounts.json`, which versions of doh before them refuse to load, since they reject unknown fields. To downgrade, revoke bound keys and remove such rules first.
+
+In a GitHub Actions workflow with doh installed, bind the job's access token to a key made for the job, which never leaves the runner:
+
+```yaml
+jobs:
+  block:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    env:
+      DOH_ADDR: https://admin.dns.example.com
+    steps:
+      - name: Get a DPoP-bound doh access token
+        run: |
+          curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://admin.dns.example.com" | jq -r .value > "$RUNNER_TEMP/id.jwt"
+          access_token=$(doh token exchange --account SERVICE_ACCOUNT_ID \
+            --subject-token-file "$RUNNER_TEMP/id.jwt" --new-dpop-key "$RUNNER_TEMP/dpop.pem")
+          echo "::add-mask::$access_token"
+          echo "DOH_TOKEN=$access_token" >> "$GITHUB_ENV"
+          echo "DOH_DPOP_KEY_FILE=$RUNNER_TEMP/dpop.pem" >> "$GITHUB_ENV"
+      - run: doh deny ads.example --profile home # signs a proof with the job's key
+```
+
+Without doh, any RFC 9449 client works: make a P-256 key (`openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256`), send its JWK thumbprint as `{"jkt": "..."}` when adding a key (`POST /api/v1/service-accounts/{id}/keys`) or put a proof on the token exchange, and sign a fresh proof for every request, with a `jti`, `htm`, `htu`, `iat`, and `ath`. In Go, [`internal/client`](../internal/client/client.go)'s `Client.DPoP` does this for every call.
+
 ### Using the API
 
 The API is documented in [`internal/api`](../internal/api/api.go). Policy changes are conditional on the `ETag` with `If-Match`, so two people editing at once can't overwrite each other's changes (`412 Precondition Failed`). Profiles are changed with JSON merge patches.
 
-The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `setup`, `people`, `service-account`, `token`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), and `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory). They refuse to send a token over plain HTTP to anything but a loopback address.
+The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `setup`, `people`, `service-account`, `token`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory), and for [bound credentials](#binding-credentials-with-dpop), `DOH_DPOP_KEY_FILE`. They refuse to send a token over plain HTTP to anything but a loopback address.
 
 > [!WARNING]
 > The admin listener also serves metrics and profiling. On a loopback listener that isn't published with `--admin-origin`, profiling stays open to the machine's own users, so `go tool pprof` works; once published, `/debug` needs the operator's credentials. Metrics stay open for scrapers. Treat both tokens, and service account keys, as secrets.
@@ -409,7 +456,8 @@ Common findings:
 - Newly registered domain checks depend on registries' RDAP services. Many country-code TLDs (such as `.io`, `.sh`, `.de`, and `.co`) have none, so their names are never blocked as new. Registries see which domains are looked up, though not who asked, and each domain is looked up at most about once a month.
 - There's no "newly active" signal: a long-registered domain that has just started resolving isn't detected.
 - Blocking works on names. Apps that hard-code IP addresses, or use encrypted DNS services that aren't blocked, aren't filtered; bypass protection and the `bypass-services` list make that harder, not impossible.
-- Service account keys and access tokens are bearer credentials: whoever holds one can use it until it expires or is revoked. Neither is bound to the client that holds it yet (there's no [DPoP](https://www.rfc-editor.org/rfc/rfc9449.html)), so an access token copied from a CI log works until it expires, 15 minutes by default.
+- Unbound service account keys and access tokens, and the operator's admin and reader tokens, are bearer credentials: whoever holds one can use it until it expires or is revoked, so an unbound access token copied from a CI log works until it expires, 15 minutes by default. [Bound](#binding-credentials-with-dpop) keys and access tokens need their DPoP key too, but the two together are as good as an unbound key: keep the key file as private as the secret, and make keys on the machine that uses them. The operator's tokens can't be bound, and binding is opt-in: nothing yet requires every key of an account or tenant to be bound.
+- DPoP proofs are fresh to within a minute either way of the server's clock, and each is accepted once by the server process that saw it; the server doesn't hand out nonces ([RFC 9449, Section 8](https://www.rfc-editor.org/rfc/rfc9449.html#section-8)), so a client with a fast clock could pre-sign proofs up to a minute ahead. Replay caches are in memory, per process, so a proof captured just before a restart could be replayed once in what's left of its minute, with the credential it was sent with; bound access tokens end with the restart anyway. Proofs cover the method and URL, not the query, headers, or body ([Section 11](https://www.rfc-editor.org/rfc/rfc9449.html#section-11)); TLS still protects those.
 - Workload identity federation trusts the identity provider: anyone who can get it to issue a token with a rule's issuer, audience, subject, and claims can act as the account. Write rules as narrowly as the provider allows. Access tokens don't survive a restart, and a provider's rotated keys are picked up only when a token names a key the cached set lacks, or within the hour.
 - Profile IDs in DoH paths are identifiers, not credentials. To keep strangers off a public server, remove the `default` profile and use unguessable profile IDs, or restrict who can reach it.
 - Client addresses identify devices only as well as the network does. Behind NAT, a whole network shares one address; over DoH, use per-device paths instead. Apps on the same device can't be told apart.

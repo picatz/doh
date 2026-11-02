@@ -121,11 +121,11 @@ func (s *Server) apiAddKey(w http.ResponseWriter, r *http.Request) {
 	}
 	expires := cmp.Or(req.Expires, time.Now().Add(defaultKeyLifetime))
 
-	k, secret, err := s.accounts.AddKey(a.ID, expires)
+	k, secret, err := s.accounts.AddKey(a.ID, expires, binding(req.JKT)...)
 	if s.writeAccountError(w, err) {
 		return
 	}
-	s.audit(r, "service account key added", slog.String("account", a.ID), slog.String("key", k.ID), slog.Time("expires", k.Expires))
+	s.audit(r, "service account key added", slog.String("account", a.ID), slog.String("key", k.ID), slog.Time("expires", k.Expires), slog.String("jkt", k.JKT))
 	writeJSON(w, http.StatusCreated, api.NewKey{Account: a.ID, Key: k, Secret: secret})
 }
 
@@ -145,12 +145,12 @@ func (s *Server) apiRotateKey(w http.ResponseWriter, r *http.Request) {
 		grace = max(0, req.PreviousExpires.Sub(now).Round(time.Second))
 	}
 
-	k, secret, err := s.accounts.RotateKey(a.ID, r.PathValue("key"), expires, grace)
+	k, secret, err := s.accounts.RotateKey(a.ID, r.PathValue("key"), expires, grace, binding(req.JKT)...)
 	if s.writeAccountError(w, err) {
 		return
 	}
 	s.audit(r, "service account key rotated", slog.String("account", a.ID), slog.String("previous", r.PathValue("key")),
-		slog.String("key", k.ID), slog.Duration("grace", grace))
+		slog.String("key", k.ID), slog.Duration("grace", grace), slog.String("jkt", k.JKT))
 	writeJSON(w, http.StatusCreated, api.NewKey{Account: a.ID, Key: k, Secret: secret})
 }
 
@@ -164,6 +164,15 @@ func (s *Server) apiDeleteKey(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, "service account key revoked", slog.String("account", a.ID), slog.String("key", r.PathValue("key")))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// binding returns the options that bind a new key to the DPoP key with
+// thumbprint jkt, if it's set.
+func binding(jkt string) []serviceaccount.CredentialOption {
+	if jkt == "" {
+		return nil
+	}
+	return []serviceaccount.CredentialOption{serviceaccount.BoundTo(jkt)}
 }
 
 // writeAccountError writes err, if there is one, as an API error, and
