@@ -103,13 +103,15 @@ input:not([type=checkbox]):not([type=radio]), select, textarea { background: var
 input:hover, select:hover, textarea:hover { border-color: var(--muted); }
 input:focus-visible, select:focus-visible, textarea:focus-visible { outline: none; border-color: var(--glaze); box-shadow: 0 0 0 3px var(--glaze-soft); }
 input::placeholder { color: var(--muted); opacity: .7; }
-button, .button { cursor: pointer; background: var(--surface-2); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2); text-decoration: none; font-weight: 500; white-space: nowrap; }
+button, .button { cursor: pointer; background: var(--surface-2); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2); text-decoration: none; font-weight: 500; white-space: nowrap; max-width: 100%; }
 button:hover:not(:disabled), .button:hover { background: var(--surface-3); }
 button:active:not(:disabled) { transform: translateY(.5px); }
 button:disabled, input:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
 button.primary, .button.primary { background: var(--glaze); border-color: var(--glaze); color: var(--accent-text); font-weight: 600; }
 button.primary:hover:not(:disabled), .button.primary:hover { background: var(--glaze-ink); border-color: var(--glaze-ink); }
 button.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
+/* It names what it deletes, which can be long: wrap, don't overflow. */
+button.danger { white-space: normal; text-wrap: balance; text-align: center; }
 button.ghost { background: transparent; border-color: transparent; }
 button.ghost:hover:not(:disabled) { background: var(--surface-2); }
 button.small { padding: .2rem .5rem; font-size: .85rem; min-height: 0; }
@@ -355,7 +357,8 @@ table.log tbody tr:hover, table.log tbody tr:focus-visible { background: var(--s
 .more-filters summary::-webkit-details-marker { display: none; }
 .more-filters[open] summary { color: var(--text); border-color: var(--border-strong); }
 .more-filters-body { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-top: var(--s-3); }
-.more-filters-body label { display: grid; gap: .25rem; font-size: .85rem; color: var(--muted); }
+.more-filters-body label { display: grid; gap: .25rem; font-size: .85rem; color: var(--muted); flex: 1 1 13rem; min-width: 0; }
+.more-filters-body :is(input, select) { width: 100%; min-width: 0; }
 .more-filters[open] { flex-basis: 100%; }
 .pill { display: inline-flex; align-items: center; gap: .25rem; }
 .cached { font-size: .78rem; margin-left: .35rem; }
@@ -399,16 +402,21 @@ table.log tbody tr:hover, table.log tbody tr:focus-visible { background: var(--s
 .toggle .control { grid-row: 1 / span 2; grid-column: 2; display: flex; align-items: center; gap: .5rem; }
 
 .switch { display: inline-flex; align-items: center; gap: .5rem; cursor: pointer; }
+/* Switches are 44×26px: big enough to tap (WCAG 2.5.8 asks for 24px)
+   without crowding the rows they sit in. */
 input[role=switch] {
-  appearance: none; width: 2.4rem; height: 1.4rem; border-radius: 99px; padding: 0;
-  background: var(--field-border); border: 0; position: relative; cursor: pointer; transition: background .15s; flex: none;
+  --track-w: 2.75rem; --track-h: 1.625rem; --pad: .1875rem; --knob: calc(var(--track-h) - 2 * var(--pad));
+  appearance: none; width: var(--track-w); height: var(--track-h); border-radius: 99px; padding: 0; margin: 0;
+  background: var(--field-border); border: 0; position: relative; cursor: pointer; transition: background .18s var(--ease); flex: none;
 }
 input[role=switch]::after {
-  content: ""; position: absolute; top: .15rem; left: .15rem; width: 1.1rem; height: 1.1rem;
-  border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgb(0 0 0 / .3);
+  content: ""; position: absolute; top: var(--pad); left: var(--pad); width: var(--knob); height: var(--knob);
+  border-radius: 50%; background: #fff; transition: transform .18s var(--ease); box-shadow: 0 1px 2px rgb(0 0 0 / .3);
 }
 input[role=switch]:checked { background: var(--accent); }
-input[role=switch]:checked::after { transform: translateX(1rem); }
+input[role=switch]:checked::after { transform: translateX(calc(var(--track-w) - var(--knob) - 2 * var(--pad))); }
+
+.examples button.link { min-height: 1.5rem; }
 
 .chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .5rem; }
 .chip { display: inline-flex; align-items: center; gap: .25rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 99px; padding: .1rem .2rem .1rem .65rem; font-family: var(--mono); font-size: .85rem; overflow-wrap: anywhere; }
@@ -563,9 +571,9 @@ label.check input { accent-color: var(--accent); width: 1.05rem; height: 1.05rem
 dialog .hint { font-size: .88rem; margin: 0; }
 dialog label { font-size: .9rem; }
 .passkeys { list-style: none; margin: .6rem 0 0; padding: 0; }
-.passkey { display: grid; grid-template-columns: 1fr auto; gap: 0 1rem; align-items: center; padding: .6rem 0; border-top: 1px solid var(--border); }
-.passkey-name { font-weight: 600; }
-.passkey-meta { font-size: .85rem; grid-column: 1; }
+.passkey { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 1rem; align-items: center; padding: .6rem 0; border-top: 1px solid var(--border); }
+.passkey-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.passkey-meta { font-size: .85rem; grid-column: 1; min-width: 0; overflow-wrap: anywhere; }
 .passkey > button { grid-column: 2; grid-row: 1 / span 2; }
 @media (max-width: 520px) {
   .passkey { grid-template-columns: 1fr; }
@@ -819,3 +827,22 @@ button.link:hover:not(:disabled) { background: none; text-decoration-color: curr
 .send-qr p { margin: 0; max-width: 28ch; }
 .qr { width: 11rem; height: 11rem; flex: none; background: #fff; border-radius: var(--r-lg); box-shadow: 0 0 0 1px var(--border), 0 6px 20px -8px rgb(0 0 0 / 0.25); }
 @media (forced-colors: active) { .qr { forced-color-adjust: none; } }
+
+/* Alerts */
+.alerts { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-4); }
+.alerts .section { margin: 0; padding-top: 0; border-top: 0; min-width: 0; }
+.alerts .section + .section { padding-top: var(--s-4); border-top: 1px solid var(--border); }
+.alerts h4 { margin: 0 0 .4rem; font-size: .8rem; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.alerts-for { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; font-weight: 600; }
+.alerts .passkey-name .badge { margin-left: .4rem; }
+.alerts .passkey-meta { overflow-wrap: anywhere; }
+.dest-url { display: block; font-size: .82rem; color: var(--muted); }
+.dest-error { color: var(--bad); font-family: var(--mono); font-size: .8rem; }
+.status.ok { color: var(--ok); font-weight: 600; }
+.status-icon { width: 1.05em; height: 1.05em; vertical-align: -.17em; margin-right: .3em; stroke-width: 2.25; }
+.quiet-times { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; padding: .4rem .2rem 0; }
+.quiet-times input { width: auto; }
+.deliveries { list-style: none; margin: 0; padding: 0; display: grid; gap: .6rem; font-size: .9rem; }
+.deliveries li { display: grid; grid-template-columns: 1.25rem minmax(0, 1fr); align-items: baseline; }
+.deliveries li > div { min-width: 0; overflow-wrap: anywhere; }
+.deliveries .muted { font-size: .82rem; }
