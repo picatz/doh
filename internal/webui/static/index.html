@@ -252,7 +252,13 @@
       <h2 id="security-title">Security</h2>
       <p class="muted lede">Passkeys sign you in with Face ID, Touch ID, Windows Hello, or a security key. Once anyone has one, sign-in links from <code>doh ui</code> need a passkey to finish.</p>
       <form id="add-passkey" class="card add-passkey">
-        <h3>Add a passkey</h3>
+        <div class="add-passkey-intro">
+          <span class="id-badge" aria-hidden="true"><svg class="icon"><use href="#i-key"/></svg></span>
+          <div>
+            <h3>Add a passkey</h3>
+            <p class="muted">Sign in with your face, fingerprint, or device PIN: nothing to type, and nothing anyone can phish.</p>
+          </div>
+        </div>
         <p id="security-host" class="hint" role="note" hidden></p>
         <div class="fields">
           <label id="add-passkey-person" hidden>Your name <input id="ap-person" autocomplete="name" maxlength="64" placeholder="Alex"></label>
