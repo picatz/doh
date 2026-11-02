@@ -74,6 +74,9 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("POST "+p+"/service-accounts/{id}/keys", peopleOnly(s.apiAddKey))
 	mux.HandleFunc("POST "+p+"/service-accounts/{id}/keys/{key}/rotate", peopleOnly(s.apiRotateKey))
 	mux.HandleFunc("DELETE "+p+"/service-accounts/{id}/keys/{key}", peopleOnly(s.apiDeleteKey))
+	mux.HandleFunc("GET "+p+"/service-accounts/{id}/federation", peopleOnly(s.apiTrustRules))
+	mux.HandleFunc("POST "+p+"/service-accounts/{id}/federation", peopleOnly(s.apiAddTrustRule))
+	mux.HandleFunc("DELETE "+p+"/service-accounts/{id}/federation/{rule}", peopleOnly(s.apiDeleteTrustRule))
 	mux.HandleFunc("GET "+p+"/profiles/{id}/setup", s.apiSetup)
 	mux.HandleFunc("POST "+p+"/profiles/{id}/setup-links", s.apiSetupLink)
 	mux.HandleFunc("GET "+p+"/profiles/{id}/apple.mobileconfig", s.apiMobileConfig)
@@ -81,7 +84,12 @@ func (s *Server) apiHandler() http.Handler {
 		writeError(w, http.StatusNotFound, "no such endpoint")
 	})
 
-	return s.authorize(mux)
+	// Token exchange is how a workload without a credential gets one, so
+	// it's the one endpoint outside authorization.
+	outer := http.NewServeMux()
+	outer.HandleFunc(p+"/token", s.apiToken)
+	outer.Handle("/", s.authorize(mux))
+	return outer
 }
 
 // authorize requires a bearer token ([RFC 6750, Section 2.1]): any token
@@ -120,16 +128,19 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 
 // tokenPrincipal returns who a bearer token belongs to.
 func (s *Server) tokenPrincipal(token string) principal {
-	if serviceaccount.IsSecret(token) {
+	switch {
+	case serviceaccount.IsSecret(token):
 		a, k, ok := s.accounts.Authenticate(token)
-		if !ok || (a.Tenant != "" && s.engine.Load().Policy().Tenant(a.Tenant) == nil) {
-			return principal{} // revoked, expired, or its tenant is gone
+		if !ok {
+			return principal{} // revoked or expired
 		}
-		p := principal{role: roleReader, tenant: a.Tenant, account: a.ID, by: "service account " + a.ID + " key " + k.ID}
-		if a.Role == serviceaccount.RoleAdmin {
-			p.role = roleAdmin
+		return s.accountPrincipal(a, "service account "+a.ID+" key "+k.ID)
+	case serviceaccount.IsAccessToken(token):
+		a, t, ok := s.accounts.AuthenticateToken(token)
+		if !ok {
+			return principal{} // expired, or its account or rule is gone
 		}
-		return p
+		return s.accountPrincipal(a, "service account "+a.ID+" via "+t.Issuer)
 	}
 	switch r := s.tokens.roleOf(token); r {
 	case roleAdmin:
@@ -138,6 +149,19 @@ func (s *Server) tokenPrincipal(token string) principal {
 		return principal{role: r, by: "reader token"}
 	}
 	return principal{}
+}
+
+// accountPrincipal returns the principal of service account a, if its
+// tenant still exists, described by by.
+func (s *Server) accountPrincipal(a serviceaccount.Account, by string) principal {
+	if a.Tenant != "" && s.engine.Load().Policy().Tenant(a.Tenant) == nil {
+		return principal{} // its tenant is gone
+	}
+	p := principal{role: roleReader, tenant: a.Tenant, account: a.ID, by: by}
+	if a.Role == serviceaccount.RoleAdmin {
+		p.role = roleAdmin
+	}
+	return p
 }
 
 // writeJSON writes v as a JSON response.

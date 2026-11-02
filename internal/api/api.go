@@ -46,9 +46,19 @@
 //	POST   /api/v1/service-accounts/{id}/keys     KeyRequest → 201 NewKey
 //	POST   /api/v1/service-accounts/{id}/keys/{key}/rotate   RotateKeyRequest → 201 NewKey
 //	DELETE /api/v1/service-accounts/{id}/keys/{key}          204
+//	GET    /api/v1/service-accounts/{id}/federation           TrustRules
+//	POST   /api/v1/service-accounts/{id}/federation           TrustRuleRequest → 201 serviceaccount.TrustRule
+//	DELETE /api/v1/service-accounts/{id}/federation/{rule}    204
+//	POST   /api/v1/token                          TokenExchangeRequest form → TokenResponse (no credential)
 //	GET    /api/v1/profiles/{id}/setup?device=    Setup
 //	POST   /api/v1/profiles/{id}/setup-links?device=   → 201 SetupLink
 //	GET    /api/v1/profiles/{id}/apple.mobileconfig?device=&protocol=   Apple configuration profile
+//
+// POST /token is the exception to needing a credential: it's an OAuth 2.0
+// token exchange ([RFC 8693]), where a workload trades an identity token
+// from its own provider, such as GitHub Actions, for a short-lived access
+// token of a service account whose trust rules accept it. It takes a form
+// ([TokenExchangeRequest]), and reports errors as an [OAuthError].
 //
 // The logs, stream, and stats endpoints take the filter parameters that
 // querylog.ParseFilter reads: profile, device, client, status, reason, q,
@@ -58,9 +68,11 @@
 // [RFC 6750, Section 2.1]: https://www.rfc-editor.org/rfc/rfc6750.html#section-2.1
 // [RFC 9110, Section 13.1.1]: https://www.rfc-editor.org/rfc/rfc9110.html#section-13.1.1
 // [RFC 7396]: https://www.rfc-editor.org/rfc/rfc7396.html
+// [RFC 8693]: https://www.rfc-editor.org/rfc/rfc8693.html
 package api
 
 import (
+	"net/url"
 	"time"
 
 	"github.com/picatz/doh/internal/blocklist"
@@ -422,4 +434,114 @@ type SetupLink struct {
 // People lists who can sign in with passkeys.
 type People struct {
 	People []signin.Person `json:"people"`
+}
+
+// TrustRules lists a service account's trust rules.
+type TrustRules struct {
+	Rules []serviceaccount.TrustRule `json:"rules"`
+}
+
+// TrustRuleRequest adds a trust rule to a service account: the identity
+// tokens it accepts in exchange for access tokens. See
+// [serviceaccount.TrustRule] for what each field means.
+type TrustRuleRequest struct {
+	// Issuer is the identity provider's issuer URL.
+	Issuer string `json:"issuer"`
+
+	// JWKSURL is where the provider publishes its keys. It defaults to
+	// what the issuer's OpenID Connect discovery document says.
+	JWKSURL string `json:"jwks_url,omitempty"`
+
+	// Audience is what tokens' "aud" must name. It defaults to the
+	// server's first admin origin, if it has one.
+	Audience string `json:"audience,omitempty"`
+
+	// Subject is what tokens' "sub" must be, optionally ending in a "*"
+	// wildcard after a "/" or ":".
+	Subject string `json:"subject"`
+
+	// Claims are other string claims tokens must have, exactly.
+	Claims map[string]string `json:"claims,omitempty"`
+
+	// TokenLifetime is how many seconds access tokens last: 60 to 3600,
+	// 900 by default.
+	TokenLifetime int `json:"token_lifetime,omitzero"`
+}
+
+// Token exchange parameters ([RFC 8693, Section 3]).
+//
+// [RFC 8693, Section 3]: https://www.rfc-editor.org/rfc/rfc8693.html#section-3
+const (
+	// GrantTypeTokenExchange is the grant_type of a token exchange.
+	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+
+	// TokenTypeJWT and TokenTypeIDToken are the subject token types
+	// accepted: a workload's identity token.
+	TokenTypeJWT     = "urn:ietf:params:oauth:token-type:jwt"
+	TokenTypeIDToken = "urn:ietf:params:oauth:token-type:id_token"
+
+	// TokenTypeAccessToken is the type of the token issued.
+	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
+)
+
+// TokenExchangeRequest is the form POST /token takes
+// ([RFC 8693, Section 2.1]), sent as application/x-www-form-urlencoded.
+//
+// [RFC 8693, Section 2.1]: https://www.rfc-editor.org/rfc/rfc8693.html#section-2.1
+type TokenExchangeRequest struct {
+	// SubjectToken is the workload's identity token, a JWT.
+	SubjectToken string
+
+	// SubjectTokenType is [TokenTypeJWT], the default, or
+	// [TokenTypeIDToken].
+	SubjectTokenType string
+
+	// Audience is the ID of the service account to act as.
+	Audience string
+}
+
+// Form returns r as a form, with the token exchange grant type.
+func (r TokenExchangeRequest) Form() url.Values {
+	subjectType := r.SubjectTokenType
+	if subjectType == "" {
+		subjectType = TokenTypeJWT
+	}
+	return url.Values{
+		"grant_type":         {GrantTypeTokenExchange},
+		"subject_token":      {r.SubjectToken},
+		"subject_token_type": {subjectType},
+		"audience":           {r.Audience},
+	}
+}
+
+// TokenResponse is a successful token exchange ([RFC 8693, Section
+// 2.2.1]).
+//
+// [RFC 8693, Section 2.2.1]: https://www.rfc-editor.org/rfc/rfc8693.html#section-2.2.1
+type TokenResponse struct {
+	// AccessToken is the issued token, to send as a bearer token. It's
+	// kept only in the server's memory, so it doesn't survive a restart.
+	AccessToken string `json:"access_token"`
+
+	// IssuedTokenType is [TokenTypeAccessToken].
+	IssuedTokenType string `json:"issued_token_type"`
+
+	// TokenType is "Bearer".
+	TokenType string `json:"token_type"`
+
+	// ExpiresIn is how many seconds the token lasts.
+	ExpiresIn int `json:"expires_in"`
+}
+
+// OAuthError is the body of a failed token exchange ([RFC 6749, Section
+// 5.2]).
+//
+// [RFC 6749, Section 5.2]: https://www.rfc-editor.org/rfc/rfc6749.html#section-5.2
+type OAuthError struct {
+	// Error is a code, such as "invalid_grant".
+	Error string `json:"error"`
+
+	// Description says more, without revealing which check refused an
+	// identity token: that's only in the server's log.
+	Description string `json:"error_description,omitempty"`
 }

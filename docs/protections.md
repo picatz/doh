@@ -275,14 +275,64 @@ The web UI's Security view does the same.
 - **Keys always expire**, within a year (90 days by default). A key's secret, `doh_sa_<key ID>_<256 random bits>`, is shown once and kept only as a SHA-256 hash; the prefix makes a leaked key easy to spot and to scan for.
 - **Rotation has no downtime.** Rotating adds a new key and lets the old one keep working for up to a week, so whatever uses it can switch over first.
 - **Revocation is immediate.** Revoking a key, or deleting its account, stops it at once. Deleting a tenant deletes its service accounts, and a key whose tenant no longer exists is refused regardless.
-- **Service accounts can't manage identities.** Even an admin one can't create sign-in links, list or remove people, or create, rotate, or revoke service account keys, its own included. A leaked key can't mint a way back in, or a longer life for itself.
+- **Service accounts can't manage identities.** Even an admin one can't create sign-in links, list or remove people, or create, rotate, or revoke service account keys or trust rules, its own included. A leaked key can't mint a way back in, or a longer life for itself.
 - **Every change is logged**: who created, rotated, or revoked which key, as `admin: service account ...` lines in the server's log.
 
 Service accounts and their key hashes live in `service-accounts.json` in the data directory. Last-used times are kept to the hour, so authenticating rarely writes to disk.
 
+#### Workload identity federation
+
+Automation that already has an identity, such as a GitHub Actions job or a Kubernetes pod, needn't keep a key at all. A service account's **trust rules** say which identity tokens from the workload's own provider it accepts, and the workload exchanges one for a short-lived access token ([OAuth 2.0 Token Exchange](https://www.rfc-editor.org/rfc/rfc8693.html)). There's no stored secret to leak or rotate.
+
+```sh
+doh sa create Deploys --admin --no-key
+doh sa trust add Deploys --github-repo octo/app --audience https://admin.dns.example.com \
+  --claim repository_id=123456789       # workflows of octo/app on refs/heads/main
+doh sa trust add Deploys --issuer https://k8s.example --audience doh \
+  --subject system:serviceaccount:ci:deployer
+doh sa trust list Deploys
+doh sa trust remove Deploys 3f2a9c0d1e4b5a67
+```
+
+In a GitHub Actions workflow, request the job's identity token with the rule's audience, exchange it at `POST /api/v1/token`, and send the access token as a bearer token:
+
+```yaml
+jobs:
+  block:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # lets the job request its identity token
+    steps:
+      - name: Get a doh access token
+        run: |
+          id_token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://admin.dns.example.com" | jq -r .value)
+          access_token=$(curl -sSf https://admin.dns.example.com/api/v1/token \
+            -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+            -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+            -d audience=SERVICE_ACCOUNT_ID \
+            --data-urlencode "subject_token=$id_token" | jq -r .access_token)
+          echo "::add-mask::$access_token"
+          echo "DOH_TOKEN=$access_token" >> "$GITHUB_ENV"
+      - run: |
+          curl -sSf -H "Authorization: Bearer $DOH_TOKEN" -d '{"domain":"ads.example"}' \
+            https://admin.dns.example.com/api/v1/profiles/home/deny
+```
+
+With doh installed, `doh token exchange --account SERVICE_ACCOUNT_ID --subject-token-file id.jwt` does the exchange and prints the access token.
+
+- **A token is accepted only if a rule matches it exactly.** It must be signed with RS256, ES256, or EdDSA by a key its issuer publishes, never HMAC or `none`. Its `iss` must equal the rule's issuer, its `aud` must name the rule's audience, its `sub` must equal the rule's subject, and each `--claim` must equal a string claim. A subject may end in `*` after a `/` or `:`, such as `repo:octo/app:ref:refs/heads/*`, but not so early that it matches a whole namespace, such as `repo:*`. The token must have an `exp`, its `nbf` and `iat` are honored, with 30 seconds' leeway, and it may be valid for at most a day.
+- **Pin what can't be renamed.** GitHub repository and owner names can be reused after a rename or deletion, so add `--claim repository_id=...` (or `repository_owner_id`), which GitHub never reuses.
+- **The exchange names the account.** Its `audience` is the service account's ID, and only that account's rules are tried, at most five. Refusals are all `invalid_grant`, whatever failed, so they reveal nothing, including whether the account exists; the reason is in the server's log, as `admin: token exchange refused`. A client whose exchanges keep failing is slowed down: after twenty failures, one try every ten seconds (`429 Too Many Requests`).
+- **Keys come only from where you said.** By default, the issuer's [OpenID Connect discovery](https://openid.net/specs/openid-connect-discovery-1_0.html) document, at `<issuer>/.well-known/openid-configuration`, names its keys, which must be on the issuer's host; set `--jwks-url` for providers whose keys are elsewhere, such as Google's. Headers in the token itself, such as `jku`, are ignored. Discovery is done once per issuer while the server runs; keys are cached for an hour, refetched at most once a minute for an unknown key ID, and the last good set is used for up to a day if the provider is unreachable. Tenants' rules must use HTTPS; the operator's may also use HTTP to a loopback address.
+- **Access tokens are short-lived.** They're `doh_at_<256 random bits>`, last 15 minutes by default (1 minute to an hour, with `--token-lifetime`), and act exactly as the service account would, including that they can't manage people, keys, or trust rules. They're kept only in memory, as SHA-256 hashes, so a restart ends them all, by design; exchange again. At most 10,000 are kept at once, forgetting the oldest beyond that.
+- **Revocation is immediate.** Removing a rule, or deleting its account or tenant, stops the access tokens it issued at once. Adding and removing rules, and each exchange, are logged.
+
+### Using the API
+
 The API is documented in [`internal/api`](../internal/api/api.go). Policy changes are conditional on the `ETag` with `If-Match`, so two people editing at once can't overwrite each other's changes (`412 Precondition Failed`). Profiles are changed with JSON merge patches.
 
-The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `setup`, `people`, `service-account`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), and `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory). They refuse to send a token over plain HTTP to anything but a loopback address.
+The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`, `setup`, `people`, `service-account`, `token`, `ui`) read `DOH_ADDR` (default `http://127.0.0.1:9090`), and `DOH_TOKEN` or `DOH_TOKEN_FILE` (default: the admin token in the default data directory). They refuse to send a token over plain HTTP to anything but a loopback address.
 
 > [!WARNING]
 > The admin listener also serves metrics and profiling. On a loopback listener that isn't published with `--admin-origin`, profiling stays open to the machine's own users, so `go tool pprof` works; once published, `/debug` needs the operator's credentials. Metrics stay open for scrapers. Treat both tokens, and service account keys, as secrets.
@@ -359,6 +409,7 @@ Common findings:
 - Newly registered domain checks depend on registries' RDAP services. Many country-code TLDs (such as `.io`, `.sh`, `.de`, and `.co`) have none, so their names are never blocked as new. Registries see which domains are looked up, though not who asked, and each domain is looked up at most about once a month.
 - There's no "newly active" signal: a long-registered domain that has just started resolving isn't detected.
 - Blocking works on names. Apps that hard-code IP addresses, or use encrypted DNS services that aren't blocked, aren't filtered; bypass protection and the `bypass-services` list make that harder, not impossible.
-- Service account keys are bearer credentials: whoever holds one can use it until it expires or is revoked. They aren't yet bound to the client that holds them, and short-lived credentials from a workload's own identity provider aren't supported yet.
+- Service account keys and access tokens are bearer credentials: whoever holds one can use it until it expires or is revoked. Neither is bound to the client that holds it yet (there's no [DPoP](https://www.rfc-editor.org/rfc/rfc9449.html)), so an access token copied from a CI log works until it expires, 15 minutes by default.
+- Workload identity federation trusts the identity provider: anyone who can get it to issue a token with a rule's issuer, audience, subject, and claims can act as the account. Write rules as narrowly as the provider allows. Access tokens don't survive a restart, and a provider's rotated keys are picked up only when a token names a key the cached set lacks, or within the hour.
 - Profile IDs in DoH paths are identifiers, not credentials. To keep strangers off a public server, remove the `default` profile and use unguessable profile IDs, or restrict who can reach it.
 - Client addresses identify devices only as well as the network does. Behind NAT, a whole network shares one address; over DoH, use per-device paths instead. Apps on the same device can't be told apart.

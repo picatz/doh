@@ -40,6 +40,32 @@ func TestLimiter(t *testing.T) {
 	})
 }
 
+func TestLimiter_Limited(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &Limiter{Rate: 1, Burst: 2}
+
+		if l.Limited("a") {
+			t.Fatal("an unseen key is limited")
+		}
+		for range 2 {
+			if l.Limited("a") || !l.Allow("a") {
+				t.Fatal("the burst was refused")
+			}
+		}
+		if !l.Limited("a") {
+			t.Fatal("a key with no events left isn't limited")
+		}
+		// Asking doesn't use events up.
+		for range 3 {
+			l.Limited("a")
+		}
+		time.Sleep(time.Second)
+		if l.Limited("a") || !l.Allow("a") || !l.Limited("a") {
+			t.Fatal("a second didn't refill exactly one event")
+		}
+	})
+}
+
 func TestLimiter_BoundsKeys(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		l := &Limiter{Rate: 1, Burst: 1, MaxKeys: 10}

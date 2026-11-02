@@ -16,6 +16,7 @@ import (
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
+	"github.com/picatz/doh/internal/serviceaccount"
 	"github.com/picatz/doh/internal/signin"
 )
 
@@ -183,7 +184,7 @@ func TestClient_PlaintextOnlyToLoopback(t *testing.T) {
 	}
 	for _, tt := range tests {
 		c := &Client{Addr: tt.addr, Token: tt.token}
-		_, err := c.base()
+		_, err := c.base(c.Token != "")
 		if (err == nil) != tt.ok {
 			t.Errorf("base(%q, token=%q) err = %v, want ok=%v", tt.addr, tt.token, err, tt.ok)
 		}
@@ -514,5 +515,80 @@ func TestClient_ConditionalProfilePatch(t *testing.T) {
 	}
 	if IsPreconditionFailed(errors.New("other")) {
 		t.Error("IsPreconditionFailed matched an unrelated error")
+	}
+}
+
+func TestClient_TrustRules(t *testing.T) {
+	var got []string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = append(got, r.Method+" "+r.URL.EscapedPath()+" "+strings.TrimSpace(string(body)))
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, api.TrustRules{Rules: []serviceaccount.TrustRule{{ID: "r1", Issuer: "https://issuer.example"}}})
+		case http.MethodPost:
+			writeJSON(w, http.StatusCreated, serviceaccount.TrustRule{ID: "r2"})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+	ctx := context.Background()
+	rules, err := c.TrustRules(ctx, "acct")
+	if err != nil || len(rules) != 1 || rules[0].ID != "r1" {
+		t.Fatalf("TrustRules = %+v, %v", rules, err)
+	}
+	r, err := c.AddTrustRule(ctx, "acct", api.TrustRuleRequest{Issuer: "https://issuer.example", Subject: "s", Claims: map[string]string{"k": "v"}})
+	if err != nil || r.ID != "r2" {
+		t.Fatalf("AddTrustRule = %+v, %v", r, err)
+	}
+	if err := c.DeleteTrustRule(ctx, "acct", "r/2"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"GET /api/v1/service-accounts/acct/federation ",
+		`POST /api/v1/service-accounts/acct/federation {"issuer":"https://issuer.example","subject":"s","claims":{"k":"v"}}`,
+		"DELETE /api/v1/service-accounts/acct/federation/r%2F2 ",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("requests =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestClient_ExchangeToken(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Error("the exchange sent the client's API token")
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/token" || r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+			t.Errorf("exchange %s %s %s", r.Method, r.URL.Path, r.Header.Get("Content-Type"))
+		}
+		_ = r.ParseForm()
+		switch r.PostForm.Get("subject_token") {
+		case "good":
+			if r.PostForm.Get("grant_type") != api.GrantTypeTokenExchange || r.PostForm.Get("subject_token_type") != api.TokenTypeJWT || r.PostForm.Get("audience") != "acct" {
+				t.Errorf("form = %v", r.PostForm)
+			}
+			writeJSON(w, http.StatusOK, api.TokenResponse{AccessToken: "doh_at_x", TokenType: "Bearer", IssuedTokenType: api.TokenTypeAccessToken, ExpiresIn: 900})
+		default:
+			writeJSON(w, http.StatusBadRequest, api.OAuthError{Error: "invalid_grant", Description: "not accepted"})
+		}
+	})
+	ctx := context.Background()
+
+	tr, err := c.ExchangeToken(ctx, api.TokenExchangeRequest{SubjectToken: "good", Audience: "acct"})
+	if err != nil || tr.AccessToken != "doh_at_x" || tr.ExpiresIn != 900 {
+		t.Fatalf("ExchangeToken = %+v, %v", tr, err)
+	}
+	_, err = c.ExchangeToken(ctx, api.TokenExchangeRequest{SubjectToken: "bad", Audience: "acct"})
+	var e *Error
+	if !errors.As(err, &e) || e.Status != http.StatusBadRequest || e.Message != "invalid_grant: not accepted" {
+		t.Errorf("refused exchange err = %v", err)
+	}
+
+	// The identity token is a credential, so it isn't sent over plain
+	// HTTP to a remote host, even by a client without an API token.
+	remote := &Client{Addr: "http://192.0.2.1:9"}
+	if _, err := remote.ExchangeToken(ctx, api.TokenExchangeRequest{SubjectToken: "good", Audience: "acct"}); err == nil || !strings.Contains(err.Error(), "plain HTTP") {
+		t.Errorf("exchange over remote plaintext err = %v", err)
 	}
 }

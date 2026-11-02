@@ -62,6 +62,19 @@ func (l *Limiter) Allow(key string) bool {
 	return true
 }
 
+// Limited reports whether key has used up its events, without using one.
+// With Allow, it limits only some events, such as failures: check
+// Limited first, and call Allow when one happens.
+func (l *Limiter) Limited(key string) bool {
+	now := time.Now()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	b, ok := l.buckets[key]
+	return ok && b.tokens+now.Sub(b.last).Seconds()*l.Rate < 1
+}
+
 func (l *Limiter) maxKeys() int {
 	if l.MaxKeys > 0 {
 		return l.MaxKeys

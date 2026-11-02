@@ -22,6 +22,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/cache"
+	"github.com/picatz/doh/internal/federation"
 	"github.com/picatz/doh/internal/filter"
 	"github.com/picatz/doh/internal/hostnames"
 	"github.com/picatz/doh/internal/policy"
@@ -93,6 +94,11 @@ type Server struct {
 	signinLimiter *ratelimit.Limiter
 	setupLinks    *setupLinks
 
+	// federation verifies workloads' identity tokens for token exchange,
+	// and exchangeLimiter slows down clients whose exchanges fail.
+	federation      federation.Verifier
+	exchangeLimiter *ratelimit.Limiter
+
 	trustedProxies []netip.Prefix
 
 	// listeners records the addresses served on, by kind, for status.
@@ -128,8 +134,9 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		state:     filter.NewState(),
 		listeners: make(map[string]string),
 
-		signinLimiter: newSigninLimiter(),
-		setupLinks:    newSetupLinks(),
+		signinLimiter:   newSigninLimiter(),
+		exchangeLimiter: newExchangeLimiter(),
+		setupLinks:      newSetupLinks(),
 	}
 
 	if config.Admin.flightRecorder() {
