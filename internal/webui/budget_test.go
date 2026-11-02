@@ -15,11 +15,14 @@ import (
 // from a Raspberry Pi over Wi-Fi: 384 KiB is under a third of a second at
 // 10 Mbit/s, and leaves room to grow, but not to double, without someone
 // deciding it's worth it here. The compressed limit holds behind a proxy
-// that compresses, as most do. Fonts and images aren't fetched at all.
+// that compresses, as most do. Fonts and images aren't fetched at all,
+// except the app icons (PNG), which only a browser installing the app, or
+// showing a notification, fetches: they have a budget of their own.
 const (
 	budgetBytes     = 384 << 10
 	budgetGzipBytes = 112 << 10
 	budgetModules   = 40
+	budgetIconBytes = 64 << 10
 )
 
 // TestBudget checks the UI's scripts, styles, and page stay within the
@@ -30,11 +33,15 @@ func TestBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	modules := 0
+	modules, icons := 0, 0
 	for _, name := range names {
 		b, err := fs.ReadFile(static, name)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if strings.HasSuffix(name, ".png") {
+			icons += len(b)
+			continue
 		}
 		all.Write(b)
 		if strings.HasSuffix(name, ".js") {
@@ -52,6 +59,9 @@ func TestBudget(t *testing.T) {
 	}
 	if gz.Len() > budgetGzipBytes {
 		t.Errorf("the UI is %d bytes compressed, over its budget of %d", gz.Len(), budgetGzipBytes)
+	}
+	if icons > budgetIconBytes {
+		t.Errorf("the app icons are %d bytes, over their budget of %d", icons, budgetIconBytes)
 	}
 	if modules > budgetModules {
 		t.Errorf("the UI has %d modules, over its budget of %d requests", modules, budgetModules)
