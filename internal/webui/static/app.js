@@ -6,7 +6,7 @@
 
 import { fromNow, formatDate } from "./format.js";
 import { Palette, looksLikeDomain } from "./palette.js";
-import { drawRing, totalOf } from "./ring.js";
+import { drawRing, totalOf, hoursOf } from "./ring.js";
 import { currentTheme, applyTheme, nextTheme, themeLabel } from "./theme.js";
 import { WEEKDAYS, DAY_NAMES, DAY_PRESETS, clockMinutes, overnight, scheduleActive, formatDays, describeBlocks, formatPeriod } from "./schedule.js";
 
@@ -603,6 +603,7 @@ async function renderOverview() {
       go("logs", "", { since: start.toISOString(), until: end.toISOString(), status: b.blocked ? "blocked" : "" });
     },
   });
+  const hours = hoursOf(stats.timeline || []);
   ring.addEventListener("pointerover", (e) => showHour(e.target.closest(".ring-hour")));
   ring.addEventListener("focusin", (e) => showHour(e.target.closest(".ring-hour")));
   ring.addEventListener("pointerleave", resting);
@@ -610,7 +611,7 @@ async function renderOverview() {
   function showHour(g) {
     if (!g) return;
     const hr = Number(g.style.getPropertyValue("--i"));
-    const b = (stats.timeline || []).find((x) => new Date(x.start).getHours() === hr);
+    const b = hours.get(hr);
     const n = b ? totalOf(b) : 0;
     figure.textContent = g.classList.contains("future") ? "—" : fmtNum(n);
     caption.textContent = `${hourRange(hr)}${b?.blocked ? ` · ${fmtNum(b.blocked)} blocked` : ""}`;
