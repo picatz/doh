@@ -62,6 +62,7 @@
 //	GET    /api/v1/profiles/{id}/doh-setup.ps1?device=    Windows PowerShell setup script
 //	GET    /api/v1/profiles/{id}/doh.conf?device=         systemd-resolved drop-in for Linux
 //	GET    /api/v1/profiles/{id}/doh-openwrt.sh           OpenWrt setup script
+//	GET    /api/v1/devices?profile=&device=&since=&new=   SeenDevices
 //	GET    /api/v1/alerts?tenant=                 Alerts (admin)
 //	PATCH  /api/v1/alerts?tenant=                 merge patch of alerts.Settings → Alerts (admin)
 //	POST   /api/v1/alerts/destinations?tenant=    AlertDestinationRequest → 201 NewAlertDestination (admin)
@@ -705,6 +706,44 @@ type SetupLink struct {
 
 	// QR is the link as a QR code, to scan with the device's camera.
 	QR *QRCode `json:"qr,omitempty"`
+}
+
+// SeenDevices lists devices the server has answered since it started,
+// most recently seen first, as the caller may see them. The server keeps
+// them in memory only, whether or not their profiles log queries.
+type SeenDevices struct {
+	// Since is when the server started remembering: before it, nothing
+	// is known.
+	Since time.Time `json:"since"`
+
+	// Devices are the devices, at most 200.
+	Devices []SeenDevice `json:"devices"`
+}
+
+// SeenDevice is a device the server has answered: one profile, device
+// name, and address.
+type SeenDevice struct {
+	// Profile is the profile its queries used.
+	Profile string `json:"profile"`
+
+	// Device is its name, from the DoH path or the profile's devices, if
+	// it has one.
+	Device string `json:"device,omitempty"`
+
+	// Hostname is what an unnamed device calls itself on the network, if
+	// known. Devices choose their own, so it proves nothing.
+	Hostname string `json:"hostname,omitempty"`
+
+	// Client is its address, if known.
+	Client string `json:"client,omitempty"`
+
+	// Transport is how it last asked: "doh", "dot", "doq", "udp", or
+	// "tcp".
+	Transport string `json:"transport"`
+
+	// First and Last are when it was first and last answered.
+	First time.Time `json:"first"`
+	Last  time.Time `json:"last"`
 }
 
 // QRCode is a QR code to show: in doh's colors, with its donut in the

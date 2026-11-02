@@ -93,6 +93,7 @@ func (s *Server) apiHandler() http.Handler {
 	for _, file := range setupFiles {
 		mux.HandleFunc("GET "+p+"/profiles/{id}/"+file, s.apiSetupFile(file))
 	}
+	mux.HandleFunc("GET "+p+"/devices", s.apiDevices)
 	mux.HandleFunc(p+"/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such endpoint")
 	})
