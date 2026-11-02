@@ -58,7 +58,7 @@ func newPeopleListCommand() *cobra.Command {
 		}
 
 		if len(people) == 0 {
-			fmt.Fprintln(cmd.OutOrStdout(), `No one has a passkey yet. Sign in with "doh ui" and add one in the web UI's Security view.`)
+			fmt.Fprintln(cmd.OutOrStdout(), `No one has a passkey yet. Sign in with "doh ui" and add one in the web UI's Settings › Account & passkeys.`)
 			return nil
 		}
 

@@ -2,6 +2,7 @@ import { showSecret } from "./accounts.js";
 import { api, APIError, report } from "./api.js";
 import { $, clear, confirmDialog, emptyState, h, icon, statusIcon, toast } from "./dom.js";
 import { fromNow } from "./format.js";
+import { PushError, prepare, pushSupported, subscribe, thisBrowser, unsubscribe } from "./push.js";
 import { isAdmin, isOperator, state } from "./state.js";
 
 // ALERT_KINDS says what each kind of alert is about, in a person's words.
@@ -12,29 +13,58 @@ export const ALERT_KINDS = {
   "list-failed": ["Lists that didn't load", "A blocklist couldn't be fetched or read, so it's out of date."],
 };
 
+// TYPES name each kind of destination, for people.
+export const TYPES = { push: "Browser", email: "Email", ntfy: "ntfy", webhook: "Webhook" };
+
+// PUSH_SERVICES name browsers' push services by host, for people.
+const PUSH_SERVICES = [
+  ["fcm.googleapis.com", "Chrome, Edge, or Android"],
+  ["updates.push.services.mozilla.com", "Firefox"],
+  ["web.push.apple.com", "Safari"],
+  ["notify.windows.com", "Edge on Windows"],
+];
+
+// pushService names the browser a push destination's URL reaches.
+export function pushService(url) {
+  let host = "";
+  try { host = new URL(url).hostname; } catch { return "a browser"; }
+  return PUSH_SERVICES.find(([h]) => host === h || host.endsWith("." + h))?.[1] || host;
+}
+
 // alertsTenant is whose alerts the operator is looking at: "" for their
 // own.
 export let alertsTenant = "";
 
 export const alertsQuery = () => (isOperator() && alertsTenant ? { tenant: alertsTenant } : undefined);
 
+// available are the destination types the server offers, as the last
+// GET /alerts said.
+let available = ["ntfy", "webhook"];
+
 // renderAlerts shows alert settings, destinations, and recent deliveries,
 // to admins: destinations' URLs can be enough to read the alerts.
 export async function renderAlerts() {
   if (!isAdmin()) return;
+  // Ready the service worker and push key now, so a tap on "Notify this
+  // browser" has nothing to wait for: Safari allows subscribing only
+  // just after one.
+  if (pushSupported()) prepare(api);
+  if (!$("alerts").childElementCount) $("alerts").append(h("p", { class: "muted", text: "Loading alerts…" }));
   let data;
   try {
     data = await api("GET", "/alerts", { query: alertsQuery() });
   } catch (err) {
-    if (err instanceof APIError && err.status === 403) {
-      clear($("alerts")).append(h("p", { class: "muted", text: "Alerts are set up by an admin person, or the server's operator." }));
-      return;
-    }
-    throw err;
+    const why = err instanceof APIError && err.status === 403
+      ? "Alerts are set up by an admin person, or the server's operator."
+      : `Alerts couldn't be loaded: ${err.message}`;
+    clear($("alerts")).append(h("p", { class: err.status === 403 ? "muted" : "error", text: why }));
+    return;
   }
+  available = data.available_types || available;
+  const mine = await thisBrowser(data.destinations).catch(() => null);
   const box = clear($("alerts"));
-  $("alerts-test").disabled = !data.destinations.length;
-  if (!alertsTenant) state.hints.alerts = data.destinations.length;
+  $("alerts-test").disabled = !data.destinations.some((d) => d.state === "active");
+  if (!alertsTenant) state.hints.alerts = data.destinations.filter((d) => d.state === "active").length;
 
   if (isOperator() && state.tenants.length) {
     const pick = h("select", { "aria-label": "Whose alerts" },
@@ -44,6 +74,9 @@ export async function renderAlerts() {
     pick.addEventListener("change", () => { alertsTenant = pick.value; renderAlerts().catch(report); });
     box.append(h("label", { class: "alerts-for" }, "Alerts for ", pick));
   }
+
+  // This browser comes first: for most people, it's the one to turn on.
+  if (!alertsTenant && available.includes("push")) box.append(thisBrowserSection(mine));
 
   // What to hear about.
   const kinds = h("div", { class: "toggle-list" });
@@ -60,7 +93,7 @@ export async function renderAlerts() {
   box.append(h("div", { class: "section" }, h("h4", { text: "What to hear about" }), kinds));
 
   box.append(quietHours(data.settings));
-  box.append(destinationsList(data.destinations));
+  box.append(destinationsList(data.destinations, mine));
 
   if (data.deliveries.length) {
     box.append(h("div", { class: "section" }, h("h4", { text: "Recently sent" }),
@@ -73,10 +106,94 @@ export async function renderAlerts() {
   }
 }
 
+// whyNoPush says why this browser can't get notifications from the page.
+function whyNoPush() {
+  if (!globalThis.isSecureContext) return "Notifications need the page opened over https, or at localhost.";
+  if (/iPhone|iPad/.test(navigator.userAgent)) return "On iPhone and iPad, add doh to the Home Screen first (Share, then Add to Home Screen), and open it from there.";
+  return "This browser can't show notifications from web pages. Try another, or use ntfy or email.";
+}
+
+// browserName guesses a name for this browser's destination, such as
+// "Firefox on Mac", which people can change in the list.
+export function browserName(ua = navigator.userAgent) {
+  const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "Browser";
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Mac OS X/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "";
+  return os ? `${browser} on ${os}` : browser;
+}
+
+// thisBrowserSection offers notifications in this browser, or says
+// they're on, or why they can't be.
+function thisBrowserSection(mine) {
+  const section = h("div", { class: "section this-browser" }, h("h4", { text: "This browser" }));
+  const row = (iconName, title, text, ...actions) => section.append(h("div", { class: "browser-row" },
+    h("span", { class: "id-badge", "aria-hidden": "true" }, icon(iconName)),
+    h("div", {}, h("p", { class: "browser-title" }, title), h("p", { class: "muted", text })),
+    actions.length ? h("div", { class: "row-actions" }, ...actions) : null));
+
+  if (!pushSupported()) {
+    row("bell", "Notifications aren't available here", whyNoPush());
+    return section;
+  }
+  if (mine?.state === "active") {
+    row("check", h("span", { class: "status ok" }, statusIcon("check"), "On for this browser"),
+      `Alerts show up here as notifications, even with doh closed, as "${mine.name || browserName()}".`,
+      h("button", { type: "button", onClick: (e) => turnOff(e.currentTarget) }, "Turn off"));
+    return section;
+  }
+  if (globalThis.Notification?.permission === "denied") {
+    row("warn", h("span", { class: "status warn" }, statusIcon("warn"), "Notifications are blocked"),
+      "This browser was told not to show doh's notifications. Allow them in its site settings for this page, then come back.");
+    return section;
+  }
+  row("bell", mine?.state === "gone" ? h("span", { class: "status warn" }, statusIcon("warn"), "This browser's notifications stopped") : "Notify this browser",
+    mine?.state === "gone"
+      ? "Its push service said the subscription ended, as happens when site data is cleared. Turn them on again to keep getting alerts here."
+      : "Get alerts here as notifications, even with doh closed. The browser asks first.",
+    h("button", { type: "button", class: "primary", onClick: (e) => notifyThisBrowser(e.currentTarget) }, icon("bell"), mine ? "Turn on again" : "Notify this browser"));
+  return section;
+}
+
+// notifyThisBrowser subscribes this browser, from a click, as browsers
+// require.
+export async function notifyThisBrowser(button) {
+  if (button) button.disabled = true;
+  try {
+    const d = await subscribe(api, { name: browserName() });
+    toast(`Notifications are on for ${d.name || "this browser"}. Send a test to see one.`);
+    document.dispatchEvent(new CustomEvent("doh:alerts-changed"));
+  } catch (err) {
+    if (err instanceof PushError) toast(err.message, { error: err.code !== "denied" });
+    else report(err);
+  } finally {
+    if (button) button.disabled = false;
+    await renderAlerts().catch(report);
+  }
+}
+
+async function turnOff(button) {
+  button.disabled = true;
+  try {
+    const data = await api("GET", "/alerts");
+    await unsubscribe(api, data.destinations);
+    toast("Notifications are off for this browser.");
+  } catch (err) {
+    report(err);
+  } finally {
+    await renderAlerts().catch(report);
+  }
+}
+
 // destinationName names a destination by its ID, for deliveries.
 export function destinationName(destinations, id) {
   const d = destinations.find((x) => x.id === id);
-  return d ? d.name || d.url : "a removed destination";
+  return d ? d.name || displayURL(d) : "a removed destination";
+}
+
+// displayURL says where a destination is, for people.
+function displayURL(d) {
+  if (d.type === "email") return d.url.replace(/^mailto:/, "");
+  if (d.type === "push") return `Notifications in ${pushService(d.url)}`;
+  return d.url;
 }
 
 // deliveryStatus says how a delivery went, by symbol and word as well as
@@ -121,31 +238,81 @@ export async function saveAlertSettings(patch, message, input) {
   await renderAlerts().catch(report);
 }
 
-// destinationsList lists where alerts go, and how each last went.
-export function destinationsList(destinations) {
+// destinationState says whether a destination gets alerts, in words and
+// a symbol: active ones by how their last delivery went, email addresses
+// waiting to be confirmed (or too late to be), and browsers whose
+// subscriptions ended.
+export function destinationState(d, now = Date.now()) {
+  if (d.state === "pending") {
+    if (d.confirm_by && new Date(d.confirm_by).getTime() <= now) {
+      return { level: "bad", icon: "block", text: "Not confirmed in time",
+        more: "The address wasn't confirmed within a day, so nothing goes there. Remove it, and add it again for a new email." };
+    }
+    return { level: "warn", icon: "warn", text: "Waiting for confirmation", pending: true,
+      more: `doh emailed this address a link and a code. Nothing is sent until someone opens the link and presses Confirm, or gives you the code to enter here${d.confirm_by ? `, ${fromNow(d.confirm_by, now)}` : ""}.` };
+  }
+  if (d.state === "gone") {
+    return { level: "warn", icon: "warn", text: "Stopped",
+      more: "The browser's push service said this subscription ended. Turn notifications on again in that browser, or remove it." };
+  }
+  const failedLast = d.last_failure && (!d.last_success || new Date(d.last_failure) > new Date(d.last_success));
+  if (failedLast) return { level: "bad", icon: "block", text: `Failed ${fromNow(d.last_failure, now)}`, error: d.last_error };
+  if (d.last_success) return { level: "ok", icon: "check", text: `Delivered ${fromNow(d.last_success, now)}` };
+  return { level: "", icon: "", text: "Nothing sent yet" };
+}
+
+// destinationsList lists where alerts go, of every kind, and how each is
+// doing.
+export function destinationsList(destinations, mine) {
   const body = destinations.length
     ? h("ul", { class: "passkeys" }, destinations.map((d) => {
-      const failedLast = d.last_failure && (!d.last_success || new Date(d.last_failure) > new Date(d.last_success));
-      const health = failedLast
-        ? h("span", { class: "status bad" }, statusIcon("block"), `Failed ${fromNow(d.last_failure)}`)
-        : d.last_success
-          ? h("span", { class: "status ok" }, statusIcon("check"), `Delivered ${fromNow(d.last_success)}`)
-          : h("span", { class: "status", text: "Nothing sent yet" });
-      return h("li", { class: "passkey" },
-        h("div", { class: "passkey-name" }, d.name || d.url, h("span", { class: "badge", text: d.type === "ntfy" ? "ntfy" : "Webhook" })),
-        d.name ? h("code", { class: "passkey-meta dest-url", text: d.url }) : null,
-        h("div", { class: "passkey-meta" }, health),
-        failedLast && d.last_error ? h("div", { class: "passkey-meta dest-error", text: d.last_error }) : null,
-        h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove ${d.name || d.url}`, onClick: () => removeDestination(d) }),
+      const st = destinationState(d);
+      const where = displayURL(d);
+      return h("li", { class: "passkey destination" },
+        h("div", { class: "passkey-name" }, d.name || where,
+          h("span", { class: "badge", text: TYPES[d.type] || d.type }),
+          mine?.id === d.id ? h("span", { class: "badge you", text: "This browser" }) : null),
+        d.name ? h("span", { class: "passkey-meta dest-url", text: where }) : null,
+        h("div", { class: "passkey-meta" }, h("span", { class: `status ${st.level}`.trim() }, st.icon ? statusIcon(st.icon) : null, st.text)),
+        st.more ? h("p", { class: "passkey-meta muted dest-more", text: st.more }) : null,
+        st.error ? h("div", { class: "passkey-meta dest-error", text: st.error }) : null,
+        st.pending ? confirmForm(d) : null,
+        h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove ${d.name || where}`, onClick: () => removeDestination(d) }),
       );
     }))
     : emptyState({
       mood: "alert", compact: true,
       title: "Alerts have nowhere to go yet.",
-      body: "Add ntfy to get them on your phone in a minute, with its free app.",
-      action: h("button", { type: "button", class: "primary", onClick: () => openAddDestination("ntfy") }, icon("bell"), "Add ntfy"),
+      body: available.includes("push") && pushSupported()
+        ? "Turn on notifications in this browser above, or add your email, ntfy, or a webhook."
+        : "Add ntfy to get them on your phone in a minute, with its free app.",
+      action: h("button", { type: "button", class: "primary", onClick: () => openAddDestination(available.includes("email") ? "email" : "ntfy") }, icon("plus"), "Add a destination"),
     });
   return h("div", { class: "section" }, h("h4", { text: "Where they go" }), body);
+}
+
+// confirmForm takes the code emailed to a pending address.
+function confirmForm(d) {
+  const code = h("input", {
+    "aria-label": `Code emailed to ${d.url.replace(/^mailto:/, "")}`, placeholder: "ABCDE-FGHJK",
+    autocomplete: "one-time-code", spellcheck: "false", autocapitalize: "characters", maxlength: 16, required: true,
+  });
+  const form = h("form", { class: "chip-form confirm-code" }, code, h("button", { type: "submit" }, "Confirm"));
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const button = form.querySelector("button");
+    button.disabled = true;
+    try {
+      await api("POST", "/alerts/confirm", { body: { code: code.value.trim().toUpperCase() }, query: alertsQuery() });
+      toast(`Confirmed. Alerts go to ${d.url.replace(/^mailto:/, "")} now.`);
+      document.dispatchEvent(new CustomEvent("doh:alerts-changed"));
+      await renderAlerts();
+    } catch (err) {
+      report(err);
+      button.disabled = false;
+    }
+  });
+  return form;
 }
 
 // NTFY is ntfy's public server, suggested for new destinations; the page
@@ -163,6 +330,12 @@ export function ntfyTopic() {
 export function alertTypeChanged() {
   const type = $("alert-form").querySelector('input[name="alert-type"]:checked').value;
   const url = $("alert-url");
+  const email = type === "email";
+  $("alert-url-field").hidden = email;
+  $("alert-address-field").hidden = !email;
+  url.required = !email;
+  $("alert-address").required = email;
+  if (email) return;
   if (type === "ntfy") {
     if (!url.value || !url.value.startsWith(NTFY)) url.value = ntfyTopic();
     url.placeholder = NTFY + "your-topic";
@@ -177,6 +350,9 @@ export function alertTypeChanged() {
 export function openAddDestination(type = "ntfy") {
   const form = $("alert-form");
   form.reset();
+  const hasEmail = available.includes("email");
+  $("alert-type-email").hidden = !hasEmail;
+  if (type === "email" && !hasEmail) type = "ntfy";
   form.querySelector(`input[name="alert-type"][value="${type}"]`).checked = true;
   $("alert-url").value = "";
   alertTypeChanged();
@@ -190,19 +366,21 @@ export async function addDestination(e) {
   const submit = form.querySelector('button[type="submit"]');
   submit.disabled = true;
   try {
-    const body = {
-      type: form.querySelector('input[name="alert-type"]:checked').value,
-      url: $("alert-url").value.trim(),
-      name: $("alert-name").value.trim(),
-    };
+    const type = form.querySelector('input[name="alert-type"]:checked').value;
+    const body = { type, name: $("alert-name").value.trim() };
+    if (type === "email") body.address = $("alert-address").value.trim();
+    else body.url = $("alert-url").value.trim();
     const created = await api("POST", "/alerts/destinations", { body, query: alertsQuery() });
     $("alert-dialog").close();
     await renderAlerts();
     document.dispatchEvent(new CustomEvent("doh:alerts-changed"));
-    const name = created.destination.name || created.destination.url;
+    const d = created.destination;
+    const name = d.name || displayURL(d);
     if (created.secret) {
       showSecret(`Signing secret for ${name}`, created.secret,
         "Check each delivery's webhook-signature header with it, so you know it came from this server.");
+    } else if (d.state === "pending") {
+      toast(`Emailed ${displayURL(d)} to confirm. Alerts start once it's confirmed.`);
     } else {
       toast(`Added ${name}. Send a test to check it.`);
     }
@@ -214,7 +392,7 @@ export async function addDestination(e) {
 }
 
 export async function removeDestination(d) {
-  const name = d.name || d.url;
+  const name = d.name || displayURL(d);
   if (!(await confirmDialog(`Remove ${name}?`, "Alerts stop going there at once.", "Remove"))) return;
   try {
     await api("DELETE", `/alerts/destinations/${encodeURIComponent(d.id)}`, { query: alertsQuery() });
@@ -241,4 +419,3 @@ export async function testAlerts() {
     await renderAlerts().catch(report);
   }
 }
-

@@ -46,7 +46,7 @@ An email address gets a code first, and nothing else until it's confirmed,
 with the link in the email or "doh alerts confirm CODE". Email needs the
 server's operator to set up a mail server (doh serve --smtp-url).
 
-Browsers subscribe themselves, from the web UI's Security view; "doh alerts
+Browsers subscribe themselves, from the web UI's Settings › Alerts; "doh alerts
 show" lists them, and "doh alerts remove" removes one.`,
 		Example: `  doh alerts add-ntfy https://ntfy.sh/smith-family-7f3a
   doh alerts add-webhook https://hooks.example.com/doh --name "Home Assistant"
@@ -130,7 +130,7 @@ func printAlerts(w io.Writer, a *api.Alerts, now time.Time) {
 
 	fmt.Fprintln(w)
 	if len(a.Destinations) == 0 {
-		fmt.Fprintln(w, `No destinations yet, so nothing is sent. Add one with "doh alerts add-ntfy https://ntfy.sh/<topic>", "doh alerts add-webhook <url>", or "doh alerts add-email <address>", or turn on notifications in the web UI's Security view.`)
+		fmt.Fprintln(w, `No destinations yet, so nothing is sent. Add one with "doh alerts add-ntfy https://ntfy.sh/<topic>", "doh alerts add-webhook <url>", or "doh alerts add-email <address>", or turn on notifications in the web UI's Settings › Alerts.`)
 		return
 	}
 	tw = newTable(w)

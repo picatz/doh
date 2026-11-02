@@ -61,3 +61,10 @@ test("first run is a new server, to an admin", () => {
   assert.equal(isFirstRun({ admin: true, devices: [{ client: "192.168.1.9", transport: "udp" }] }), false);
   assert.equal(isFirstRun({ admin: true, devices: [{ client: "127.0.0.1", transport: "udp" }] }), true, "the server testing itself");
 });
+
+test("alerts are on only once a destination gets them", () => {
+  const alertsDone = (destinations) => done(setupSteps({ ...operatorAdmin, destinations })).alerts;
+  assert.equal(alertsDone([{ id: "e1", type: "email", state: "pending" }]), false, "an address waiting to be confirmed gets nothing");
+  assert.equal(alertsDone([{ id: "b1", type: "push", state: "gone" }]), false, "nor does a browser whose subscription ended");
+  assert.equal(alertsDone([{ id: "e1", type: "email", state: "pending" }, { id: "n1", type: "ntfy", state: "active" }]), true);
+});

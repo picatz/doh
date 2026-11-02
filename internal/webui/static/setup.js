@@ -60,7 +60,7 @@ export function setupSteps({ person = "", admin = false, operator = false, profi
   const done = {
     passkey: !!person,
     device: hasDevice(profiles, devices),
-    alerts: (destinations || []).length > 0,
+    alerts: (destinations || []).some((d) => !d.state || d.state === "active"),
     network: plainDNSClients(devices).length >= ROUTER_SEEN || !!prefs.networkDone,
   };
   const applies = {

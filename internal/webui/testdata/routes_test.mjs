@@ -39,6 +39,8 @@ test("settings sections follow who's looking", () => {
   assert.deepEqual(ids({ operator: true, admin: true }), SETTINGS.map((s) => s.id));
   assert.ok(!ids({ operator: false, admin: true }).includes("tenants"), "tenants see no Tenants section");
   assert.ok(!ids({ operator: true, admin: false }).includes("alerts"), "readers see no Alerts section");
+  assert.ok(!ids({ operator: true, admin: false }).includes("audit"), "readers see no change history");
+  assert.ok(ids({ operator: false, admin: true }).includes("audit"), "a tenant's admins see their own change history");
   assert.ok(ids({ operator: false, admin: false }).includes("account"), "everyone has an account");
 });
 

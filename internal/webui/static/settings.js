@@ -3,13 +3,14 @@
 // chosen one: side by side on a wide screen, one after the other, with a
 // way back, on a narrow one.
 //
-// Alerts and, when it comes, an audit trail of who changed what belong
-// here, under Household and Server.
+// Alerts belong here, under Household, and the change history, the audit
+// trail of who changed what, under Server.
 
 import { renderApiPanel } from "./accounts.js";
 import { renderAlerts } from "./alerts.js";
 import { api, report } from "./api.js";
 import { $, plural } from "./dom.js";
+import { renderHistory } from "./history.js";
 import { renderServer } from "./overview.js";
 import { renderAccountPanel, renderPeoplePanel } from "./people.js";
 import { SETTINGS, settingsFor } from "./routes.js";
@@ -27,6 +28,7 @@ const RENDER = {
     state.status = await api("GET", "/status");
     renderServer(state.status);
   },
+  audit: renderHistory,
 };
 
 let shown = "";
@@ -80,5 +82,6 @@ function renderHints() {
   hint("api", state.hints.api === undefined ? "" : state.hints.api ? plural(state.hints.api, "account") : "None");
   hint("tenants", state.tenants.length ? plural(state.tenants.length, "tenant") : "None");
   hint("server", state.hints.server || "");
+  hint("audit", "Who changed what");
   hint("setup", state.hints.setup || "");
 }
