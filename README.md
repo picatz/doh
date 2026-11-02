@@ -188,7 +188,7 @@ Android
 $ doh setup kids --device ipad --mobileconfig ipad.mobileconfig   # open it on the iPad
 ```
 
-The web UI's **Connect a device** panel shows the same, for every platform, with one-click configuration profile downloads.
+The web UI's **Connect** tab shows the same, for every platform, with one-click configuration profile downloads. With `--hostname`, it also makes **setup links**: a link to send to the phone or tablet you're setting up, over AirDrop, a message, or the share sheet, that opens a page with one-tap install on Apple devices and plain steps for others. Each works for 30 minutes.
 
 #### DNS-over-QUIC (experimental)
 

@@ -932,9 +932,44 @@ function connectSection(p) {
   });
   load();
 
-  return section("Connect a device",
-    "Point a phone, tablet, or computer at this profile. The profile ID isn't a secret: anyone who knows it can use this profile.",
-    deviceRow, body);
+  return h("div", {},
+    section("Connect a device",
+      "Point a phone, tablet, or computer at this profile. The profile ID isn't a secret: anyone who knows it can use this profile.",
+      deviceRow, body),
+    sendSection(p, () => (validDevice(device.value.trim().toLowerCase()) ? device.value.trim().toLowerCase() : "")));
+}
+
+// sendSection makes a short-lived link to a setup page for the device to
+// open itself: shared over AirDrop or a message, or copied.
+function sendSection(p, deviceName) {
+  const out = h("div", { class: "send-result", "aria-live": "polite" });
+  const make = edit(h("button", { type: "button", class: "primary" }, icon("arrow"), "Create a setup link"));
+  make.addEventListener("click", async () => {
+    make.disabled = true;
+    try {
+      const link = await api("POST", `/profiles/${encodeURIComponent(p.id)}/setup-links`, { query: { device: deviceName() } });
+      const url = h("output", { class: "send-url mono", text: link.url });
+      const copy = h("button", { type: "button" }, icon("copy"), "Copy");
+      copy.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(link.url); toast("Copied the setup link."); } catch { toast("Select the link and copy it."); }
+      });
+      const share = navigator.share
+        ? h("button", { type: "button", class: "primary" }, icon("arrow"), "Share")
+        : null;
+      share?.addEventListener("click", () => navigator.share({ title: `Set up ${p.name || p.id}`, url: link.url }).catch(() => {}));
+      clear(out).append(url, h("div", { class: "send-actions" }, share, copy),
+        h("p", { class: "muted hint", text: `Open it on the device itself. It works until ${new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(link.expires))}.` }));
+    } catch (err) {
+      clear(out).append(h("p", { class: "muted", text: err.status === 409
+        ? (isOperator() ? "Setup links need this server's public name and DoH: start it with --hostname and a certificate." : "Setup links aren't available on this server yet. Ask its operator.")
+        : err.message }));
+    } finally {
+      make.disabled = state.readOnly;
+    }
+  });
+  return section("Send to a device",
+    "A link to open on the phone or tablet you're setting up, with one-tap install on Apple devices. It works for 30 minutes.",
+    make, out);
 }
 
 // renderSetup fills body with a setup's endpoints and instructions.

@@ -75,6 +75,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("POST "+p+"/service-accounts/{id}/keys/{key}/rotate", peopleOnly(s.apiRotateKey))
 	mux.HandleFunc("DELETE "+p+"/service-accounts/{id}/keys/{key}", peopleOnly(s.apiDeleteKey))
 	mux.HandleFunc("GET "+p+"/profiles/{id}/setup", s.apiSetup)
+	mux.HandleFunc("POST "+p+"/profiles/{id}/setup-links", s.apiSetupLink)
 	mux.HandleFunc("GET "+p+"/profiles/{id}/apple.mobileconfig", s.apiMobileConfig)
 	mux.HandleFunc(p+"/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such endpoint")

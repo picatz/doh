@@ -222,11 +222,15 @@ $ doh log --json -q google | jq .   # JSON lines
 
 ## Admin API and web UI
 
-With `--admin-listen`, the admin listener serves a web UI at `/` and a JSON API at `/api/v1`, alongside metrics and profiling. The UI toggles every protection and list, edits allow and deny lists, devices, and rewrites, connects devices, searches and follows the query log (its **Activity** view), allows or blocks a name from any log entry in one click, and explains any decision.
+With `--admin-listen`, the admin listener serves a web UI at `/` and a JSON API at `/api/v1`, alongside metrics and profiling. The UI toggles every protection and list, edits allow and deny lists, devices, and rewrites, connects devices (and sends a device a [setup link](#setup-links) to open itself), searches and follows the query log (its **Activity** view), allows or blocks a name from any log entry in one click, and explains any decision.
 
 Its Overview shows today as a ring: a 24-hour clock with midnight at the top, each hour's glaze as thick as its traffic, and a sprinkle for blocked queries. Point at an hour for its numbers, or open it for its queries; every number on the page links to the queries behind it, and what needs attention, such as failed queries or a list that didn't load, comes first, with what to do about it.
 
 It works the same by mouse, touch, and keyboard, on phones, tablets, and desktops, in light and dark themes. Every view has a URL. Press <kbd>⌘K</kbd> (<kbd>Ctrl K</kbd>) to jump anywhere, or type a domain to explain, find, block, or allow it; changes made this way can be undone from the notice that confirms them. Press <kbd>?</kbd> for every shortcut. [docs/design.md](design.md) describes the principles behind it.
+
+### Setup links
+
+Setting up a phone from a laptop is awkward, so the Connect tab can make a setup link instead: `https://<hostname>/setup/<code>`, served by the public DoH listener, to open on the device itself. It shows one button to install the Apple configuration profile and plain steps for other platforms. A link works for 30 minutes and only says how to reach one profile, which its ID already does; it reveals nothing else, the page runs no scripts, and it isn't cached or indexed. Making one takes an admin, and needs `--hostname` and DoH.
 
 ### Signing in
 
