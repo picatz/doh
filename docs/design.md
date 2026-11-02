@@ -141,12 +141,25 @@ one it replaces the list, with a way back at the top. Which applies is
 the space the component has (a container query), not the window's.
 Never a strip of tabs that scrolls sideways.
 
+**Many choices: a list to search, then one.** Where there are more than
+a handful of options, such as the platforms to set a device up on,
+they're a list grouped under small headings, with a search that matches
+what people call things ("ps5", "chromebook") and says how many match.
+Each row names the choice and its most important fact in a word and a
+symbol (Encrypted, Plain DNS, Not available here); choosing one replaces
+the list with its detail and a way back, and focus follows.
+
 **Settings** has a home for everything that isn't the network itself:
 You (account and passkeys, appearance), Household (people, alerts),
 Automation (service accounts and the API), and Server (tenants, how the
-server runs). New things go in a group, not a new place in the tab
-bar: an audit trail of who changed what belongs under Server, and new
-alert destinations under Alerts.
+server runs, and the change history of who changed what). New things go
+in a group, not a new place in the tab bar: new alert destinations go
+under Alerts, in its one list.
+
+**Lists that grow** load a page at a time and the next as the end
+scrolls into view, with a button for the same, so a year of changes
+never renders at once. Every list has its loading, empty, and error
+states, each saying what's happening in words.
 
 ## First run
 
@@ -159,7 +172,10 @@ away, and in Settings after that.
 
 Connecting a device ends in the product's one celebration: the setup
 link's page waits, saying so, until the device asks its first question,
-then says "Connected".
+then says "Connected". The waiting status sits above the QR code, so on
+a phone, where the code fills the screen, the moment happens in view;
+if it's scrolled away, it's brought back, smoothly unless reduced
+motion is preferred.
 
 ## Behavior
 
