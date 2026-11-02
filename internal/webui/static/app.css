@@ -817,5 +817,5 @@ button.link:hover:not(:disabled) { background: none; text-decoration-color: curr
 /* A setup link's QR code: always dark on white, with its quiet zone. */
 .send-qr { display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap; }
 .send-qr p { margin: 0; max-width: 28ch; }
-.qr { width: 10rem; height: 10rem; flex: none; border-radius: var(--r-md); box-shadow: 0 0 0 1px var(--border); }
+.qr { width: 11rem; height: 11rem; flex: none; background: #fff; border-radius: var(--r-lg); box-shadow: 0 0 0 1px var(--border), 0 6px 20px -8px rgb(0 0 0 / 0.25); }
 @media (forced-colors: active) { .qr { forced-color-adjust: none; } }

@@ -434,12 +434,12 @@ type SetupLink struct {
 	QR *QRCode `json:"qr,omitempty"`
 }
 
-// QRCode is a QR code to draw: SVG path data for its dark modules, in a
-// view box Size units square that includes a quiet zone. Draw it dark on
-// light, whatever the page's theme, so cameras read it.
+// QRCode is a QR code to show: in doh's colors, with its donut in the
+// middle when the link is short enough, dark on light whatever the page's
+// theme, so cameras read it.
 type QRCode struct {
-	Size int    `json:"size"`
-	Path string `json:"path"`
+	// SVG is the code as a standalone SVG image, quiet zone included.
+	SVG string `json:"svg"`
 }
 
 // People lists who can sign in with passkeys.

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/picatz/doh/internal/api"
-	"github.com/picatz/doh/internal/qr"
+	"github.com/picatz/doh/internal/brand"
 )
 
 // Setup links let someone at the admin UI send a device what it needs to
@@ -35,10 +35,6 @@ const (
 
 	// setupPath is where setup pages are served on the public listener.
 	setupPath = "/setup/"
-
-	// qrQuiet is the quiet zone around setup links' QR codes, in modules:
-	// the standard's four.
-	qrQuiet = 4
 )
 
 // setupLinks keeps setup links, by the SHA-256 of their codes. It's safe
@@ -131,8 +127,8 @@ func (s *Server) apiSetupLink(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, "setup link created", slog.String("profile", pr.ID), slog.String("device", device))
 	link := api.SetupLink{URL: base + setupPath + code, Expires: expires}
-	if c, err := qr.Encode([]byte(link.URL), qr.M); err == nil {
-		link.QR = &api.QRCode{Size: c.Size() + 2*qrQuiet, Path: c.SVGPath(qrQuiet)}
+	if d, err := brand.QR([]byte(link.URL)); err == nil {
+		link.QR = &api.QRCode{SVG: d.SVG("QR code for the setup link")}
 	}
 	writeJSON(w, http.StatusCreated, link)
 }

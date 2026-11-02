@@ -42,7 +42,7 @@ func TestFormatAndVersionBits(t *testing.T) {
 			t.Errorf("format %v/%d = %015b, want %015b", tt.level, tt.mask, got, tt.want)
 		}
 	}
-	c := &Code{Version: 7, size: 45, modules: make([]bool, 45*45), function: make([]bool, 45*45)}
+	c := &Code{Version: 7, size: 45, modules: make([]bool, 45*45), function: make([]bool, 45*45), codeword: make([]int16, 45*45)}
 	c.drawVersion()
 	// Version 7's information is 000111 110010010100, read from the
 	// bottom right of the block beside the bottom left finder.
@@ -197,13 +197,6 @@ func TestRenderings(t *testing.T) {
 	c, err := Encode([]byte("https://example.com"), M)
 	if err != nil {
 		t.Fatal(err)
-	}
-	path := c.SVGPath(4)
-	if !strings.HasPrefix(path, "M4 4h7v1h-7z") {
-		t.Errorf("path starts %q, want the finder's top row", path[:min(len(path), 20)])
-	}
-	if svg := c.SVG(4); !strings.Contains(svg, `viewBox="0 0 33 33"`) || !strings.Contains(svg, path) {
-		t.Errorf("SVG = %.80s…", svg)
 	}
 	var b bytes.Buffer
 	if err := c.WriteText(&b, 2); err != nil {
