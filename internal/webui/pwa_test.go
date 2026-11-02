@@ -71,11 +71,27 @@ func TestInstallable(t *testing.T) {
 		}
 	}
 
+	// The browser's and the installed app's colors are the page's own
+	// background, in each scheme, once each.
+	styles := readStatic(t, "app.css")
+	bg := regexp.MustCompile(`--bg: (#[0-9a-f]{6});`).FindAllStringSubmatch(styles, -1)
+	if len(bg) < 2 {
+		t.Fatalf("app.css: --bg tokens = %v", bg)
+	}
+	light, dark := bg[0][1], bg[1][1]
 	index := readStatic(t, "index.html")
-	for _, want := range []string{`<link rel="manifest" href="/ui/manifest.webmanifest">`, `<link rel="apple-touch-icon" href="/ui/apple-touch-icon.png">`, `<meta name="theme-color"`} {
-		if !strings.Contains(index, want) {
-			t.Errorf("index.html lacks %s", want)
+	for _, want := range []string{
+		`<link rel="manifest" href="/ui/manifest.webmanifest">`,
+		`<link rel="apple-touch-icon" href="/ui/apple-touch-icon.png">`,
+		`<meta name="theme-color" content="` + light + `" media="(prefers-color-scheme: light)">`,
+		`<meta name="theme-color" content="` + dark + `" media="(prefers-color-scheme: dark)">`,
+	} {
+		if strings.Count(index, want) != 1 {
+			t.Errorf("index.html has %s %d times, want once", want, strings.Count(index, want))
 		}
+	}
+	if m.ThemeColor != light || m.BackgroundColor != light {
+		t.Errorf("manifest colors %s, %s, want the light --bg %s", m.ThemeColor, m.BackgroundColor, light)
 	}
 
 	rec = get(t, ServiceWorkerPath)
