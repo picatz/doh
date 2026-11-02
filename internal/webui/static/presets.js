@@ -2,8 +2,12 @@
 // of a dozen switches. A preset sets only what it manages, the built-in
 // protections, safe search, and the lists presets choose between, so a
 // profile's custom lists and other choices stay as they are.
+//
+// Safe Browsing is never in a preset: it works only where the server's
+// operator has given it an API key, so it's a choice of its own.
 
-const FEATURES = ["rebinding", "homograph", "newly_registered", "tunneling", "bypass"];
+// FEATURES are the built-in protections presets manage.
+export const FEATURES = ["rebinding", "homograph", "newly_registered", "tunneling", "bypass", "typosquatting", "dga"];
 
 // PRESETS are the levels, from least to most.
 export const PRESETS = [
@@ -19,7 +23,7 @@ export const PRESETS = [
   },
   {
     id: "strict", name: "Strict",
-    line: "Also stops tunneling, bypass tricks, and risky domains. A few sites may break.",
+    line: "Also stops tunneling, bypass tricks, look-alike and machine-made domains, and risky ones. A few sites may break.",
     features: FEATURES, lists: ["threat-intel", "scams", "abused-tlds", "dynamic-dns", "bypass-services", "hagezi-pro"], safeSearch: false,
   },
   {

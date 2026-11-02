@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PRESETS, matchPreset, presetPatch, undoPatch } from "../static/presets.js";
+import { FEATURES, PRESETS, matchPreset, presetPatch, undoPatch } from "../static/presets.js";
 
 const byID = Object.fromEntries(PRESETS.map((p) => [p.id, p]));
 
@@ -41,4 +41,26 @@ test("undo puts back what a preset changed", () => {
   assert.equal(restored.safe_search, true);
   assert.equal(restored.security.tunneling, true);
   assert.equal(restored.security.homograph, false);
+});
+
+test("Strict and Kids stop typosquatting and machine-made domains; the gentler levels don't", () => {
+  for (const id of ["strict", "kids"]) {
+    for (const f of ["typosquatting", "dga"]) assert.ok(byID[id].features.includes(f), `${id} has ${f}`);
+  }
+  for (const id of ["essential", "recommended"]) {
+    for (const f of ["typosquatting", "dga"]) assert.ok(!byID[id].features.includes(f), `${id} lacks ${f}`);
+  }
+});
+
+test("no preset touches Safe Browsing, which needs the operator's key", () => {
+  assert.ok(!FEATURES.includes("safe_browsing"));
+  for (const preset of PRESETS) {
+    for (const on of [true, false]) {
+      const p = { security: { safe_browsing: on }, lists: [] };
+      const patch = presetPatch(p, preset);
+      assert.ok(!("safe_browsing" in patch.security), preset.id);
+      // Whether it's on doesn't change which preset matches.
+      assert.equal(matchPreset({ ...p, ...patch, security: { ...p.security, ...patch.security } }), preset.id);
+    }
+  }
 });

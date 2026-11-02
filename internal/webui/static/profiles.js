@@ -1,7 +1,7 @@
 import { api, report } from "./api.js";
 import { appsSection, schedulesSection } from "./apps.js";
 import { connectSection } from "./connect.js";
-import { $, badge, clear, confirmDialog, count, edit, emptyState, fmtNum, h, icon, toast } from "./dom.js";
+import { $, badge, clear, confirmDialog, count, edit, emptyState, fmtNum, h, icon, statusIcon, toast } from "./dom.js";
 import { matchPreset, presetPatch, PRESETS, undoPatch } from "./presets.js";
 import { go, setRoute } from "./router.js";
 import { PROFILE_SECTIONS, routeHash } from "./routes.js";
@@ -212,7 +212,9 @@ export function protectionTab(p) {
       });
       extra = h("label", { class: "muted" }, "younger than ", days, " days");
     }
-    return toggleRow(f.title, f.description, checked, (on) => (isTop ? { safe_search: on } : { security: { [f.id]: on } }), extra);
+    // On, but this server can't apply it: say so, and let it be turned off.
+    if (f.unavailable) extra = h("span", { class: "status warn" }, statusIcon("warn"), "Not working here");
+    return toggleRow(f.title, f.unavailable ? `${f.description} ${f.unavailable}` : f.description, checked, (on) => (isTop ? { safe_search: on } : { security: { [f.id]: on } }), extra);
   };
   const lists = p.lists || [];
   const presets = state.catalog.presets || [];
@@ -226,7 +228,7 @@ export function protectionTab(p) {
   const fine = h("details", { class: "fine-tune", open: current === "" },
     h("summary", {}, h("span", { text: "Fine-tune" }), h("span", { class: "muted", text: current ? "Every protection and list, one by one" : "Your own mix of protections and lists" })),
     section("Security", "Built-in protections. Changes apply to new queries at once.",
-      h("div", { class: "toggle-list" }, feats.filter((f) => f.category !== "parental").map(featToggle))),
+      h("div", { class: "toggle-list" }, feats.filter((f) => f.category !== "parental" && (!f.unavailable || sec[f.id])).map(featToggle))),
     section("Threat lists", "Blocklists of known-bad domains.", group("security")),
     section("Privacy", "Ads and trackers.", group("privacy")),
     section("Parental", "Content some households restrict.",
