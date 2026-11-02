@@ -2,21 +2,27 @@ package serve
 
 import (
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/devicesetup"
 	"github.com/picatz/doh/internal/plist"
 	"github.com/picatz/doh/internal/policy"
 )
 
 // setupFor describes how to point a device at a profile.
-func (s *Server) setupFor(pr *policy.Profile, device string) api.Setup {
+func (s *Server) setupFor(ctx context.Context, pr *policy.Profile, device string) api.Setup {
 	setup := api.Setup{Profile: pr.ID, Device: device, Hostname: s.config.Hostname}
 
 	if s.config.Hostname != "" && s.config.servesDoH() {
@@ -33,88 +39,96 @@ func (s *Server) setupFor(pr *policy.Profile, device string) api.Setup {
 		_, dotPort, _ = net.SplitHostPort(s.config.DoTListen)
 	}
 
+	var lan []netip.Addr
 	if dnsAddr := s.listenerAddr("dns"); dnsAddr != "" {
 		if addr, err := net.ResolveUDPAddr("udp", dnsAddr); err == nil {
-			for _, a := range lanAddrs(addr) {
+			lan = lanAddrs(addr)
+			for _, a := range lan {
 				setup.DNSAddrs = append(setup.DNSAddrs, a.String())
 			}
 		}
 	}
 
-	setup.Platforms = s.platforms(setup, pr, dotPort)
+	if setup.DoHURL != "" || setup.DoTHost != "" {
+		addrs := s.selfAddrs.get(ctx, s.config.Hostname)
+		if len(addrs) == 0 {
+			// The encrypted listeners are on this machine too, and listen
+			// on every address unless told otherwise.
+			addrs = lan
+		}
+		for _, a := range addrs {
+			setup.ServerAddrs = append(setup.ServerAddrs, a.String())
+		}
+	}
+
+	setup.Platforms, setup.Groups = platformsFor(setupInputs{
+		setup:     setup,
+		tenant:    pr.Tenant != "",
+		isDefault: pr.ID == policy.DefaultProfile,
+		listed:    len(pr.Clients) > 0 || len(pr.Devices) > 0,
+		dotPort:   dotPort,
+	})
 	return setup
 }
 
-// platforms returns step-by-step instructions for each platform.
-func (s *Server) platforms(setup api.Setup, pr *policy.Profile, dotPort string) []api.Platform {
-	var platforms []api.Platform
-	add := func(id, name string, steps ...string) *api.Platform {
-		platforms = append(platforms, api.Platform{ID: id, Name: name, Steps: steps})
-		return &platforms[len(platforms)-1]
+// selfAddrs looks up the server's own host name, for settings that pair
+// an address with it, remembering the answer for a while. The zero value
+// is ready to use; it's safe for concurrent use.
+type selfAddrs struct {
+	// lookup looks host up; nil means net.DefaultResolver.
+	lookup func(ctx context.Context, host string) ([]netip.Addr, error)
+
+	mu      sync.Mutex
+	host    string
+	addrs   []netip.Addr
+	expires time.Time
+}
+
+const (
+	// selfAddrsTTL is how long a lookup of the server's name is kept,
+	// and selfAddrsRetry how long a failed one is.
+	selfAddrsTTL   = 10 * time.Minute
+	selfAddrsRetry = time.Minute
+
+	// selfAddrsTimeout bounds each lookup.
+	selfAddrsTimeout = 2 * time.Second
+)
+
+// get returns the addresses host resolves to that devices could connect
+// to: not loopback, link-local, or unspecified, and at most
+// devicesetup.MaxAddrs of them.
+func (c *selfAddrs) get(ctx context.Context, host string) []netip.Addr {
+	if host == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.host == host && time.Now().Before(c.expires) {
+		return c.addrs
 	}
 
-	serverIP := "<this server's IP address>"
-	if len(setup.DNSAddrs) > 0 {
-		serverIP = setup.DNSAddrs[0]
-	}
-
-	if setup.DoHURL != "" || setup.DoTHost != "" {
-		p := add("apple", "iPhone, iPad, and Mac",
-			"Download the configuration profile below on the device, or AirDrop it there.",
-			"iPhone and iPad: open Settings, tap Profile Downloaded, then Install. Mac: open System Settings, then Privacy & Security, then Profiles, and install it.",
-			"The profile applies on every network. Remove it from the same place to stop.",
-		)
-		p.Download = fmt.Sprintf("%s/profiles/%s/apple.mobileconfig", api.Prefix, url.PathEscape(pr.ID))
-		if setup.Device != "" {
-			p.Download += "?device=" + url.QueryEscape(setup.Device)
+	lookup := c.lookup
+	if lookup == nil {
+		lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
+			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		}
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), selfAddrsTimeout)
+	defer cancel()
+	found, err := lookup(ctx, host)
 
-	if setup.DoTHost != "" {
-		p := add("android", "Android",
-			"Open Settings, then Network & internet (or Connections), then Private DNS.",
-			"Choose Private DNS provider hostname, enter "+setup.DoTHost+", and save.",
-		)
-		if dotPort != "853" {
-			p.Steps = append(p.Steps, "Android only connects on port 853, so make sure this server's DoT listener is reachable there.")
+	var addrs []netip.Addr
+	for _, a := range found {
+		a = a.Unmap().WithZone("")
+		if a.IsValid() && !a.IsLoopback() && !a.IsLinkLocalUnicast() && !a.IsUnspecified() && !a.IsMulticast() && !slices.Contains(addrs, a) && len(addrs) < devicesetup.MaxAddrs {
+			addrs = append(addrs, a)
 		}
 	}
-
-	if setup.DoHURL != "" {
-		add("browser", "Chrome, Edge, Firefox, and Brave",
-			"Chrome, Edge, and Brave: Settings, then Privacy and security, then Security, then Use secure DNS: choose Custom and enter "+setup.DoHURL+".",
-			"Firefox: Settings, then Privacy & Security, then DNS over HTTPS: choose Max Protection, then Custom, and enter "+setup.DoHURL+".",
-		)
-		add("windows", "Windows 11",
-			"Open Settings, then Network & internet, then your connection, then DNS server assignment: Edit.",
-			"Choose Manual, turn on IPv4, enter "+serverIP+" as the preferred DNS, and set DNS over HTTPS to On (manual template) with "+setup.DoHURL+".",
-		)
+	c.host, c.addrs, c.expires = host, addrs, time.Now().Add(selfAddrsTTL)
+	if err != nil || len(addrs) == 0 {
+		c.expires = time.Now().Add(selfAddrsRetry)
 	}
-
-	if setup.DoTHost != "" {
-		add("linux", "Linux (systemd-resolved)",
-			"In /etc/systemd/resolved.conf, under [Resolve], set DNS="+serverIP+"#"+setup.DoTHost+" and DNSOverTLS=yes.",
-			"Run sudo systemctl restart systemd-resolved, then resolvectl status to check.",
-		)
-	}
-
-	if len(setup.DNSAddrs) > 0 {
-		steps := []string{"Set your router's DHCP DNS server to " + strings.Join(setup.DNSAddrs, " or ") + ", so every device on the network uses this server."}
-		if len(pr.Clients) == 0 && len(pr.Devices) == 0 && pr.ID != policy.DefaultProfile {
-			steps = append(steps, "Over plain DNS, devices are matched to profiles by address: add the device's address to this profile's devices or clients.")
-		}
-		add("router", "Your whole network", steps...)
-	}
-
-	if len(platforms) == 0 {
-		step := "Set --hostname to this server's public name and serve DoH or DoT (--dot-listen :853) with a certificate to connect devices from anywhere, or --dns-listen :53 for devices on this network."
-		if pr.Tenant != "" {
-			// Tenants can't change how the server runs; their operator can.
-			step = "This server isn't reachable by name yet. Ask its operator to give it a public host name and serve encrypted DNS, so devices can connect from anywhere."
-		}
-		add("none", "Nothing to set up yet", step)
-	}
-	return platforms
+	return addrs
 }
 
 func (s *Server) apiSetup(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +136,7 @@ func (s *Server) apiSetup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.setupFor(pr, device))
+	writeJSON(w, http.StatusOK, s.setupFor(r.Context(), pr, device))
 }
 
 // setupRequest reads the profile and device a setup request is for,
@@ -158,10 +172,36 @@ func (s *Server) apiMobileConfig(w http.ResponseWriter, r *http.Request) {
 	s.serveMobileConfig(w, r, pr, device)
 }
 
+// apiSetupFile serves one of setupFiles for a profile, and a device if
+// named.
+func (s *Server) apiSetupFile(file string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		pr, device, ok := s.setupRequest(w, r)
+		if !ok {
+			return
+		}
+		s.serveSetupFile(w, r, pr, device, file)
+	}
+}
+
 // serveMobileConfig writes the Apple configuration profile for pr and
-// device, over DoH or, with protocol=tls, DoT.
+// device, over DoH or, with protocol=tls, DoT. With lock=true, the DNS
+// settings can't be turned off on supervised devices.
 func (s *Server) serveMobileConfig(w http.ResponseWriter, r *http.Request, pr *policy.Profile, device string) {
-	setup := s.setupFor(pr, device)
+	setup := s.setupFor(r.Context(), pr, device)
+
+	var extra []plist.Entry
+	if v := r.URL.Query().Get("lock"); v != "" {
+		lock, err := strconv.ParseBool(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "lock must be true or false")
+			return
+		}
+		if lock {
+			// Apple honors ProhibitDisablement on supervised devices only.
+			extra = append(extra, plist.Entry{Key: "ProhibitDisablement", Value: plist.Bool(true)})
+		}
+	}
 
 	dns := plist.Dict{{Key: "DNSProtocol", Value: plist.String("HTTPS")}, {Key: "ServerURL", Value: plist.String(setup.DoHURL)}}
 	switch protocol := r.URL.Query().Get("protocol"); {
@@ -186,21 +226,79 @@ func (s *Server) serveMobileConfig(w http.ResponseWriter, r *http.Request, pr *p
 
 	w.Header().Set("Content-Type", api.MobileConfigType)
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`.mobileconfig"`)
-	_ = plist.Encode(w, mobileConfig(name, id, dns))
+	_ = plist.Encode(w, mobileConfig(name, id, dns, extra...))
+}
+
+// serveSetupFile writes one of setupFiles for pr and device, made from the
+// profile's setup.
+func (s *Server) serveSetupFile(w http.ResponseWriter, r *http.Request, pr *policy.Profile, device, file string) {
+	setup := s.setupFor(r.Context(), pr, device)
+	serverAddrs, dnsAddrs := parseAddrs(setup.ServerAddrs), parseAddrs(setup.DNSAddrs)
+
+	var b []byte
+	var err error
+	switch file {
+	case devicesetup.WindowsFile:
+		if setup.DoHURL == "" {
+			writeError(w, http.StatusConflict, "Windows' encrypted DNS needs this server's DoH under a host name, which it doesn't serve")
+			return
+		}
+		b, err = devicesetup.WindowsScript(devicesetup.Windows{Template: setup.DoHURL, Addrs: serverAddrs, Profile: pr.ID, Device: device})
+	case devicesetup.ResolvedFile:
+		switch {
+		case setup.DoTHost == "":
+			writeError(w, http.StatusConflict, "systemd-resolved's encrypted DNS needs this server's DoT under a host name, which it doesn't serve")
+			return
+		case len(serverAddrs) == 0:
+			writeError(w, http.StatusConflict, "doh couldn't find this server's address, which systemd-resolved needs: write DNS="+"<address>#"+setup.DoTHost+" yourself")
+			return
+		}
+		b, err = devicesetup.ResolvedDropIn(devicesetup.Resolved{ServerName: setup.DoTHost, Addrs: serverAddrs, Profile: pr.ID, Device: device})
+	case devicesetup.OpenWrtFile:
+		if len(dnsAddrs) == 0 {
+			writeError(w, http.StatusConflict, "OpenWrt hands out this server's plain DNS address, which it doesn't serve on a local network")
+			return
+		}
+		b, err = devicesetup.OpenWrtScript(devicesetup.OpenWrt{Addrs: dnsAddrs, Profile: pr.ID})
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "making "+file+" failed")
+		return
+	}
+	w.Header().Set("Content-Type", api.TextFileType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+file+`"`)
+	_, _ = w.Write(b)
+}
+
+// parseAddrs parses addresses, skipping any that don't parse.
+func parseAddrs(addrs []string) []netip.Addr {
+	var out []netip.Addr
+	for _, a := range addrs {
+		if ip, err := netip.ParseAddr(a); err == nil {
+			out = append(out, ip)
+		}
+	}
+	return out
 }
 
 // mobileConfig returns a configuration profile with one encrypted DNS
-// settings payload.
-func mobileConfig(name, id string, dns plist.Dict) plist.Dict {
+// settings payload, with extra entries, such as ProhibitDisablement, in
+// that payload.
+func mobileConfig(name, id string, dns plist.Dict, extra ...plist.Entry) plist.Dict {
+	payload := plist.Dict{
+		{Key: "DNSSettings", Value: dns},
+		{Key: "PayloadDisplayName", Value: plist.String("Encrypted DNS: " + name)},
+		{Key: "PayloadIdentifier", Value: plist.String(id + ".dns")},
+		{Key: "PayloadType", Value: plist.String("com.apple.dnsSettings.managed")},
+		{Key: "PayloadUUID", Value: plist.String(uuidFor(id + ".dns"))},
+		{Key: "PayloadVersion", Value: plist.Integer(1)},
+	}
+	payload = append(payload, extra...)
 	return plist.Dict{
-		{Key: "PayloadContent", Value: plist.Array{plist.Dict{
-			{Key: "DNSSettings", Value: dns},
-			{Key: "PayloadDisplayName", Value: plist.String("Encrypted DNS: " + name)},
-			{Key: "PayloadIdentifier", Value: plist.String(id + ".dns")},
-			{Key: "PayloadType", Value: plist.String("com.apple.dnsSettings.managed")},
-			{Key: "PayloadUUID", Value: plist.String(uuidFor(id + ".dns"))},
-			{Key: "PayloadVersion", Value: plist.Integer(1)},
-		}}},
+		{Key: "PayloadContent", Value: plist.Array{payload}},
 		{Key: "PayloadDescription", Value: plist.String("Sends this device's DNS queries to doh, encrypted, using profile " + name + ".")},
 		{Key: "PayloadDisplayName", Value: plist.String("doh: " + name)},
 		{Key: "PayloadIdentifier", Value: plist.String(id)},

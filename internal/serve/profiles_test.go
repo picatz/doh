@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -98,6 +99,11 @@ func newPolicyServer(t *testing.T, upstream string, p *policy.Policy, configure 
 	s, err := New(config, testLogger(t))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Tests never look the server's own name up for real; ones that need
+	// its addresses set their own.
+	s.selfAddrs.lookup = func(context.Context, string) ([]netip.Addr, error) {
+		return nil, errors.New("no lookups in tests")
 	}
 	t.Cleanup(func() { s.Close() })
 	return s, dataDir

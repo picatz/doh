@@ -7,6 +7,7 @@
 - [Blocklists](#blocklists)
 - [Apps and schedules](#apps-and-schedules)
 - [Profiles and devices](#profiles-and-devices)
+- [Setting up devices](#setting-up-devices)
 - [The policy file](#the-policy-file)
 - [Local names and forward zones](#local-names-and-forward-zones)
 - [Query log](#query-log)
@@ -144,6 +145,31 @@ $ doh profile set kids safe_search=true lists=threat-intel,adult,gambling
 ```
 
 `doh profile set` turns `key=value` pairs into a [JSON merge patch](https://www.rfc-editor.org/rfc/rfc7396.html). An empty value (`key=`) resets a field.
+
+## Setting up devices
+
+`doh setup <profile>` (with `--device` to name the device, `--list` for a table, and `--platform` for one platform or group), the API's `GET /api/v1/profiles/{id}/setup`, the web UI's Connect tab, and [setup links](#setup-links) all give the same instructions, worked out from how the server runs: encrypted settings need `--hostname` and DoH (and `--dot-listen` for DNS-over-TLS); plain DNS needs `--dns-listen` on your network. Each platform says how well it's protected, how to check it's working, and how doh tells which device is asking. Platforms a server can't serve as it runs are listed as not available, with what it would take.
+
+| Device | Method | Protection | How doh knows the device |
+| --- | --- | --- | --- |
+| iPhone, iPad (iOS 14+), Mac (macOS 11+), Apple Vision Pro | Configuration profile (`apple.mobileconfig`): DoH, a DoT version, and a locked version for supervised devices | Encrypted, every network | Profile and device in the DoH URL or DoT host name |
+| Apple TV | The same profile, installed with Apple Configurator or MDM (not from a download); otherwise DNS by address | Encrypted, if installed; untested here | As above |
+| Android 9+ | Private DNS host name, such as `tablet--kids.dns.example.com` | Encrypted (DoT), every network | DoT host name |
+| Android TV, Google TV | Private DNS where the TV shows it, or `adb shell settings put global private_dns_mode hostname` and `private_dns_specifier`; otherwise DNS by address | Encrypted (DoT) where possible | DoT host name, or address |
+| Windows 11 | `doh-setup.ps1` (`-WhatIf`, `-Revert`), or Settings by hand | Encrypted (DoH), no fallback | DoH URL |
+| Windows 10 | A browser's secure DNS, plus plain DNS | Browser only | DoH URL, or address |
+| Linux | systemd-resolved drop-in `doh.conf` for `/etc/systemd/resolved.conf.d/` | Encrypted (DoT), strict | DoT host name |
+| Chromebook | Settings, Use secure DNS, custom provider | Encrypted (DoH) | DoH URL |
+| Chrome, Edge, Brave, Firefox | Custom secure DNS provider | Encrypted, that browser only | DoH URL |
+| Smart TVs and sticks (Samsung, LG, Roku, Fire TV, Chromecast), consoles (PlayStation, Xbox, Switch), smart speakers and other devices | DNS by address, best set on the router; some on the device | Plain DNS | Client address |
+| Any router, OpenWrt (`doh-openwrt.sh`), UniFi | DHCP hands out doh's address | Plain DNS | Each device's address |
+| pfSense, OPNsense | Unbound forwarding to doh over DoT, or DHCP as above | Encrypted from the firewall; plain on your network | The firewall, by DoT host name; or each device's address |
+
+Over plain DNS, doh knows a device only by its address: add it to a profile's `devices` (or its network to `clients`), and give it a DHCP reservation in the router so the address stays the same. Plain DNS isn't encrypted on your network. Some devices, including some Chromecasts and Rokus, use DNS servers built into them and ignore the network's; only a router or firewall that redirects port 53 to doh catches those, and the `bypass` protection blocks the public encrypted DNS services apps could switch to. Leave no public DNS server as a secondary anywhere, or devices use it to skip doh.
+
+The files are generated from the profile, device, and server: `GET /api/v1/profiles/{id}/{file}` for `apple.mobileconfig`, `doh-setup.ps1`, `doh.conf`, and `doh-openwrt.sh` (any reader of that profile, tenants only for their own), and the same names under a setup link, for its device only, while it lasts. Scripts fetch nothing, change only DNS settings, and explain each line. The Windows script and Linux drop-in name the server's addresses: what `--hostname` resolves to, as the server sees it, or its own local addresses; without one, the script looks the name up when it runs, and the drop-in isn't offered. `doh setup <profile> --platform windows --download doh-setup.ps1` saves one.
+
+Encrypted profiles from Apple devices can't make an exception for captive Wi-Fi sign-in pages; if one won't load, remove the profile until you're signed in. Device menus change between versions and makers, so steps name settings rather than promise exact paths where they vary.
 
 ## The policy file
 
@@ -326,7 +352,7 @@ It works the same by mouse, touch, and keyboard, on phones, tablets, and desktop
 
 ### Setup links
 
-Setting up a phone from a laptop is awkward, so the Connect tab can make a setup link instead: `https://<hostname>/setup/<code>`, served by the public DoH listener, to open on the device itself. It shows one button to install the Apple configuration profile and plain steps for other platforms. A link works for 30 minutes and only says how to reach one profile, which its ID already does; it reveals nothing else, the page runs no scripts, and it isn't cached or indexed. The Connect tab shows it as a QR code to scan with the device's camera, in doh's colors with its donut in the middle (the donut covers no more than half of what each part of the code can correct, so it still reads in poor light), and `doh setup <profile> --link` prints one in the terminal. Making one takes an admin, and needs `--hostname` and DoH.
+Setting up a phone from a laptop is awkward, so the Connect tab can make a setup link instead: `https://<hostname>/setup/<code>`, served by the public DoH listener, to open on the device itself. It shows one button to install the Apple configuration profile, then every platform, grouped, with its protection level, steps, and setup files, served under the link for its device. A link works for 30 minutes and only says how to reach one profile, which its ID already does; it reveals nothing else, the page runs no scripts, and it isn't cached or indexed. The Connect tab shows it as a QR code to scan with the device's camera, in doh's colors with its donut in the middle (the donut covers no more than half of what each part of the code can correct, so it still reads in poor light), and `doh setup <profile> --link` prints one in the terminal. Making one takes an admin, and needs `--hostname` and DoH.
 
 ### Signing in
 

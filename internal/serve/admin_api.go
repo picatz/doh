@@ -85,7 +85,10 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("POST "+p+"/alerts/test", alertsAccess(s.apiTestAlerts))
 	mux.HandleFunc("GET "+p+"/profiles/{id}/setup", s.apiSetup)
 	mux.HandleFunc("POST "+p+"/profiles/{id}/setup-links", s.apiSetupLink)
-	mux.HandleFunc("GET "+p+"/profiles/{id}/apple.mobileconfig", s.apiMobileConfig)
+	mux.HandleFunc("GET "+p+"/profiles/{id}/"+mobileConfigFile, s.apiMobileConfig)
+	for _, file := range setupFiles {
+		mux.HandleFunc("GET "+p+"/profiles/{id}/"+file, s.apiSetupFile(file))
+	}
 	mux.HandleFunc(p+"/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such endpoint")
 	})
