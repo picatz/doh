@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"github.com/picatz/doh/internal/cms/cmstest"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -365,6 +366,11 @@ func TestMobileConfig_Variants(t *testing.T) {
 		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != api.MobileConfigType {
 			t.Fatalf("%s = %d %s %s", path, resp.StatusCode, resp.Header.Get("Content-Type"), b)
 		}
+		// The server signs profiles with its certificate; the golden file
+		// is the profile inside the signature, which doesn't change.
+		if m, err := cmstest.Decode(b); err == nil {
+			b = m.Content
+		}
 		golden(t, v.golden, b)
 
 		root, payload := parseMobileConfig(t, b)
@@ -395,6 +401,9 @@ func TestMobileConfig_Variants(t *testing.T) {
 
 	// Other devices get other identifiers, so they don't replace each other.
 	_, other := c.do(http.MethodGet, "/api/v1/profiles/kids/apple.mobileconfig?device=phone", "")
+	if m, err := cmstest.Decode(other); err == nil {
+		other = m.Content
+	}
 	root, _ := parseMobileConfig(t, other)
 	if id := string(lookup[plist.String](t, root, "PayloadIdentifier")); strings.HasPrefix(identifiers[0], id+" ") {
 		t.Errorf("another device got identifier %s too", id)

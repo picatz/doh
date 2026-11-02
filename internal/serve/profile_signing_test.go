@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -165,8 +166,8 @@ func TestProfileSigning_TLSCertificate(t *testing.T) {
 	if !apple.Signing.Signed || apple.Signing.Trusted || apple.Signing.Note != noteUntrusted {
 		t.Errorf("signing = %+v, want signed but untrusted (a private root)", apple.Signing)
 	}
-	if !strings.Contains(strings.Join(apple.Steps, " "), noteUntrusted) {
-		t.Errorf("steps %q don't say the profile shows as unverified", apple.Steps)
+	if !slices.Contains(apple.Notes, noteUntrusted) {
+		t.Errorf("notes %q don't say the profile shows as unverified", apple.Notes)
 	}
 	_, body := c.do(http.MethodGet, apple.Download, "")
 	m, err := cmstest.Decode(body)
@@ -247,8 +248,8 @@ func TestProfileSigning_Unsigned(t *testing.T) {
 	if st := apple.Signing; st.Signed || st.Trusted || st.Note != noteUnsigned || st.Expires != nil {
 		t.Errorf("signing = %+v, want unsigned, with a note", st)
 	}
-	if !strings.Contains(strings.Join(apple.Steps, " "), "Unverified") {
-		t.Errorf("steps %q don't say the profile shows as unverified", apple.Steps)
+	if !strings.Contains(strings.Join(apple.Notes, " "), "Unverified") {
+		t.Errorf("notes %q don't say the profile shows as unverified", apple.Notes)
 	}
 	resp, body := c.do(http.MethodGet, apple.Download, "")
 	if resp.Header.Get("Content-Type") != api.MobileConfigType || !bytes.HasPrefix(body, []byte("<?xml")) || !bytes.Contains(body, []byte("com.apple.dnsSettings.managed")) {
