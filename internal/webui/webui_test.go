@@ -152,16 +152,26 @@ func TestIndex_NoInlineCodeOrExternalAssets(t *testing.T) {
 	}
 }
 
-// readScripts returns every embedded script, joined.
-func readScripts(t *testing.T) string {
+// scriptNames returns the names of every embedded script.
+func scriptNames(t *testing.T) []string {
 	t.Helper()
 	names, err := fs.Glob(static, "static/*.js")
 	if err != nil || len(names) < 2 {
 		t.Fatalf("scripts = %q, %v", names, err)
 	}
+	for i, name := range names {
+		names[i] = strings.TrimPrefix(name, "static/")
+	}
+	return names
+}
+
+// readScripts returns every embedded script, joined.
+func readScripts(t *testing.T) string {
+	t.Helper()
 	var all strings.Builder
-	for _, name := range names {
-		all.WriteString(readStatic(t, strings.TrimPrefix(name, "static/")))
+	for _, name := range scriptNames(t) {
+		all.WriteString(readStatic(t, name))
+		all.WriteString("\n")
 	}
 	return all.String()
 }
@@ -199,8 +209,8 @@ func TestScript_NoUnsafeDOMOrDynamicCode(t *testing.T) {
 			t.Errorf("a script uses %s", bad)
 		}
 	}
-	for _, name := range []string{"app.js", "format.js", "palette.js", "schedule.js"} {
-		if strings.Contains(readStatic(t, name), "localStorage") {
+	for _, name := range scriptNames(t) {
+		if name != "theme.js" && strings.Contains(readStatic(t, name), "localStorage") {
 			t.Errorf("%s uses localStorage; only theme.js stores anything", name)
 		}
 	}
@@ -267,13 +277,13 @@ func TestScript_HoldsNoToken(t *testing.T) {
 // TestScript_PasskeyFallbacks checks that passkeys work in browsers without
 // the WebAuthn Level 3 JSON helpers, through one isolated converter.
 func TestScript_PasskeyFallbacks(t *testing.T) {
-	js := readStatic(t, "app.js")
+	js := readStatic(t, "webauthn.js")
 	for _, want := range []string{"parseCreationOptionsFromJSON", "parseRequestOptionsFromJSON", "toJSON", "getClientExtensionResults"} {
 		if !strings.Contains(js, want) {
-			t.Errorf("app.js lacks %s", want)
+			t.Errorf("webauthn.js lacks %s", want)
 		}
 	}
-	if n := strings.Count(js, "PublicKeyCredential"); n != 1 {
+	if n := strings.Count(readScripts(t), "PublicKeyCredential"); n != 1 {
 		t.Errorf("PublicKeyCredential is used %d times, want once, inside the converter", n)
 	}
 }
@@ -322,13 +332,13 @@ func TestScriptModules(t *testing.T) {
 // schedule is in effect is computed in the profile's time zone, in one
 // place, and that the time zone picker works without Intl.supportedValuesOf.
 func TestScript_SchedulesFollowTheProfileTimeZone(t *testing.T) {
-	js := readStatic(t, "app.js")
+	js := readStatic(t, "apps.js")
 	mod := readStatic(t, "schedule.js")
-	if n := strings.Count(js+mod, "Intl.DateTimeFormat(\"en-US\""); n != 1 || !strings.Contains(mod, "timeZone, weekday") {
+	if n := strings.Count(readScripts(t), "Intl.DateTimeFormat(\"en-US\""); n != 1 || !strings.Contains(mod, "timeZone, weekday") {
 		t.Error("schedules aren't checked in the profile's time zone by one function")
 	}
 	if !strings.Contains(js, `import { WEEKDAYS`) || !strings.Contains(js, `from "./schedule.js"`) {
-		t.Error("app.js doesn't use schedule.js")
+		t.Error("apps.js doesn't use schedule.js")
 	}
 	if !regexp.MustCompile(`try \{ zones = Intl\.supportedValuesOf\("timeZone"\); \} catch`).MatchString(js) {
 		t.Error("the time zone picker has no fallback for browsers without Intl.supportedValuesOf")
