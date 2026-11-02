@@ -244,6 +244,11 @@ type Feature struct {
 
 	// Default reports whether new policies turn it on.
 	Default bool `json:"default"`
+
+	// Unavailable, if set, says why this server can't apply the feature
+	// as it's set up, such as Safe Browsing without an API key. Profiles
+	// may still turn it on; it does nothing until the server can.
+	Unavailable string `json:"unavailable,omitempty"`
 }
 
 // Catalog lists what profiles can turn on: built-in features and blocklist

@@ -298,7 +298,13 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiCatalog(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, api.Catalog{Features: filter.Features(), Presets: blocklist.Catalog, Services: services.Catalog})
+	features := filter.Features()
+	for i := range features {
+		if features[i].ID == "safe_browsing" && s.browsing == nil {
+			features[i].Unavailable = "This server has no Safe Browsing API key: its operator sets one with --safe-browsing-key-file."
+		}
+	}
+	writeJSON(w, http.StatusOK, api.Catalog{Features: features, Presets: blocklist.Catalog, Services: services.Catalog})
 }
 
 func (s *Server) apiGetPolicy(w http.ResponseWriter, r *http.Request) {
