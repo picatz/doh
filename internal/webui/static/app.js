@@ -7,6 +7,7 @@
 import { fromNow, formatDate } from "./format.js";
 import { Palette, looksLikeDomain } from "./palette.js";
 import { drawRing, totalOf, hoursOf } from "./ring.js";
+import { PRESETS, matchPreset, presetPatch, undoPatch } from "./presets.js";
 import { currentTheme, applyTheme, nextTheme, themeLabel } from "./theme.js";
 import { WEEKDAYS, DAY_NAMES, DAY_PRESETS, clockMinutes, overnight, scheduleActive, formatDays, describeBlocks, formatPeriod } from "./schedule.js";
 
@@ -60,6 +61,13 @@ function h(tag, attrs = {}, ...children) {
 
 // count says how many of a thing there are: "1 list", "3 lists".
 const count = (n, noun) => `${fmtNum(n)} ${noun}${n === 1 ? "" : "s"}`;
+
+// badge returns a rounded square with someone's or something's initial,
+// or an icon, as cards across the UI use to be told apart at a glance.
+function badge(name, sym = "") {
+  const initial = (String(name).match(/\p{L}|\p{N}/u)?.[0] || "?").toUpperCase();
+  return h("span", { class: "id-badge", "aria-hidden": "true" }, sym ? icon(sym) : initial);
+}
 
 // icon returns one of the page's icons, by its symbol's ID without the
 // "i-" prefix, hidden from assistive technology: what it means is always
@@ -1183,15 +1191,51 @@ function protectionTab(p) {
   }));
   const group = (cat) => h("div", { class: "toggle-list" }, presets.filter((x) => x.category === cat).map(listToggle));
   const custom = lists.filter((l) => !presetNames.has(l) && l !== "default");
-  return [
+  const current = matchPreset(p);
+  const fine = h("details", { class: "fine-tune", open: current === "" },
+    h("summary", {}, h("span", { text: "Fine-tune" }), h("span", { class: "muted", text: current ? "Every protection and list, one by one" : "Your own mix of protections and lists" })),
     section("Security", "Built-in protections. Changes apply to new queries at once.",
       h("div", { class: "toggle-list" }, feats.filter((f) => f.category !== "parental").map(featToggle))),
     section("Threat lists", "Blocklists of known-bad domains.", group("security")),
     section("Privacy", "Ads and trackers.", group("privacy")),
     section("Parental", "Content some households restrict.",
       h("div", { class: "toggle-list" }, feats.filter((f) => f.category === "parental").map(featToggle)), group("parental")),
-    customListsSection(p, custom, lists),
-  ];
+  );
+  return [levelSection(p, current), fine, customListsSection(p, custom, lists)];
+}
+
+// levelSection offers the protection presets as a choice of levels,
+// applied at once with Undo.
+function levelSection(p, current) {
+  const group = h("div", { class: "levels", role: "radiogroup", "aria-label": "Protection level" });
+  for (const preset of PRESETS) {
+    const on = preset.id === current;
+    const b = edit(h("button", {
+      type: "button", class: "level", role: "radio", "aria-checked": String(on),
+      onClick: () => applyPreset(p, preset),
+    },
+    h("span", { class: "level-head" }, h("strong", { text: preset.name }), on ? icon("check") : null),
+    h("span", { class: "level-line", text: preset.line })));
+    group.append(b);
+  }
+  // Arrow keys move between levels, as in any radio group.
+  group.addEventListener("keydown", (e) => {
+    const all = [...group.querySelectorAll(".level")];
+    const i = all.indexOf(document.activeElement);
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (i < 0 || !step) return;
+    e.preventDefault();
+    all[(i + step + all.length) % all.length].focus();
+  });
+  return section("Protection level", current ? "" : "This profile has its own mix. Choose a level to start again from it.", group);
+}
+
+async function applyPreset(p, preset) {
+  const before = undoPatch(p);
+  if (!(await patchProfile(p.id, presetPatch(p, preset)))) return;
+  toast(`${p.name || p.id} is now at ${preset.name}.`, {
+    action: { label: "Undo", run: async () => { if (await patchProfile(p.id, before)) toast("Put back as it was."); } },
+  });
 }
 
 function appsTab(p) {
@@ -2060,9 +2104,12 @@ function tenantCard(t) {
     if (n >= 1) patchTenant(t.id, { max_profiles: n }).catch(report);
   });
 
+  const summary = [count(profiles.length, "profile"), networks.length ? count(networks.length, "network") : "no networks", t.custom_lists ? "custom lists allowed" : null].filter(Boolean).join(" · ");
   const head = h("div", { class: "tenant-head" },
-    h("h3", { text: t.name || t.id }),
-    h("span", { class: "muted mono", text: t.id }),
+    badge(t.name || t.id),
+    h("div", { class: "tenant-title" },
+      h("h3", {}, t.name || t.id, " ", h("span", { class: "muted mono", text: t.id })),
+      h("p", { class: "muted", text: summary })),
     h("span", { class: "spacer" }),
     edit(h("button", { type: "button", class: "ghost danger-text", text: "Delete", onClick: () => deleteTenant(t, profiles.length) })),
   );
@@ -2206,6 +2253,7 @@ function renderPeople(people, me) {
   grouped(box, people, (person) => {
     const mine = person.id === me?.person;
     const head = h("div", { class: "person-head" },
+      badge(person.name),
       h("h4", {}, person.name, mine ? h("span", { class: "badge you", text: "You" }) : null),
       h("span", { class: "badge", text: person.role }),
       isAdmin() ? h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove ${person.name}`, onClick: () => removePerson(person, mine) }) : null,
@@ -2246,6 +2294,7 @@ function renderServiceAccounts(accounts, people = []) {
     const keys = [...a.keys].sort((x, y) => new Date(y.expires) - new Date(x.expires));
     const live = keys.filter((k) => new Date(k.expires).getTime() > now).length;
     const head = h("div", { class: "person-head" },
+      badge(a.name, "key"),
       h("h4", {}, a.name),
       h("span", { class: "badge", text: a.role }),
       isAdmin() ? h("button", { type: "button", class: "ghost", text: "Add key", "aria-label": `Add a key to ${a.name}`, onClick: () => addKey(a) }) : null,

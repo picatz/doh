@@ -786,3 +786,30 @@ button.link:hover:not(:disabled) { background: none; text-decoration-color: curr
 .profile-card-body { display: grid; gap: .15rem; min-width: 0; }
 .profile-card-name { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; font-weight: 700; font-size: 1.02rem; }
 .cards.profiles { grid-template-columns: repeat(auto-fill, minmax(min(17rem, 100%), 1fr)); }
+
+/* Protection levels: a choice of presets, then fine-tuning below. */
+.levels { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr)); gap: var(--s-3); }
+.level { display: grid; align-content: start; gap: .3rem; padding: var(--s-3) var(--s-4); text-align: left; white-space: normal; font-weight: 400; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); min-height: 5.5rem; }
+.level:hover:not(:disabled) { background: var(--surface); border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow); }
+.level[aria-checked=true] { border-color: var(--glaze); box-shadow: 0 0 0 1px var(--glaze); background: color-mix(in srgb, var(--glaze-soft) 55%, var(--surface)); }
+.level-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
+.level[aria-checked=true] .level-head { color: var(--glaze-ink); }
+.level-head .icon { width: 1.1rem; height: 1.1rem; stroke-width: 2.4; }
+.level-line { color: var(--muted); font-size: .88rem; line-height: 1.4; }
+.fine-tune { margin-top: var(--s-4); border-top: 1px solid var(--border); padding-top: var(--s-3); }
+.fine-tune > summary { display: flex; align-items: baseline; gap: var(--s-3); flex-wrap: wrap; cursor: pointer; list-style: none; min-height: var(--target); align-items: center; font-weight: 600; }
+.fine-tune > summary::-webkit-details-marker { display: none; }
+.fine-tune > summary::before { content: ""; width: .5rem; height: .5rem; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform var(--t-fast) var(--ease); }
+.fine-tune[open] > summary::before { transform: rotate(45deg); }
+.fine-tune > summary .muted { font-weight: 400; font-size: .88rem; }
+
+/* A card's identity at a glance: an initial or an icon. */
+.id-badge { display: inline-grid; place-items: center; flex: none; width: 2.25rem; height: 2.25rem; border-radius: 10px; background: var(--glaze-soft); color: var(--glaze-ink); font-family: var(--font-display); font-weight: 800; font-size: 1rem; }
+.id-badge .icon { width: 1.15rem; height: 1.15rem; }
+.tenant-head { align-items: center; }
+.tenant-title { display: grid; gap: .1rem; min-width: 0; }
+.tenant-title h3 { margin: 0; }
+.tenant-title p { margin: 0; font-size: .88rem; }
+.add-passkey-intro { display: flex; gap: var(--s-3); align-items: flex-start; margin-bottom: var(--s-3); }
+.add-passkey-intro h3 { margin: 0 0 .15rem; }
+.add-passkey-intro p { margin: 0; font-size: .9rem; max-width: 52ch; }
