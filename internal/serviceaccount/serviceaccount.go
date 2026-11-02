@@ -15,6 +15,13 @@
 // job or a Kubernetes pod, needn't keep a key at all: an account's trust
 // rules say which of its identity provider's tokens it accepts, and
 // [Store.IssueToken] trades one for a short-lived access token.
+//
+// Keys and access tokens are bearer credentials unless they're bound to a
+// key the client holds, with [BoundTo]: then each request must also carry
+// a DPoP proof signed by that key ([RFC 9449]), which the caller checks
+// against [Key.JKT] or [AccessToken.JKT].
+//
+// [RFC 9449]: https://www.rfc-editor.org/rfc/rfc9449.html
 package serviceaccount
 
 import (
@@ -121,7 +128,57 @@ type Key struct {
 	Expires  time.Time `json:"expires"`
 	LastUsed time.Time `json:"last_used,omitzero"`
 
+	// JKT, if set, binds the key to a DPoP key: it's the base64url
+	// SHA-256 JWK thumbprint ([RFC 7638]) of the key's public half.
+	// Requests using a bound key must carry a DPoP proof signed by it
+	// ([RFC 9449, Section 7.1]); the secret alone isn't enough.
+	//
+	// [RFC 7638]: https://www.rfc-editor.org/rfc/rfc7638.html
+	// [RFC 9449, Section 7.1]: https://www.rfc-editor.org/rfc/rfc9449.html#section-7.1
+	JKT string `json:"jkt,omitempty"`
+
 	digest [sha256.Size]byte
+}
+
+// Bound reports whether k is bound to a DPoP key.
+func (k Key) Bound() bool { return k.JKT != "" }
+
+// ValidThumbprint reports whether jkt is shaped like a SHA-256 JWK
+// thumbprint ([RFC 7638, Section 3]): 32 bytes, base64url encoded without
+// padding, canonically.
+//
+// [RFC 7638, Section 3]: https://www.rfc-editor.org/rfc/rfc7638.html#section-3
+func ValidThumbprint(jkt string) bool {
+	if len(jkt) != 43 {
+		return false
+	}
+	b, err := base64.RawURLEncoding.Strict().DecodeString(jkt)
+	return err == nil && len(b) == sha256.Size
+}
+
+// CredentialOption configures a key or access token as it's made.
+type CredentialOption func(*credentialOptions)
+
+type credentialOptions struct {
+	jkt string
+}
+
+// BoundTo binds a key or access token to the DPoP key whose SHA-256 JWK
+// thumbprint is jkt, so it works only with proofs signed by that key.
+func BoundTo(jkt string) CredentialOption {
+	return func(o *credentialOptions) { o.jkt = jkt }
+}
+
+// credentialOf applies opts, checking any thumbprint they bind to.
+func credentialOf(opts []CredentialOption) (credentialOptions, error) {
+	var o credentialOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.jkt != "" && !ValidThumbprint(o.jkt) {
+		return o, fmt.Errorf("%w: jkt must be a base64url SHA-256 JWK thumbprint (RFC 7638)", ErrInvalid)
+	}
+	return o, nil
 }
 
 // Expired reports whether k no longer works at now.
@@ -290,23 +347,34 @@ func (s *Store) remove(drop func(*Account) bool) error {
 }
 
 // AddKey adds a key to an account, expiring at expires, and returns it
-// with its secret, which isn't kept.
-func (s *Store) AddKey(account string, expires time.Time) (Key, string, error) {
+// with its secret, which isn't kept. [BoundTo] binds it to a DPoP key.
+func (s *Store) AddKey(account string, expires time.Time, opts ...CredentialOption) (Key, string, error) {
+	o, err := credentialOf(opts)
+	if err != nil {
+		return Key{}, "", err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a := s.find(account)
 	if a == nil {
 		return Key{}, "", fmt.Errorf("service account %q: %w", account, ErrNotFound)
 	}
-	return s.addKey(a, expires, nil)
+	return s.addKey(a, expires, o, nil)
 }
 
 // RotateKey replaces a key: it adds a new key expiring at expires, and
 // shortens the old key's life to grace from now, so whoever uses it can
 // switch to the new one. A grace of zero revokes the old key at once.
-func (s *Store) RotateKey(account, key string, expires time.Time, grace time.Duration) (Key, string, error) {
+//
+// The new key is bound only as opts say: [BoundTo] binds it to a DPoP
+// key, which may differ from the old key's.
+func (s *Store) RotateKey(account, key string, expires time.Time, grace time.Duration, opts ...CredentialOption) (Key, string, error) {
 	if grace < 0 || grace > MaxGrace {
 		return Key{}, "", fmt.Errorf("%w: the grace period is 0 to %v", ErrInvalid, MaxGrace)
+	}
+	o, err := credentialOf(opts)
+	if err != nil {
+		return Key{}, "", err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -329,12 +397,12 @@ func (s *Store) RotateKey(account, key string, expires time.Time, grace time.Dur
 			keys[j].Expires = until
 		}
 	}
-	return s.addKey(a, expires, retire)
+	return s.addKey(a, expires, o, retire)
 }
 
-// addKey adds a key to a, after applying also to its keys, persisting
-// both or neither. s.mu must be held.
-func (s *Store) addKey(a *Account, expires time.Time, also func([]Key)) (Key, string, error) {
+// addKey adds a key to a, as o says, after applying also to its keys,
+// persisting both or neither. s.mu must be held.
+func (s *Store) addKey(a *Account, expires time.Time, o credentialOptions, also func([]Key)) (Key, string, error) {
 	now := s.now()
 	switch {
 	case !expires.After(now):
@@ -353,7 +421,7 @@ func (s *Store) addKey(a *Account, expires time.Time, also func([]Key)) (Key, st
 	if err != nil {
 		return Key{}, "", err
 	}
-	k := Key{ID: id, Created: now.UTC(), Expires: expires.UTC(), digest: sha256.Sum256([]byte(secret))}
+	k := Key{ID: id, Created: now.UTC(), Expires: expires.UTC(), JKT: o.jkt, digest: sha256.Sum256([]byte(secret))}
 	keys = append(keys, k)
 	if also != nil {
 		also(keys)
@@ -385,41 +453,81 @@ func (s *Store) DeleteKey(account, key string) error {
 }
 
 // Authenticate returns the account and key a secret belongs to, if the
-// key exists and hasn't expired.
+// key exists and hasn't expired, and records that the key was used: it's
+// [Store.Lookup] and [Store.MarkUsed] at once, for keys that need no more
+// checks. A bound key ([Key.Bound]) needs its DPoP proof checked between
+// the two.
+func (s *Store) Authenticate(secret string) (Account, Key, bool) {
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, i, ok := s.lookup(secret, now)
+	if !ok {
+		return Account{}, Key{}, false
+	}
+	s.markUsed(&a.Keys[i], now)
+	view := s.view(a)
+	return view, view.Keys[i], true
+}
+
+// Lookup returns the account and key a secret belongs to, if the key
+// exists and hasn't expired, without recording that it was used.
 //
 // The key's ID, in the secret, finds the key, and the secret's digest is
 // compared in constant time. Key IDs aren't secret, so how long a failure
 // takes may reveal whether a key exists, never anything about its secret.
-func (s *Store) Authenticate(secret string) (Account, Key, bool) {
-	id, ok := keyID(secret)
+func (s *Store) Lookup(secret string) (Account, Key, bool) {
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, i, ok := s.lookup(secret, now)
 	if !ok {
 		return Account{}, Key{}, false
 	}
-	sum := sha256.Sum256([]byte(secret))
-	now := s.now()
+	view := s.view(a)
+	return view, view.Keys[i], true
+}
 
+// MarkUsed records that the key with id authenticated a request. A key
+// that's gone is ignored.
+func (s *Store) MarkUsed(id string) {
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if a := s.keys[id]; a != nil {
+		s.markUsed(&a.Keys[slices.IndexFunc(a.Keys, func(k Key) bool { return k.ID == id })], now)
+	}
+}
+
+// lookup returns the account a secret's key belongs to, and the key's
+// index, if the key exists and hasn't expired at now. s.mu must be held.
+func (s *Store) lookup(secret string, now time.Time) (*Account, int, bool) {
+	id, ok := keyID(secret)
+	if !ok {
+		return nil, 0, false
+	}
+	sum := sha256.Sum256([]byte(secret))
 	a := s.keys[id]
 	if a == nil {
-		return Account{}, Key{}, false
+		return nil, 0, false
 	}
 	i := slices.IndexFunc(a.Keys, func(k Key) bool { return k.ID == id })
 	k := &a.Keys[i]
 	if subtle.ConstantTimeCompare(sum[:], k.digest[:]) != 1 || k.Expired(now) {
-		return Account{}, Key{}, false
+		return nil, 0, false
 	}
+	return a, i, true
+}
 
-	// Remember when the key was used: exactly in memory, and on disk when
-	// what's there is more than lastUsedPrecision old. A failure to save
-	// it doesn't refuse a valid key.
-	s.used[id] = now.UTC()
+// markUsed remembers that k was used at now: exactly in memory, and on
+// disk when what's there is more than lastUsedPrecision old. A failure to
+// save it doesn't refuse a valid key. s.mu must be held.
+func (s *Store) markUsed(k *Key, now time.Time) {
+	s.used[k.ID] = now.UTC()
 	if now.Sub(k.LastUsed) >= lastUsedPrecision {
 		previous := k.LastUsed
 		_ = s.commit(func() { k.LastUsed = now.UTC() }, func() { k.LastUsed = previous })
 	}
-	view := s.view(a)
-	return view, view.Keys[i], true
 }
 
 // find returns the account with id. s.mu must be held.
@@ -558,6 +666,11 @@ type fileKey struct {
 	Created  time.Time `json:"created"`
 	Expires  time.Time `json:"expires"`
 	LastUsed time.Time `json:"last_used,omitzero"`
+
+	// JKT was added after version 1 was; files without it still load.
+	// It's left out of unbound keys, so binaries that predate it, which
+	// reject unknown fields, still load files without bound keys.
+	JKT string `json:"jkt,omitempty"`
 }
 
 // load reads the persisted store, if there is one.
@@ -588,8 +701,8 @@ func (s *Store) load() error {
 		}
 		a.Keys = make([]Key, 0, len(fa.Keys))
 		for _, fk := range fa.Keys {
-			k := Key{ID: fk.ID, Created: fk.Created, Expires: fk.Expires, LastUsed: fk.LastUsed}
-			if len(fk.Digest) != sha256.Size || len(k.ID) != keyIDLen || seen[k.ID] {
+			k := Key{ID: fk.ID, Created: fk.Created, Expires: fk.Expires, LastUsed: fk.LastUsed, JKT: fk.JKT}
+			if len(fk.Digest) != sha256.Size || len(k.ID) != keyIDLen || seen[k.ID] || (k.JKT != "" && !ValidThumbprint(k.JKT)) {
 				return fmt.Errorf("serviceaccount: %s: invalid key %q", s.path, k.ID)
 			}
 			k.digest = [sha256.Size]byte(fk.Digest)
@@ -620,7 +733,7 @@ func (s *Store) save() error {
 	for i, a := range s.accounts {
 		fa := fileAccount{ID: a.ID, Name: a.Name, Tenant: a.Tenant, Role: a.Role, Created: a.Created, CreatedBy: a.CreatedBy, Keys: make([]fileKey, len(a.Keys)), Federation: a.Federation}
 		for j, k := range a.Keys {
-			fa.Keys[j] = fileKey{ID: k.ID, Digest: k.digest[:], Created: k.Created, Expires: k.Expires, LastUsed: k.LastUsed}
+			fa.Keys[j] = fileKey{ID: k.ID, Digest: k.digest[:], Created: k.Created, Expires: k.Expires, LastUsed: k.LastUsed, JKT: k.JKT}
 		}
 		f.Accounts[i] = fa
 	}

@@ -13,7 +13,7 @@ makes it stale.
 | Profiles | per-device policy by DoH path, host name, or address; 93 apps blockable by name; schedules in each profile's time zone; rewrites; local zones | `internal/policy`, `filter`, and `services` tests |
 | Visibility | Activity (query log) with device names learned from the network, stats, a per-hour timeline, live streaming | `internal/querylog` and `hostnames` tests (with `testing/synctest`) |
 | Sharing | tenants (households, customers) with their own profiles, people, and service accounts, seeing nothing of each other | negative tests: other tenants' resources read as not found |
-| Identity | passkey sign-in (WebAuthn, written here), single-use links, service accounts with expiring, rotatable keys, workload identity federation (OIDC token exchange, [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html)) so automation needs no stored secret, setup links for devices, shown as QR codes (an ISO/IEC 18004 encoder written here, drawn in doh's colors with its donut) | negative tests: forged, expired, replayed, revoked, cross-tenant; for federation, wrong issuer, audience, subject, or claims, `alg: none`, HMAC with a public key, unknown keys, over-long tokens, and rate limits, with a mutation check that the tests catch a broken matcher; every QR version, level, and mask, and the branded code as drawn, donut and all, is decoded by ZBar, an independent decoder, in CI; a test checks every module's color in the drawing against the code |
+| Identity | passkey sign-in (WebAuthn, written here), single-use links, service accounts with expiring, rotatable keys, workload identity federation (OIDC token exchange, [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html)) so automation needs no stored secret, DPoP ([RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html)) to bind keys and exchanged tokens to a client's key, setup links for devices, shown as QR codes (an ISO/IEC 18004 encoder written here, drawn in doh's colors with its donut) | negative tests: forged, expired, replayed, revoked, cross-tenant; for federation, wrong issuer, audience, subject, or claims, `alg: none`, HMAC with a public key, unknown keys, over-long tokens, and rate limits, with a mutation check that the tests catch a broken matcher; for DPoP, no proof, the Bearer scheme, another key, wrong method or URL (scheme, host, port, path, origin behind a proxy), stale or future `iat`, replayed `jti`, missing or wrong `ath`, `alg: none`, HMAC, disallowed algorithms, malformed proofs, wrong `typ`, and private keys in `jwk`, with mutation checks that the tests catch a broken `ath`, `jkt`, replay, or scheme check; every QR version, level, and mask, and the branded code as drawn, donut and all, is decoded by ZBar, an independent decoder, in CI; a test checks every module's color in the drawing against the code |
 | Web UI | its own identity ([design.md](design.md)); adaptive shell for phones, tablets, and desktops; ⌘K; the Overview ring; light, dark, high-contrast, and forced colors; keyboard and screen reader use | Go tests on markup and scripts' safety (CSP, no unsafe DOM), node tests for each module, and driven in Chromium at three widths in both themes |
 | Releases | static, reproducible builds for nine platforms, with SHA-256 sums and signed build provenance | `make dist` twice gives identical sums; `gh attestation verify` |
 
@@ -25,18 +25,20 @@ Every change runs `gofmt`, `go vet ./...`, and `go test -race ./...` in CI
 These are also stated where each feature is documented; see
 [protections.md, Limits](protections.md#limits).
 
-- **Credentials are bearer tokens.** Service account keys, exchanged
-  access tokens, and the operator's tokens work for whoever holds them
-  until they expire or are revoked. They aren't yet bound to a client key
-  (DPoP). Federation trusts the identity provider, so rules should be as
+- **Some credentials are bearer tokens.** The operator's tokens, and
+  service account keys and exchanged access tokens that aren't bound with
+  DPoP, work for whoever holds them until they expire or are revoked.
+  Binding is opt-in per key and per trust rule, and the server issues no
+  DPoP nonces, relying on a minute's `iat` window and a per-process replay
+  cache. Federation trusts the identity provider, so rules should be as
   narrow as it allows.
 - **State is per process.** Sessions, setup links, and stats over the
   in-memory query log live in one process; the policy, people, service
   accounts, and log files are on disk. Running several replicas behind a
-  load balancer would need shared storage for these, which doesn't exist
-  yet. One server comfortably serves a large household, school, or small
-  company; past that, scale out with separate servers that follow one
-  policy (`--policy`).
+  load balancer would need shared storage for these, and for DPoP replay
+  caches, which doesn't exist yet. One server comfortably serves a large
+  household, school, or small company; past that, scale out with separate
+  servers that follow one policy (`--policy`).
 - **No alerts.** Things that need attention show on the Overview; nothing
   is pushed to anyone yet.
 - **Detection is heuristic,** names-based, and as good as its lists; see
@@ -50,14 +52,11 @@ In rough order of what it would mean for people using doh:
    service such as ntfy, when a threat is blocked on their network, a
    device appears, or queries start failing. The Overview's "needs
    attention" items are the starting set.
-2. **DPoP** ([RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html)) for
-   service accounts and exchanged tokens, so a leaked token is useless
-   without its key. [`picatz/jose`](https://github.com/picatz/jose) has
-   `dpop`, verifier and client.
-3. **Shared state for replicas:** sessions, setup links, and stats behind
-   an interface with a SQLite (single node) and a networked backend.
-4. **Signed configuration profiles** for Apple devices, so they don't
+2. **Shared state for replicas:** sessions, setup links, stats, and DPoP
+   replay caches behind an interface with a SQLite (single node) and a
+   networked backend.
+3. **Signed configuration profiles** for Apple devices, so they don't
    show as unverified.
-5. **DoH over HTTP/3,** tracked in
+4. **DoH over HTTP/3,** tracked in
    [picatz/doh#73](https://github.com/picatz/doh/issues/73), waiting on
    Go's own HTTP/3.

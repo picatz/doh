@@ -97,6 +97,15 @@ type TrustRule struct {
 	// 3600. Zero means [DefaultTokenLifetime].
 	TokenLifetime int `json:"token_lifetime,omitzero"`
 
+	// RequireDPoP refuses exchanges without a DPoP proof
+	// ([RFC 9449, Section 5]), so every access token the rule issues is
+	// bound to the key that signed the exchange's proof. It's left out
+	// when false, so binaries that predate it, which reject unknown
+	// fields, still load files that don't use it.
+	//
+	// [RFC 9449, Section 5]: https://www.rfc-editor.org/rfc/rfc9449.html#section-5
+	RequireDPoP bool `json:"require_dpop,omitzero"`
+
 	// Created is when the rule was added, and CreatedBy who added it.
 	Created   time.Time `json:"created"`
 	CreatedBy string    `json:"created_by,omitempty"`
@@ -322,14 +331,26 @@ type AccessToken struct {
 	// working.
 	Issued  time.Time
 	Expires time.Time
+
+	// JKT, if set, binds the token to a DPoP key, as [Key.JKT] does.
+	JKT string
 }
+
+// Bound reports whether t is bound to a DPoP key.
+func (t AccessToken) Bound() bool { return t.JKT != "" }
 
 // IssueToken issues an access token for account under rule, to subject,
 // lasting the rule's token lifetime, and returns it with its secret,
-// which isn't kept.
+// which isn't kept. [BoundTo] binds it to the key of the exchange's DPoP
+// proof, which a rule with [TrustRule.RequireDPoP] insists on.
 //
-// The caller has verified that the rule accepts the workload's token.
-func (s *Store) IssueToken(account, rule, subject string) (AccessToken, string, error) {
+// The caller has verified that the rule accepts the workload's token,
+// and the DPoP proof, if there is one.
+func (s *Store) IssueToken(account, rule, subject string, opts ...CredentialOption) (AccessToken, string, error) {
+	o, err := credentialOf(opts)
+	if err != nil {
+		return AccessToken{}, "", err
+	}
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return AccessToken{}, "", err
@@ -347,9 +368,12 @@ func (s *Store) IssueToken(account, rule, subject string) (AccessToken, string, 
 		return AccessToken{}, "", fmt.Errorf("trust rule %q: %w", rule, ErrNotFound)
 	}
 	r := a.Federation[i]
+	if r.RequireDPoP && o.jkt == "" {
+		return AccessToken{}, "", fmt.Errorf("%w: trust rule %q issues only DPoP-bound access tokens", ErrInvalid, rule)
+	}
 
 	now := s.now().UTC()
-	t := &AccessToken{Account: a.ID, Rule: r.ID, Issuer: r.Issuer, Subject: subject, Issued: now, Expires: now.Add(r.Lifetime())}
+	t := &AccessToken{Account: a.ID, Rule: r.ID, Issuer: r.Issuer, Subject: subject, Issued: now, Expires: now.Add(r.Lifetime()), JKT: o.jkt}
 	s.makeRoom(now)
 	s.tokens[sha256.Sum256([]byte(secret))] = t
 	return *t, secret, nil

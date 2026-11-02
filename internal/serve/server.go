@@ -32,6 +32,7 @@ import (
 	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/pkg/doh"
+	"github.com/picatz/jose/pkg/dpop"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/sync/errgroup"
@@ -99,6 +100,12 @@ type Server struct {
 	federation      federation.Verifier
 	exchangeLimiter *ratelimit.Limiter
 
+	// proofs verifies the DPoP proofs of requests with bound credentials,
+	// and exchangeProofs those of token exchanges, each remembering the
+	// proofs it accepted, so none is accepted twice. They're apart so
+	// exchanges, which anyone can attempt, can't crowd out the others.
+	proofs, exchangeProofs *dpop.Verifier
+
 	trustedProxies []netip.Prefix
 
 	// listeners records the addresses served on, by kind, for status.
@@ -136,6 +143,8 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 
 		signinLimiter:   newSigninLimiter(),
 		exchangeLimiter: newExchangeLimiter(),
+		proofs:          newProofVerifier(),
+		exchangeProofs:  newProofVerifier(),
 		setupLinks:      newSetupLinks(),
 	}
 

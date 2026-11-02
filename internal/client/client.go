@@ -23,6 +23,8 @@ import (
 	"github.com/picatz/doh/internal/querylog"
 	"github.com/picatz/doh/internal/serviceaccount"
 	"github.com/picatz/doh/internal/signin"
+	"github.com/picatz/jose/pkg/dpop"
+	"github.com/picatz/jose/pkg/dpop/dpophttp"
 )
 
 // DefaultAddr is the admin listener address clients use by default.
@@ -49,6 +51,19 @@ type Client struct {
 	// credential, it's only sent over HTTPS, or plain HTTP to a loopback
 	// address.
 	Token string
+
+	// DPoP, if set, signs a DPoP proof ([RFC 9449]) for every request, as
+	// a credential bound to its key needs: Token is then sent as
+	// "Authorization: DPoP <token>", with a proof bound to it
+	// ([RFC 9449, Section 7.1]), and a token exchange gets an access
+	// token bound to the key ([RFC 9449, Section 5]). Each proof is made
+	// when its request is, and a server accepts it once, so a request
+	// isn't to be sent twice.
+	//
+	// [RFC 9449]: https://www.rfc-editor.org/rfc/rfc9449.html
+	// [RFC 9449, Section 7.1]: https://www.rfc-editor.org/rfc/rfc9449.html#section-7.1
+	// [RFC 9449, Section 5]: https://www.rfc-editor.org/rfc/rfc9449.html#section-5
+	DPoP *dpop.Signer
 
 	// HTTPClient sends requests. If nil, a client with a 30-second timeout
 	// is used, and streams use a client without one.
@@ -128,8 +143,9 @@ func (c *Client) request(ctx context.Context, method, path string, q url.Values,
 }
 
 // newRequest builds a request as request does, sending token, if it's
-// not empty, as a bearer token. If credential, the request carries one,
-// so it's refused over plain HTTP to a remote host.
+// not empty, as a bearer token, or with the DPoP scheme and a proof if
+// c.DPoP is set. If credential, the request carries one, so it's refused
+// over plain HTTP to a remote host.
 func (c *Client) newRequest(ctx context.Context, method, path string, q url.Values, body io.Reader, token string, credential bool) (*http.Request, error) {
 	u, err := c.base(credential)
 	if err != nil {
@@ -151,7 +167,17 @@ func (c *Client) newRequest(ctx context.Context, method, path string, q url.Valu
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/json")
-	if token != "" {
+	switch {
+	case c.DPoP != nil:
+		proof, err := dpophttp.ProofForRequest(c.DPoP, req, dpop.ProofOptions{AccessToken: token})
+		if err != nil {
+			return nil, fmt.Errorf("doh: signing the DPoP proof: %w", err)
+		}
+		req.Header.Set(dpop.HeaderName, proof)
+		if token != "" {
+			req.Header.Set("Authorization", dpop.AuthorizationScheme+" "+token)
+		}
+	case token != "":
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	return req, nil
@@ -441,7 +467,9 @@ func (c *Client) DeleteTrustRule(ctx context.Context, account, rule string) erro
 // ExchangeToken trades a workload's identity token for a service
 // account's short-lived access token ([RFC 8693, Section 2]). It sends no
 // API token of its own. Since the identity token is a credential, it's
-// only sent over HTTPS, or plain HTTP to a loopback address.
+// only sent over HTTPS, or plain HTTP to a loopback address. With
+// c.DPoP set, it sends a DPoP proof, and the access token is bound to
+// c.DPoP's key: its TokenType is "DPoP".
 //
 // A refusal is an [*Error] whose message is the OAuth error code and
 // description ([RFC 6749, Section 5.2]).

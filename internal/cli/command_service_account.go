@@ -3,6 +3,7 @@ package cli
 import (
 	"cmp"
 	"context"
+	"crypto/ecdsa"
 	"fmt"
 	"io"
 	"os"
@@ -44,6 +45,7 @@ operator's token.
 Accounts can be named by ID or, when it's unique, by name; keys by ID.`,
 		Example: `  doh service-account create "Home Assistant"
   doh sa create Backups --admin --secret-file backups.key
+  doh sa create Backups --admin --dpop --secret-file backups.key
   doh sa list
   doh sa key rotate "Home Assistant" --grace 1h
   doh sa create CI --admin --no-key
@@ -103,7 +105,11 @@ func printAccounts(w io.Writer, accounts []serviceaccount.Account, now time.Time
 		}
 		id, name, role := a.ID, a.Name, string(a.Role)
 		for _, k := range a.Keys {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, name, tenant, role, k.ID, expiry(k, now), ago(k.LastUsed, now))
+			key := k.ID
+			if k.Bound() {
+				key += " (DPoP)"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, name, tenant, role, key, expiry(k, now), ago(k.LastUsed, now))
 			id, name, tenant, role = "", "", "", "" // later rows are the same account's
 		}
 	}
@@ -139,12 +145,20 @@ func until(t, now time.Time) string {
 type secretFlags struct {
 	expires string
 	file    string
+	dpop    bool
+
+	// key is the DPoP key the new key is bound to, with dpop.
+	key *ecdsa.PrivateKey
 }
 
 func addSecretFlags(cmd *cobra.Command, s *secretFlags) {
 	cmd.Flags().StringVar(&s.expires, "expires", "90d", "how long the key lasts, such as 30d or 12h; at most 366d")
 	cmd.Flags().StringVar(&s.file, "secret-file", "", "write the key's secret to this new file, readable only by you, instead of printing it")
+	cmd.Flags().BoolVar(&s.dpop, "dpop", false, "bind the key to a new DPoP key, written beside --secret-file as FILE"+dpopKeySuffix+", so the secret alone doesn't work")
 }
+
+// dpopFile is where the DPoP key is written, with dpop.
+func (s *secretFlags) dpopFile() string { return s.file + dpopKeySuffix }
 
 // lifetime parses a key lifetime: a Go duration such as 12h, or a number
 // of days such as 90d.
@@ -166,29 +180,53 @@ func lifetime(s string) (time.Duration, error) {
 
 // check reports a problem delivering a secret before anything is made.
 func (s *secretFlags) check() error {
+	if s.dpop && s.file == "" {
+		return fmt.Errorf("--dpop needs --secret-file, to write the key's secret and its DPoP key to")
+	}
 	if s.file == "" {
 		return nil
 	}
 	if _, err := os.Lstat(s.file); err == nil {
 		return fmt.Errorf("--secret-file %s already exists; choose a new file", s.file)
 	}
+	if _, err := os.Lstat(s.dpopFile()); s.dpop && err == nil {
+		return fmt.Errorf("%s already exists; choose a new --secret-file", s.dpopFile())
+	}
 	return nil
+}
+
+// jkt makes the DPoP key, with dpop, and returns its thumbprint, for the
+// new key to be bound to; or, without dpop, nothing.
+func (s *secretFlags) jkt() (string, error) {
+	if !s.dpop {
+		return "", nil
+	}
+	key, err := client.GenerateDPoPKey()
+	if err != nil {
+		return "", err
+	}
+	signer, err := client.NewDPoPSigner(key)
+	if err != nil {
+		return "", err
+	}
+	s.key = key
+	return signer.Thumbprint(), nil
 }
 
 // deliver hands over a new key's secret: written to the secret file, or
 // printed with what to do with it.
 func (s *secretFlags) deliver(w io.Writer, k *api.NewKey, asJSON bool) error {
+	if s.key != nil {
+		pem, err := client.MarshalDPoPKey(s.key)
+		if err == nil {
+			err = writeNewFile(s.dpopFile(), pem)
+		}
+		if err != nil {
+			return fmt.Errorf("the key was made, but writing its DPoP key failed, so revoke it (doh sa key revoke %s %s): %w", k.Account, k.Key.ID, err)
+		}
+	}
 	if s.file != "" {
-		// O_EXCL: never overwrite, and so never follow, an existing file.
-		f, err := os.OpenFile(s.file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			return fmt.Errorf("the key was made, but writing its secret failed, so revoke it (doh sa key revoke %s %s): %w", k.Account, k.Key.ID, err)
-		}
-		_, err = io.WriteString(f, k.Secret+"\n")
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
+		if err := writeNewFile(s.file, []byte(k.Secret+"\n")); err != nil {
 			return fmt.Errorf("the key was made, but writing its secret failed, so revoke it (doh sa key revoke %s %s): %w", k.Account, k.Key.ID, err)
 		}
 		k.Secret = "" // not printed, even as JSON
@@ -198,7 +236,12 @@ func (s *secretFlags) deliver(w io.Writer, k *api.NewKey, asJSON bool) error {
 	}
 
 	now := time.Now()
-	if s.file != "" {
+	switch {
+	case s.key != nil:
+		fmt.Fprintf(w, "Key %s written to %s, bound to the DPoP key in %s. It expires %s.\n", k.Key.ID, s.file, s.dpopFile(), expiry(k.Key, now))
+		fmt.Fprintf(w, "Use it with doh's --token-file %s, which signs with %s; the secret alone doesn't work.\n", s.file, s.dpopFile())
+		return nil
+	case s.file != "":
 		fmt.Fprintf(w, "Key %s written to %s. It expires %s.\n", k.Key.ID, s.file, expiry(k.Key, now))
 		fmt.Fprintf(w, "Use it with doh's --token-file %s, or as a bearer token.\n", s.file)
 		return nil
@@ -221,7 +264,10 @@ func newServiceAccountCreateCommand() *cobra.Command {
 		Long: `Make a service account, a reader unless --admin, and its first key, shown once.
 
 A tenant's admins make service accounts for their own tenant; the operator may
-make them for any tenant with --tenant, or for itself.`,
+make them for any tenant with --tenant, or for itself.
+
+--dpop binds the key to a new DPoP key, written beside --secret-file, so the
+secret alone doesn't work; see "doh sa key add --help".`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 	}
@@ -235,10 +281,17 @@ make them for any tenant with --tenant, or for itself.`,
 		if err != nil && !noKey {
 			return fmt.Errorf("--expires: %w", err)
 		}
+		if noKey && secret.dpop {
+			return fmt.Errorf("--dpop binds the account's first key; leave it out with --no-key")
+		}
 		if err := secret.check(); err != nil {
 			return err
 		}
 		c, err := f.client()
+		if err != nil {
+			return err
+		}
+		jkt, err := secret.jkt()
 		if err != nil {
 			return err
 		}
@@ -259,7 +312,7 @@ make them for any tenant with --tenant, or for itself.`,
 			fmt.Fprintf(w, "Made %s. Add a key with: doh sa key add %s\n", describeAccount(*a), a.ID)
 			return nil
 		}
-		k, err := c.AddServiceAccountKey(cmd.Context(), a.ID, api.KeyRequest{Expires: time.Now().Add(d)})
+		k, err := c.AddServiceAccountKey(cmd.Context(), a.ID, api.KeyRequest{Expires: time.Now().Add(d), JKT: jkt})
 		if err != nil {
 			return fmt.Errorf("made service account %s, but not its key: %w", a.ID, err)
 		}
@@ -314,8 +367,18 @@ func newServiceAccountDeleteCommand() *cobra.Command {
 func newKeyAddCommand() *cobra.Command {
 	var secret secretFlags
 	cmd := &cobra.Command{
-		Use:          "add <account>",
-		Short:        "Add a key to a service account, shown once",
+		Use:   "add <account>",
+		Short: "Add a key to a service account, shown once",
+		Long: `Add a key to a service account, shown once.
+
+--dpop binds the key to a new DPoP key (RFC 9449), an ECDSA P-256 key made here,
+so the secret alone doesn't work: each request needs a proof signed by it. The
+secret is written to --secret-file, and the DPoP key, as PEM, beside it in
+FILE.dpop; both are new files readable only by you. doh's --token-file FILE
+finds FILE.dpop on its own.`,
+		Example: `  doh sa key add "Home Assistant" --secret-file ha.key
+  doh sa key add CI --dpop --secret-file ci.key
+  doh status --token-file ci.key`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 	}
@@ -337,7 +400,11 @@ func newKeyAddCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		k, err := c.AddServiceAccountKey(cmd.Context(), a.ID, api.KeyRequest{Expires: time.Now().Add(d)})
+		jkt, err := secret.jkt()
+		if err != nil {
+			return err
+		}
+		k, err := c.AddServiceAccountKey(cmd.Context(), a.ID, api.KeyRequest{Expires: time.Now().Add(d), JKT: jkt})
 		if err != nil {
 			return err
 		}
@@ -358,7 +425,9 @@ func newKeyRotateCommand() *cobra.Command {
 working when --grace is up: at once by default, or up to a week later, so
 automation can switch to the new key first.
 
-The key may be left out when the account has only one that still works.`,
+The key may be left out when the account has only one that still works. The
+new key is bound to a new DPoP key if the old one was bound, or with --dpop;
+--dpop=false makes it a bearer key.`,
 		Example: `  doh sa key rotate "Home Assistant"
   doh sa key rotate ci 3f2a9c0d1e4b5a67 --grace 1h --secret-file ci.key`,
 		Args:         cobra.RangeArgs(1, 2),
@@ -390,9 +459,20 @@ The key may be left out when the account has only one that still works.`,
 		if err != nil {
 			return err
 		}
+		// A bound key's replacement is bound too, unless --dpop says.
+		if !cmd.Flags().Changed("dpop") {
+			secret.dpop = slices.ContainsFunc(a.Keys, func(k serviceaccount.Key) bool { return k.ID == key && k.Bound() })
+			if err := secret.check(); err != nil {
+				return fmt.Errorf("key %s is bound to a DPoP key, so its replacement is too: %w", key, err)
+			}
+		}
+		jkt, err := secret.jkt()
+		if err != nil {
+			return err
+		}
 
 		now := time.Now()
-		req := api.RotateKeyRequest{Expires: now.Add(d)}
+		req := api.RotateKeyRequest{Expires: now.Add(d), JKT: jkt}
 		if grace > 0 {
 			req.PreviousExpires = now.Add(grace)
 		}

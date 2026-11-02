@@ -13,6 +13,7 @@ import (
 	"github.com/picatz/doh/internal/api"
 	"github.com/picatz/doh/internal/client"
 	"github.com/picatz/doh/internal/serviceaccount"
+	"github.com/picatz/jose/pkg/dpop"
 	"github.com/spf13/cobra"
 )
 
@@ -64,7 +65,11 @@ request their token with the rule's audience.
 
 The audience defaults to the server's admin origin, if it has one. Keys come
 from the issuer's OpenID Connect discovery document, unless --jwks-url says
-where; keys on another host than the issuer's need --jwks-url.`,
+where; keys on another host than the issuer's need --jwks-url.
+
+--require-dpop refuses exchanges without a DPoP proof (RFC 9449), so every
+access token the rule issues is bound to a key the workload holds, and is
+useless if it leaks on its own.`,
 		Example: `  doh sa trust add CI --github-repo octo/app --audience https://dns.example.com
   doh sa trust add CI --github-repo octo/app --github-ref 'refs/heads/*' \
     --claim repository_id=123456789`,
@@ -81,6 +86,7 @@ where; keys on another host than the issuer's need --jwks-url.`,
 	fs.StringVar(&githubRepo, "github-repo", "", "trust GitHub Actions workflows of this repository, as owner/repo")
 	fs.StringVar(&githubRef, "github-ref", "refs/heads/main", "with --github-repo, the Git ref workflows must run on")
 	fs.DurationVar(&tokenLasting, "token-lifetime", 0, "how long access tokens last, 1m to 1h (default 15m)")
+	fs.BoolVar(&req.RequireDPoP, "require-dpop", false, "refuse exchanges without a DPoP proof, so every access token is bound to a key")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if githubRepo != "" {
 			if req.Issuer != "" || req.Subject != "" {
@@ -134,6 +140,10 @@ where; keys on another host than the issuer's need --jwks-url.`,
 			return printJSON(w, r)
 		}
 		fmt.Fprintf(w, "%q (%s) now trusts %s tokens for %s, with audience %s, as rule %s.\n", a.Name, a.ID, r.Issuer, r.Subject, r.Audience, r.ID)
+		if r.RequireDPoP {
+			fmt.Fprintf(w, "Exchange one for a DPoP-bound access token lasting %v with:\n\n  doh token exchange --account %s --subject-token-file <file> --new-dpop-key <file>\n", r.Lifetime(), a.ID)
+			return nil
+		}
 		fmt.Fprintf(w, "Exchange one for an access token lasting %v with:\n\n  doh token exchange --account %s --subject-token-file <file>\n", r.Lifetime(), a.ID)
 		return nil
 	}
@@ -178,13 +188,17 @@ func newTrustListCommand() *cobra.Command {
 // printTrustRules writes rules as a table.
 func printTrustRules(w io.Writer, rules []serviceaccount.TrustRule) {
 	tw := newTable(w)
-	fmt.Fprintln(tw, "ID\tISSUER\tSUBJECT\tAUDIENCE\tCLAIMS\tTOKENS LAST")
+	fmt.Fprintln(tw, "ID\tISSUER\tSUBJECT\tAUDIENCE\tCLAIMS\tTOKENS LAST\tDPOP")
 	for _, r := range rules {
 		claims := make([]string, 0, len(r.Claims))
 		for _, name := range slices.Sorted(maps.Keys(r.Claims)) {
 			claims = append(claims, name+"="+r.Claims[name])
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%v\n", r.ID, r.Issuer, r.Subject, r.Audience, cmp.Or(strings.Join(claims, ","), "-"), r.Lifetime())
+		dpop := "optional"
+		if r.RequireDPoP {
+			dpop = "required"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%v\t%s\n", r.ID, r.Issuer, r.Subject, r.Audience, cmp.Or(strings.Join(claims, ","), "-"), r.Lifetime(), dpop)
 	}
 	_ = tw.Flush()
 }
@@ -215,6 +229,28 @@ func newTrustRemoveCommand() *cobra.Command {
 	return cmd
 }
 
+// newDPoPKeyFile makes a new DPoP key, an ECDSA P-256 key, writes it to a
+// new file at path, readable only by its owner, and returns a signer of
+// proofs with it.
+func newDPoPKeyFile(path string) (*dpop.Signer, error) {
+	key, err := client.GenerateDPoPKey()
+	if err != nil {
+		return nil, err
+	}
+	signer, err := client.NewDPoPSigner(key)
+	if err != nil {
+		return nil, err
+	}
+	pem, err := client.MarshalDPoPKey(key)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeNewFile(path, pem); err != nil {
+		return nil, fmt.Errorf("writing the DPoP key: %w", err)
+	}
+	return signer, nil
+}
+
 // newTokenCommand returns "doh token".
 func newTokenCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -229,6 +265,7 @@ func newTokenCommand() *cobra.Command {
 func newTokenExchangeCommand() *cobra.Command {
 	var (
 		addr, account, file string
+		dpopKey, newDPoPKey string
 		idToken, asJSON     bool
 	)
 	cmd := &cobra.Command{
@@ -239,8 +276,19 @@ token, for a short-lived access token of a service account that trusts it
 (see "doh sa trust"), and print the access token. It needs no API token.
 
 The identity token is read from --subject-token-file, or standard input with
-"-". Use the access token as DOH_TOKEN.`,
+"-". Use the access token as DOH_TOKEN.
+
+With --dpop-key (DOH_DPOP_KEY_FILE), or a key --new-dpop-key makes, the exchange
+carries a DPoP proof (RFC 9449), and the access token is bound to that key: it
+works only with proofs signed by it, so use it with the same DOH_DPOP_KEY_FILE.
+A key is a PEM file: ECDSA P-256, Ed25519, or RSA.`,
 		Example: `  export DOH_TOKEN="$(doh token exchange --account abcdefghijklmnop --subject-token-file id.jwt)"
+  doh status
+
+  # Bound to a new key, made for this job
+  export DOH_DPOP_KEY_FILE="$RUNNER_TEMP/dpop.pem"
+  export DOH_TOKEN="$(doh token exchange --account abcdefghijklmnop --subject-token-file id.jwt \
+    --new-dpop-key "$DOH_DPOP_KEY_FILE")"
   doh status`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
@@ -251,11 +299,12 @@ The identity token is read from --subject-token-file, or standard input with
 	fs.StringVar(&file, "subject-token-file", "", "file holding the identity token, or - for standard input")
 	fs.BoolVar(&idToken, "id-token", false, "send the token as an OpenID Connect ID token, not a plain JWT")
 	fs.BoolVar(&asJSON, "json", false, "print the whole token response as JSON")
+	fs.StringVar(&dpopKey, "dpop-key", os.Getenv(envDPoPKeyFile), "PEM file of a DPoP key to bind the access token to ("+envDPoPKeyFile+")")
+	fs.StringVar(&newDPoPKey, "new-dpop-key", "", "make a new DPoP key in this new file, readable only by you, and bind the access token to it")
 	_ = cmd.MarkFlagRequired("account")
 	_ = cmd.MarkFlagRequired("subject-token-file")
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+	cmd.RunE = func(cmd *cobra.Command, args []string) (err error) {
 		var b []byte
-		var err error
 		if file == "-" {
 			b, err = io.ReadAll(io.LimitReader(cmd.InOrStdin(), 64<<10))
 		} else {
@@ -273,7 +322,27 @@ The identity token is read from --subject-token-file, or standard input with
 			req.SubjectTokenType = api.TokenTypeIDToken
 		}
 
-		tr, err := (&client.Client{Addr: addr}).ExchangeToken(cmd.Context(), req)
+		c := &client.Client{Addr: addr}
+		switch {
+		case newDPoPKey != "" && cmd.Flags().Changed("dpop-key"):
+			return fmt.Errorf("--new-dpop-key makes the DPoP key; leave out --dpop-key")
+		case newDPoPKey != "":
+			if c.DPoP, err = newDPoPKeyFile(newDPoPKey); err != nil {
+				return err
+			}
+			// A key no token is bound to is no use.
+			defer func() {
+				if err != nil {
+					_ = os.Remove(newDPoPKey)
+				}
+			}()
+		case dpopKey != "":
+			if c.DPoP, err = readDPoPKey(dpopKey); err != nil {
+				return err
+			}
+		}
+
+		tr, err := c.ExchangeToken(cmd.Context(), req)
 		if err != nil {
 			return err
 		}

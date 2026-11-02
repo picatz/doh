@@ -24,21 +24,27 @@ import (
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
 	"github.com/picatz/doh/internal/serve"
+	"github.com/picatz/jose/pkg/dpop"
 	"github.com/spf13/cobra"
 )
 
 // Environment variables the client commands read, in the style of
 // VAULT_ADDR and VAULT_TOKEN.
 const (
-	envAddr      = "DOH_ADDR"
-	envToken     = "DOH_TOKEN"
-	envTokenFile = "DOH_TOKEN_FILE"
+	envAddr        = "DOH_ADDR"
+	envToken       = "DOH_TOKEN"
+	envTokenFile   = "DOH_TOKEN_FILE"
+	envDPoPKeyFile = "DOH_DPOP_KEY_FILE"
 )
+
+// dpopKeySuffix names the file beside a key's secret file that holds the
+// DPoP private key it's bound to.
+const dpopKeySuffix = ".dpop"
 
 // clientFlags are the connection flags every client command shares.
 type clientFlags struct {
-	addr, token, tokenFile string
-	json                   bool
+	addr, token, tokenFile, dpopKey string
+	json                            bool
 }
 
 // defaultTokenFile is where doh serve writes its admin token by default.
@@ -58,14 +64,16 @@ func addClientFlags(cmd *cobra.Command) *clientFlags {
 	fs.StringVar(&f.addr, "addr", cmp.Or(os.Getenv(envAddr), client.DefaultAddr), "admin API address of the doh server ("+envAddr+")")
 	fs.StringVar(&f.token, "token", os.Getenv(envToken), "API token ("+envToken+")")
 	fs.StringVar(&f.tokenFile, "token-file", cmp.Or(os.Getenv(envTokenFile), defaultTokenFile()), "file to read the API token from if --token isn't set ("+envTokenFile+")")
+	fs.StringVar(&f.dpopKey, "dpop-key", os.Getenv(envDPoPKeyFile), "PEM file of the DPoP key a bound token needs, to sign each request with; defaults to the token file's "+dpopKeySuffix+" sibling, if there is one ("+envDPoPKeyFile+")")
 	fs.BoolVar(&f.json, "json", false, "print JSON instead of text")
 	return f
 }
 
 // client returns an API client for the flags, reading the token file if
-// no token was given.
+// no token was given, and the DPoP key, if there is one.
 func (f *clientFlags) client() (*client.Client, error) {
 	token := strings.TrimSpace(f.token)
+	dpopKey := f.dpopKey
 	if token == "" && f.tokenFile != "" {
 		b, err := os.ReadFile(f.tokenFile)
 		switch {
@@ -75,8 +83,51 @@ func (f *clientFlags) client() (*client.Client, error) {
 			return nil, fmt.Errorf("reading API token: %w", err)
 		}
 		token = strings.TrimSpace(string(b))
+
+		// A bound key's secret file has its DPoP key beside it.
+		if _, err := os.Stat(f.tokenFile + dpopKeySuffix); dpopKey == "" && err == nil {
+			dpopKey = f.tokenFile + dpopKeySuffix
+		}
 	}
-	return &client.Client{Addr: f.addr, Token: token}, nil
+	c := &client.Client{Addr: f.addr, Token: token}
+	if dpopKey != "" {
+		signer, err := readDPoPKey(dpopKey)
+		if err != nil {
+			return nil, err
+		}
+		c.DPoP = signer
+	}
+	return c, nil
+}
+
+// readDPoPKey reads a DPoP key from the PEM file at path.
+func readDPoPKey(path string) (*dpop.Signer, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading the DPoP key: %w", err)
+	}
+	signer, err := client.ParseDPoPKey(b)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return signer, nil
+}
+
+// writeNewFile writes data to a new file at path, readable only by its
+// owner. It never overwrites, and so never follows, an existing file.
+func writeNewFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+	}
+	return err
 }
 
 // printJSON writes v as indented JSON.

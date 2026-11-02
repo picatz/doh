@@ -28,6 +28,7 @@ import (
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/querylog"
 	"github.com/picatz/doh/internal/services"
+	"github.com/picatz/jose/pkg/dpop"
 )
 
 // maxAPIBody bounds API request bodies.
@@ -92,10 +93,13 @@ func (s *Server) apiHandler() http.Handler {
 	return outer
 }
 
-// authorize requires a bearer token ([RFC 6750, Section 2.1]): any token
-// for GET requests, and an admin token for everything else.
+// authorize requires a bearer token ([RFC 6750, Section 2.1]), or a
+// signed-in browser: any for GET requests, and an admin's for everything
+// else. A credential bound to a DPoP key must instead come with the DPoP
+// scheme and a proof by that key ([RFC 9449, Section 7.1]).
 //
 // [RFC 6750, Section 2.1]: https://www.rfc-editor.org/rfc/rfc6750.html#section-2.1
+// [RFC 9449, Section 7.1]: https://www.rfc-editor.org/rfc/rfc9449.html#section-7.1
 func (s *Server) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -105,20 +109,30 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 			return
 		}
 
-		// A bearer token, from the CLI or automation: a service account's
-		// key, or the operator's own token. Otherwise, a browser's
-		// signed-in session.
+		// A token, from the CLI or automation: a service account's key or
+		// access token, or the operator's own token. Otherwise, a
+		// browser's signed-in session.
 		p, _ := s.sessionPrincipal(r)
-		if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
-			p = s.tokenPrincipal(strings.TrimSpace(token))
+		var refused refusal
+		token, isDPoP, ok := credential(r)
+		if ok {
+			p, refused = s.tokenPrincipal(r, token, isDPoP)
 		}
 
 		switch {
 		case p.role == roleNone:
-			w.Header().Set("WWW-Authenticate", `Bearer realm="doh"`)
-			writeError(w, http.StatusUnauthorized, "sign in, or send a valid bearer token")
+			challenge(w, refused)
+			msg := "sign in, or send a valid bearer token"
+			if refused.code == errInvalidProof {
+				msg = "the DPoP proof wasn't accepted; send a new proof, signed by the credential's key, with each request"
+			}
+			writeError(w, http.StatusUnauthorized, msg)
 		case p.role == roleReader && r.Method != http.MethodGet && r.Method != http.MethodHead:
-			w.Header().Set("WWW-Authenticate", `Bearer realm="doh", error="insufficient_scope"`)
+			scheme := "Bearer"
+			if isDPoP {
+				scheme = dpop.AuthorizationScheme
+			}
+			w.Header().Set("WWW-Authenticate", scheme+` realm="doh", error="insufficient_scope"`)
 			writeError(w, http.StatusForbidden, "this credential can only read; use an admin's to make changes")
 		default:
 			next.ServeHTTP(w, withPrincipal(r, p))
@@ -126,29 +140,44 @@ func (s *Server) authorize(next http.Handler) http.Handler {
 	})
 }
 
-// tokenPrincipal returns who a bearer token belongs to.
-func (s *Server) tokenPrincipal(token string) principal {
+// tokenPrincipal returns who token, sent with r, belongs to, with the
+// DPoP scheme if isDPoP, or else why it's refused. Credentials bound to a
+// DPoP key need a valid proof by it.
+func (s *Server) tokenPrincipal(r *http.Request, token string, isDPoP bool) (principal, refusal) {
+	var (
+		p   principal
+		jkt string
+		key string // the service account key's ID, to record its use
+	)
 	switch {
 	case serviceaccount.IsSecret(token):
-		a, k, ok := s.accounts.Authenticate(token)
-		if !ok {
-			return principal{} // revoked or expired
+		// Looked up, not yet marked used: a bound key isn't used until
+		// its proof is checked.
+		if a, k, ok := s.accounts.Lookup(token); ok { // otherwise revoked or expired
+			p, jkt, key = s.accountPrincipal(a, "service account "+a.ID+" key "+k.ID), k.JKT, k.ID
 		}
-		return s.accountPrincipal(a, "service account "+a.ID+" key "+k.ID)
 	case serviceaccount.IsAccessToken(token):
-		a, t, ok := s.accounts.AuthenticateToken(token)
-		if !ok {
-			return principal{} // expired, or its account or rule is gone
+		if a, t, ok := s.accounts.AuthenticateToken(token); ok { // otherwise expired, or its account or rule is gone
+			p, jkt = s.accountPrincipal(a, "service account "+a.ID+" via "+t.Issuer), t.JKT
 		}
-		return s.accountPrincipal(a, "service account "+a.ID+" via "+t.Issuer)
+	default:
+		switch role := s.tokens.roleOf(token); role {
+		case roleAdmin:
+			p = principal{role: role, by: "admin token"}
+		case roleReader:
+			p = principal{role: role, by: "reader token"}
+		}
 	}
-	switch r := s.tokens.roleOf(token); r {
-	case roleAdmin:
-		return principal{role: r, by: "admin token"}
-	case roleReader:
-		return principal{role: r, by: "reader token"}
+	if p.role == roleNone {
+		return principal{}, refusal{dpop: isDPoP, code: errInvalidToken}
 	}
-	return principal{}
+	if refused, ok := s.checkBinding(r, token, jkt, isDPoP, p.by); !ok {
+		return principal{}, refused
+	}
+	if key != "" {
+		s.accounts.MarkUsed(key)
+	}
+	return p, refusal{}
 }
 
 // accountPrincipal returns the principal of service account a, if its
