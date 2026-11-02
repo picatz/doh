@@ -116,6 +116,9 @@ type Server struct {
 	// alertPageLimiter slows down clients trying wrong codes and tokens
 	// on the pages alert emails link to.
 	alertPageLimiter *ratelimit.Limiter
+	// seen remembers the devices the server has answered, so the web UI
+	// can tell when one it just set up connects.
+	seen *seenDevices
 
 	// federation verifies workloads' identity tokens for token exchange,
 	// and exchangeLimiter slows down clients whose exchanges fail.
@@ -178,6 +181,7 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		exchangeLimiter:  newExchangeLimiter(),
 		alertPageLimiter: newAlertPageLimiter(),
 		adminHosts:       adminHostPatterns(config),
+		seen:             newSeenDevices(),
 	}
 
 	if err := s.configureState(context.Background()); err != nil {

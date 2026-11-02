@@ -71,6 +71,7 @@ func (s *Server) answer(ctx context.Context, req request) (result, error) {
 		}
 	}
 	s.log(req, res, err, elapsed)
+	s.seen.observe(res.profile, res.tenant, res.device, req.client, req.transport, time.Now())
 
 	return res, err
 }
