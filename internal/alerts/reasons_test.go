@@ -18,7 +18,8 @@ import (
 // TestThreatReasons checks that the reasons alerts treats as threats are
 // the filter's own, which this package can't import.
 func TestThreatReasons(t *testing.T) {
-	want := []string{filter.ReasonHomograph, filter.ReasonTunneling, filter.ReasonRebinding, filter.ReasonNewlyRegistered, filter.ReasonBypass}
+	want := []string{filter.ReasonHomograph, filter.ReasonTunneling, filter.ReasonRebinding, filter.ReasonNewlyRegistered, filter.ReasonBypass,
+		filter.ReasonTyposquatting, filter.ReasonDGA, filter.ReasonSafeBrowsing}
 	if !slices.Equal(alerts.ThreatReasons, want) {
 		t.Errorf("ThreatReasons = %q, want the filter's %q", alerts.ThreatReasons, want)
 	}

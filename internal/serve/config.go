@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -121,6 +123,24 @@ type Config struct {
 	// RDAP configures domain registration lookups, for newly registered
 	// domain protection.
 	RDAP RDAPConfig `json:"rdap,omitzero"`
+
+	// SafeBrowsing configures Google Safe Browsing, for profiles with
+	// Safe Browsing protection on. It's off unless KeyFile is set.
+	SafeBrowsing SafeBrowsingConfig `json:"safe_browsing,omitzero"`
+}
+
+// SafeBrowsingConfig configures Google Safe Browsing lookups, which keep
+// the threat lists' hash prefixes on this server and send Google only
+// 4-byte hash prefixes of names that match them.
+type SafeBrowsingConfig struct {
+	// KeyFile holds the Safe Browsing API key, a Google Cloud API key
+	// with the Safe Browsing API enabled. The key is read from the file,
+	// so it never appears in arguments, the environment, or logs.
+	KeyFile string `json:"key_file,omitempty"`
+
+	// Lists are the hash lists to check. They default to
+	// safebrowsing.DefaultLists: phishing, malware, and unwanted software.
+	Lists []string `json:"lists,omitempty"`
 }
 
 // DeviceNamesConfig configures learning the names of devices on the local
@@ -236,8 +256,16 @@ type BlocklistConfig struct {
 	// or "null".
 	Response string `json:"response,omitempty"`
 
-	// Refresh is how often lists are reloaded. It defaults to a day.
+	// Refresh is how often lists are checked for changes, unless their
+	// category has its own interval in RefreshCategories. It defaults to
+	// a day.
 	Refresh Duration `json:"refresh,omitempty"`
+
+	// RefreshCategories are intervals for presets by category, such as
+	// "security", overriding Refresh. Security lists default to
+	// DefaultSecurityRefresh, since their sources publish several times a
+	// day. Checks are spread by up to 10% either way.
+	RefreshCategories map[string]Duration `json:"refresh_categories,omitempty"`
 
 	// CacheDir stores downloaded lists, so restarts work offline. It
 	// defaults to "blocklists" in $CACHE_DIRECTORY (systemd's
@@ -250,8 +278,25 @@ func (b BlocklistConfig) enabled() bool {
 	return len(b.Sources) > 0 || len(b.Block) > 0
 }
 
-// DefaultBlocklistRefresh is how often blocklists are reloaded by default.
-const DefaultBlocklistRefresh = 24 * time.Hour
+// DefaultBlocklistRefresh is how often blocklists are checked for changes
+// by default.
+const DefaultBlocklistRefresh = blocklist.DefaultRefresh
+
+// DefaultSecurityRefresh is how often security blocklists, such as
+// threat-intel, are checked for changes by default.
+const DefaultSecurityRefresh = blocklist.DefaultSecurityRefresh
+
+// RefreshSchedule returns the schedule lists are checked on.
+func (b BlocklistConfig) RefreshSchedule() blocklist.RefreshSchedule {
+	s := blocklist.DefaultRefreshSchedule()
+	if b.Refresh != 0 {
+		s.Every = time.Duration(b.Refresh)
+	}
+	for category, d := range b.RefreshCategories {
+		s.Categories[category] = time.Duration(d)
+	}
+	return s
+}
 
 // AlertsConfig configures how alerts may be sent.
 type AlertsConfig struct {
@@ -653,6 +698,17 @@ func (c Config) Validate() error {
 		}
 	} else if len(c.Blocklist.Allow) > 0 {
 		errs = append(errs, errors.New("blocklist allow needs blocklist sources or block domains"))
+	}
+	for _, category := range slices.Sorted(maps.Keys(c.Blocklist.RefreshCategories)) {
+		switch category {
+		case blocklist.CategorySecurity, blocklist.CategoryPrivacy, blocklist.CategoryParental:
+		default:
+			errs = append(errs, fmt.Errorf("blocklist refresh category %q must be %q, %q, or %q", category,
+				blocklist.CategorySecurity, blocklist.CategoryPrivacy, blocklist.CategoryParental))
+		}
+		if c.Blocklist.RefreshCategories[category] < Duration(time.Minute) {
+			errs = append(errs, fmt.Errorf("blocklist refresh for %s lists must be at least a minute", category))
+		}
 	}
 
 	if c.Cache.Size < 0 {

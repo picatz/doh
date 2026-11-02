@@ -41,7 +41,7 @@ func lists(t *testing.T, content string) (*blocklist.Registry, string) {
 }
 
 // engine compiles profiles into an engine.
-func engine(t *testing.T, opts Options, profiles ...policy.Profile) *Engine {
+func engine(t testing.TB, opts Options, profiles ...policy.Profile) *Engine {
 	t.Helper()
 	e, err := New(&policy.Policy{Profiles: profiles}, opts)
 	if err != nil {
@@ -513,7 +513,10 @@ func TestFeatures(t *testing.T) {
 
 	// Defaults match the default policy.
 	def := policy.Defaults().Profiles[0].Security
-	for id, on := range map[string]bool{"rebinding": def.Rebinding, "homograph": def.Homograph, "newly_registered": def.NewlyRegistered, "tunneling": def.Tunneling, "bypass": def.Bypass} {
+	for id, on := range map[string]bool{
+		"rebinding": def.Rebinding, "homograph": def.Homograph, "newly_registered": def.NewlyRegistered, "tunneling": def.Tunneling, "bypass": def.Bypass,
+		"typosquatting": def.Typosquatting, "dga": def.DGA, "safe_browsing": def.SafeBrowsing,
+	} {
 		for _, f := range Features() {
 			if f.ID == id && f.Default != on {
 				t.Errorf("feature %s default %v, but the default policy has %v", id, f.Default, on)

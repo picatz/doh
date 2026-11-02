@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/internal/filter"
@@ -181,6 +182,9 @@ func TestConfig_ValidateBlocklist(t *testing.T) {
 		{name: "bad response", blocklist: BlocklistConfig{Block: []string{"ads.example"}, Response: "refused"}, wantErr: "response"},
 		{name: "refresh too often", blocklist: BlocklistConfig{Block: []string{"ads.example"}, Refresh: Duration(1)}, wantErr: "at least a minute"},
 		{name: "allow alone", blocklist: BlocklistConfig{Allow: []string{"ok.example"}}, wantErr: "needs blocklist sources"},
+		{name: "category refresh", blocklist: BlocklistConfig{RefreshCategories: map[string]Duration{"security": Duration(30 * time.Minute)}}},
+		{name: "unknown category", blocklist: BlocklistConfig{RefreshCategories: map[string]Duration{"malware": Duration(time.Hour)}}, wantErr: `category "malware"`},
+		{name: "category refresh too often", blocklist: BlocklistConfig{RefreshCategories: map[string]Duration{"security": Duration(time.Second)}}, wantErr: "security lists must be at least a minute"},
 	}
 
 	for _, test := range tests {

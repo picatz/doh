@@ -112,19 +112,34 @@ func newBlocklistPresetsCommand() *cobra.Command {
 		Long: `List the preset blocklists, by category: security lists block malware,
 phishing, scams, and abuse; privacy lists block ads and trackers; parental
 lists block content some households restrict. Name them with doh serve
---blocklist, in a profile's lists, or with "doh profile set".`,
+--blocklist, in a profile's lists, or with "doh profile set".
+
+REFRESH is how often doh serve checks each list for changes by default
+(--blocklist-refresh and --blocklist-refresh-category change it): security
+lists every two hours, since their sources publish several times a day, and
+others daily. Checking an unchanged list costs one conditional request.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tCATEGORY\tLIST\tURL")
+			fmt.Fprintln(w, "NAME\tCATEGORY\tREFRESH\tLIST\tURL")
+			schedule := blocklist.DefaultRefreshSchedule()
 			for _, p := range blocklist.Catalog {
 				name := p.Name
 				if name == blocklist.DefaultPreset {
 					name += " (default)"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, p.Category, p.Title, p.URL)
+				every := schedule.Interval(blocklist.Source{Name: p.Name, Location: p.URL})
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", name, p.Category, shortDuration(every), p.Title, p.URL)
 			}
 			return w.Flush()
 		},
 	}
+}
+
+// shortDuration formats d as hours or minutes, such as "2h" or "90m".
+func shortDuration(d time.Duration) string {
+	if d%time.Hour == 0 {
+		return fmt.Sprintf("%dh", d/time.Hour)
+	}
+	return fmt.Sprintf("%dm", d/time.Minute)
 }

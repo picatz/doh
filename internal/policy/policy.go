@@ -221,6 +221,22 @@ type Security struct {
 	// Firefox is always told not to enable its own DoH when a profile
 	// blocks anything.
 	Bypass bool `json:"bypass"`
+
+	// Typosquatting blocks domains a small edit away from brands phishing
+	// imitates most, such as paypa1.com, paypal-login.com, and
+	// paypal.com.example.net, never the brands' own domains.
+	Typosquatting bool `json:"typosquatting,omitzero"`
+
+	// DGA blocks registered domains whose names look machine-generated,
+	// as malware's domain generation algorithms make them, judged by how
+	// unlike popular domains' names their letters are.
+	DGA bool `json:"dga,omitzero"`
+
+	// SafeBrowsing checks names against Google Safe Browsing's lists of
+	// malware and phishing sites, if the server is configured with an API
+	// key. Only short hash prefixes of names on the local copy of the
+	// lists are ever sent to Google.
+	SafeBrowsing bool `json:"safe_browsing,omitzero"`
 }
 
 // Schedule blocks more during a recurring period, in the profile's time

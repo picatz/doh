@@ -30,6 +30,7 @@ import (
 	"github.com/picatz/doh/internal/querylog"
 	"github.com/picatz/doh/internal/ratelimit"
 	"github.com/picatz/doh/internal/rdap"
+	"github.com/picatz/doh/internal/safebrowsing"
 	"github.com/picatz/doh/internal/signin"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/pkg/doh"
@@ -77,6 +78,7 @@ type Server struct {
 	baseline filter.Baseline
 	state    *filter.State
 	ages     *rdap.Ages
+	browsing *safebrowsing.Checker
 	exempt   []string
 
 	// cache holds upstream answers, unless disabled.
@@ -533,7 +535,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if doqPC != nil {
 		g.Go(func() error { return s.ServeDoQ(ctx, doqPC) })
 	}
-	g.Go(func() error { return s.lists.Refresh(ctx, time.Duration(s.config.Blocklist.Refresh)) })
+	g.Go(func() error { return s.lists.Refresh(ctx, s.config.Blocklist.RefreshSchedule()) })
+	if s.browsing != nil {
+		g.Go(func() error { return s.browsing.Run(ctx) })
+	}
 	if s.store != nil {
 		g.Go(func() error { return s.store.watch(ctx, s.applyPolicy) })
 	}

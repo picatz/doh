@@ -24,12 +24,15 @@ const (
 	reasonRebinding       = "rebinding"
 	reasonNewlyRegistered = "newly-registered"
 	reasonBypass          = "bypass"
+	reasonTyposquatting   = "typosquatting"
+	reasonDGA             = "dga"
+	reasonSafeBrowsing    = "safe-browsing"
 )
 
 // ThreatReasons are the reasons for blocking a query, as the query log
 // records them, that make it a threat, besides a list in the security
 // category.
-var ThreatReasons = []string{reasonHomograph, reasonTunneling, reasonRebinding, reasonNewlyRegistered, reasonBypass}
+var ThreatReasons = []string{reasonHomograph, reasonTunneling, reasonRebinding, reasonNewlyRegistered, reasonBypass, reasonTyposquatting, reasonDGA, reasonSafeBrowsing}
 
 // threatPhrases describe what each security list's names are, after
 // "doh blocked NAME, ".
@@ -139,6 +142,21 @@ func (w writer) threat(e *querylog.Entry) Alert {
 		}
 	case reasonHomograph:
 		why = "a look-alike of another name"
+		if e.Detail != "" {
+			why += " (" + e.Detail + ")"
+		}
+	case reasonTyposquatting:
+		why = "a look-alike of a well-known brand's domain"
+		if e.Detail != "" {
+			why += " (" + e.Detail + ")"
+		}
+	case reasonDGA:
+		why = "a name that looked machine-generated, as malware's are"
+		if e.Detail != "" {
+			why += " (" + e.Detail + ")"
+		}
+	case reasonSafeBrowsing:
+		why = "a site Google Safe Browsing lists as dangerous"
 		if e.Detail != "" {
 			why += " (" + e.Detail + ")"
 		}

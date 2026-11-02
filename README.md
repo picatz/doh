@@ -141,7 +141,7 @@ level=INFO msg="blocklist loaded" rules=171454 sources=1
 $ doh serve --dns-listen :53 --blocklist hagezi-pro --blocklist mine=/etc/doh/block.txt --allow-domain example.com
 ```
 
-Blocked names get `NXDOMAIN` (or `0.0.0.0` and `::` with `--block-response null`), with an [Extended DNS Error](https://www.rfc-editor.org/rfc/rfc8914.html) saying which list blocked them. Lists are cached on disk, revalidated daily, and kept if a download fails. To see why a name is (or isn't) blocked:
+Blocked names get `NXDOMAIN` (or `0.0.0.0` and `::` with `--block-response null`), with an [Extended DNS Error](https://www.rfc-editor.org/rfc/rfc8914.html) saying which list blocked them. Lists are cached on disk, checked for changes with conditional requests (security lists every two hours, others daily), and kept if a download fails. To see why a name is (or isn't) blocked:
 
 ```console
 $ doh blocklist check www.google-analytics.com
@@ -414,7 +414,9 @@ Flags:
       --block-domain strings           also block these domains and their subdomains
       --block-response string          answer blocked names with nxdomain, or null (0.0.0.0 and ::) (default "nxdomain")
       --blocklist strings              block names on these lists: presets (default, abused-tlds, adult, bypass-services, dynamic-dns, easylist, easyprivacy, gambling, hagezi-light, hagezi-normal, hagezi-pro, oisd-big, oisd-small, scams, social, stevenblack, threat-intel, threat-intel-full), URLs, or files, as [name=]location
-      --blocklist-refresh duration     how often to reload blocklists (default 24h0m0s)
+      --blocklist-refresh duration     how often to check blocklists for changes, unless their category has its own interval (default 24h0m0s)
+      --blocklist-refresh-category stringToString
+                                       how often to check preset blocklists of a category for changes, as category=duration (security, privacy, parental) (default [security=2h0m0s])
       --cache-size int                 most upstream answers to cache, for as long as their records live; 0 disables the cache (default 10000)
       --config string                  path to a JSON config file
       --data-dir string                directory for the policy, admin API tokens, query log, and registration cache (default $STATE_DIRECTORY, or doh in the user config dir)
