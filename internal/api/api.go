@@ -429,6 +429,17 @@ type SetupLink struct {
 
 	// Expires is when the link stops working.
 	Expires time.Time `json:"expires"`
+
+	// QR is the link as a QR code, to scan with the device's camera.
+	QR *QRCode `json:"qr,omitempty"`
+}
+
+// QRCode is a QR code to draw: SVG path data for its dark modules, in a
+// view box Size units square that includes a quiet zone. Draw it dark on
+// light, whatever the page's theme, so cameras read it.
+type QRCode struct {
+	Size int    `json:"size"`
+	Path string `json:"path"`
 }
 
 // People lists who can sign in with passkeys.

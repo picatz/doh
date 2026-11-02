@@ -13,7 +13,7 @@ makes it stale.
 | Profiles | per-device policy by DoH path, host name, or address; 93 apps blockable by name; schedules in each profile's time zone; rewrites; local zones | `internal/policy`, `filter`, and `services` tests |
 | Visibility | Activity (query log) with device names learned from the network, stats, a per-hour timeline, live streaming | `internal/querylog` and `hostnames` tests (with `testing/synctest`) |
 | Sharing | tenants (households, customers) with their own profiles, people, and service accounts, seeing nothing of each other | negative tests: other tenants' resources read as not found |
-| Identity | passkey sign-in (WebAuthn, written here), single-use links, service accounts with expiring, rotatable keys, workload identity federation (OIDC token exchange, [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html)) so automation needs no stored secret, setup links for devices | negative tests: forged, expired, replayed, revoked, cross-tenant; for federation, wrong issuer, audience, subject, or claims, `alg: none`, HMAC with a public key, unknown keys, over-long tokens, and rate limits, with a mutation check that the tests catch a broken matcher |
+| Identity | passkey sign-in (WebAuthn, written here), single-use links, service accounts with expiring, rotatable keys, workload identity federation (OIDC token exchange, [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html)) so automation needs no stored secret, setup links for devices, shown as QR codes (an ISO/IEC 18004 encoder written here) | negative tests: forged, expired, replayed, revoked, cross-tenant; for federation, wrong issuer, audience, subject, or claims, `alg: none`, HMAC with a public key, unknown keys, over-long tokens, and rate limits, with a mutation check that the tests catch a broken matcher; every QR version, level, and mask is decoded by ZBar, an independent decoder, in CI |
 | Web UI | its own identity ([design.md](design.md)); adaptive shell for phones, tablets, and desktops; ⌘K; the Overview ring; light, dark, high-contrast, and forced colors; keyboard and screen reader use | Go tests on markup and scripts' safety (CSP, no unsafe DOM), node tests for each module, and driven in Chromium at three widths in both themes |
 | Releases | static, reproducible builds for nine platforms, with SHA-256 sums and signed build provenance | `make dist` twice gives identical sums; `gh attestation verify` |
 
@@ -54,12 +54,10 @@ In rough order of what it would mean for people using doh:
    service accounts and exchanged tokens, so a leaked token is useless
    without its key. [`picatz/jose`](https://github.com/picatz/jose) has
    `dpop`, verifier and client.
-3. **QR codes for setup links,** once an encoder is verified against an
-   independent decoder in tests.
-4. **Shared state for replicas:** sessions, setup links, and stats behind
+3. **Shared state for replicas:** sessions, setup links, and stats behind
    an interface with a SQLite (single node) and a networked backend.
-5. **Signed configuration profiles** for Apple devices, so they don't
+4. **Signed configuration profiles** for Apple devices, so they don't
    show as unverified.
-6. **DoH over HTTP/3,** tracked in
+5. **DoH over HTTP/3,** tracked in
    [picatz/doh#73](https://github.com/picatz/doh/issues/73), waiting on
    Go's own HTTP/3.

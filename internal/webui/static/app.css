@@ -813,3 +813,9 @@ button.link:hover:not(:disabled) { background: none; text-decoration-color: curr
 .add-passkey-intro { display: flex; gap: var(--s-3); align-items: flex-start; margin-bottom: var(--s-3); }
 .add-passkey-intro h3 { margin: 0 0 .15rem; }
 .add-passkey-intro p { margin: 0; font-size: .9rem; max-width: 52ch; }
+
+/* A setup link's QR code: always dark on white, with its quiet zone. */
+.send-qr { display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap; }
+.send-qr p { margin: 0; max-width: 28ch; }
+.qr { width: 10rem; height: 10rem; flex: none; border-radius: var(--r-md); box-shadow: 0 0 0 1px var(--border); }
+@media (forced-colors: active) { .qr { forced-color-adjust: none; } }

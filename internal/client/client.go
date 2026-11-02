@@ -289,6 +289,17 @@ func (c *Client) SigninLink(ctx context.Context, role, tenant string) (*api.Sign
 	return &link, nil
 }
 
+// CreateSetupLink makes a short-lived link to a page that sets a device
+// up for profile, as device if it's named, on the server's public
+// listener.
+func (c *Client) CreateSetupLink(ctx context.Context, profile, device string) (*api.SetupLink, error) {
+	var link api.SetupLink
+	if _, err := c.call(ctx, http.MethodPost, "/profiles"+segment(profile)+"/setup-links", deviceQuery(device), nil, "", nil, &link); err != nil {
+		return nil, err
+	}
+	return &link, nil
+}
+
 // Tenants returns the tenants the caller can see: every one for the
 // operator, or a tenant's own.
 func (c *Client) Tenants(ctx context.Context) ([]policy.Tenant, error) {
