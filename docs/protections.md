@@ -12,6 +12,7 @@
 - [Local names and forward zones](#local-names-and-forward-zones)
 - [Query log](#query-log)
 - [Admin API and web UI](#admin-api-and-web-ui)
+- [Audit trail](#audit-trail)
 - [Reliability](#reliability)
 - [Sharing a server](#sharing-a-server)
 - [Following another server's policy](#following-another-servers-policy)
@@ -281,7 +282,7 @@ doh alerts remove 3f2a9c0d1e4b5a67
 Every kind is on once there's a destination. Blocks by privacy and parental lists, apps, and schedules aren't threats, and neither are the canaries Firefox and iCloud Private Relay look up to ask whether they may bypass the network's resolver: blocking them is the answer. With `--admin-origin` set, each alert links to what it's about in the web UI.
 
 - **Calm by default.** The same alert (the same threat on the same device, the same new device, failing lookups, the same list) is sent at most once an hour. After three alerts of a kind about one device (or, for new devices, about the network) in an hour, the rest are held and summarized when the hour is up: "12 more threats blocked on kids-ipad in the last hour", with a few of their names.
-- **New devices are learned first.** For the first hour after doh starts seeing devices, they're recorded without alerts, so turning alerts on doesn't report every device already there. The devices seen, up to 2,048 per tenant (forgetting the least recently seen beyond that), are kept in `alerts.json`, so restarts don't report them again.
+- **New devices are learned first.** For the first hour after doh starts seeing devices, they're recorded without alerts, so turning alerts on doesn't report every device already there. The devices seen, up to 2,048 per tenant (forgetting the least recently seen beyond that), are kept in the data directory's state database, `state.db`, so restarts don't report them again. (Versions before kept them in `alerts.json`; the first start of this one moves them, keeping the file as it was beside it as `alerts.json.before-statedb`.) Which alerts were sent in the last hour is kept there too, so a restart doesn't repeat them.
 - **Quiet hours** hold every alert but threats, in the time zone given (or the first profile's, or UTC), and send what was held when they end: one alert as itself, several as "3 new device alerts during quiet hours", listing them. A period like `22:00-07:00` runs past midnight.
 - **Tenants get only their own.** A tenant's alerts are only ever about its own profiles' queries. The operator's cover every query outside tenants, failing lookups across the whole server (how it's run is the operator's concern; tenants' failing alerts count only their own queries and leave out the server's errors), and lists that fail to load.
 - **Managing alerts takes an admin person, or the operator's token.** Destinations receive query names, and a destination's URL can be enough to read them, so readers can't see alert settings, and service accounts, even admin ones, are refused. The operator manages any tenant's with `--tenant`. Changes are logged as `admin: alert ...` lines.
@@ -387,7 +388,7 @@ It works the same by mouse, touch, and keyboard, on phones, tablets, and desktop
 
 ### Setup links
 
-Setting up a phone from a laptop is awkward, so the Connect tab can make a setup link instead: `https://<hostname>/setup/<code>`, served by the public DoH listener, to open on the device itself. It shows one button to install the Apple configuration profile, then every platform, grouped, with its protection level, steps, and setup files, served under the link for its device. A link works for 30 minutes and only says how to reach one profile, which its ID already does; it reveals nothing else, the page runs no scripts, and it isn't cached or indexed. The Connect tab shows it as a QR code to scan with the device's camera, in doh's colors with its donut in the middle (the donut covers no more than half of what each part of the code can correct, so it still reads in poor light), and `doh setup <profile> --link` prints one in the terminal. Making one takes an admin, and needs `--hostname` and DoH.
+Setting up a phone from a laptop is awkward, so the Connect tab can make a setup link instead: `https://<hostname>/setup/<code>`, served by the public DoH listener, to open on the device itself. It shows one button to install the Apple configuration profile, then every platform, grouped, with its protection level, steps, and setup files, served under the link for its device. A link works for 30 minutes, across restarts (it's kept, as a hash of its code, in `state.db`), and only says how to reach one profile, which its ID already does; it reveals nothing else, the page runs no scripts, and it isn't cached or indexed. The Connect tab shows it as a QR code to scan with the device's camera, in doh's colors with its donut in the middle (the donut covers no more than half of what each part of the code can correct, so it still reads in poor light), and `doh setup <profile> --link` prints one in the terminal. Making one takes an admin, and needs `--hostname` and DoH.
 
 ### Signed configuration profiles
 
@@ -423,7 +424,7 @@ $ doh ui
 http://localhost:9090/#signin=…
 ```
 
-`doh ui` creates a **sign-in link** through the API: single-use, valid for five minutes, with its code in the URL fragment, which browsers never send to servers, so it stays out of logs. Opening it gives the browser a session cookie that scripts can't read (`HttpOnly`), that other sites can't send (`SameSite=Strict`), and that's `Secure` and host-only (`__Host-`) over HTTPS. Sessions end after two hours unused, or twelve hours at most.
+`doh ui` creates a **sign-in link** through the API: single-use, valid for five minutes, with its code in the URL fragment, which browsers never send to servers, so it stays out of logs. Opening it gives the browser a session cookie that scripts can't read (`HttpOnly`), that other sites can't send (`SameSite=Strict`), and that's `Secure` and host-only (`__Host-`) over HTTPS. Sessions end after two hours unused, or twelve hours at most. With a data directory, they're kept in `state.db`, by the SHA-256 of the cookie, so a restart signs no one out; without one, they're in memory. Removing a person ends their sessions.
 
 Signed in, add a **passkey** ([WebAuthn](https://www.w3.org/TR/webauthn-3/)): Face ID, Touch ID, Windows Hello, a phone, or a security key. From then on:
 
@@ -441,6 +442,22 @@ If everyone loses their passkeys, an operator with the admin token removes them 
 - `Permissions-Policy` turns off every powerful feature but passkeys and the clipboard; `Cross-Origin-Resource-Policy` and `-Opener-Policy` keep other sites from loading responses or reaching into the UI's window; `nosniff` and `no-referrer` throughout; and over HTTPS, `Strict-Transport-Security`.
 
 Tests check each surface's headers, and `TestLayout` runs the UI in Chrome with all of them on, failing on any violation the browser reports.
+
+**Against DNS rebinding**, the admin listener answers only to host names an attacker on the internet can't point at it. In a rebinding attack, a page at `attacker.example` has its name re-resolve to an address on your network, such as `127.0.0.1`, and reads from it as its own origin; the one thing the browser can't hide is that name, in the `Host` header. So requests are answered only for:
+
+- IP addresses, `localhost` and `*.localhost`, and single-label names such as `doh` (Docker, a router's DNS), since public DNS has no names without a dot;
+- names under suffixes public DNS never delegates: `.local`, `.home.arpa`, `.internal`, `.lan`, `.localdomain`, and `.home`;
+- Tailscale's `*.ts.net`, whose DNS only Tailscale answers;
+- the hosts of `--admin-origin`, `--hostname`, and `--acme-domain`, and of `--admin-host` (repeatable; `*.example.net` allows its subdomains).
+
+Anything else gets `421 Misdirected Request`, saying which flag to set. `/healthz` answers any host, for load balancers. Who this could lock out, and what to do:
+
+- **A reverse proxy that passes the client's `Host` through** (Caddy does by default; nginx with `proxy_set_header Host $host`) at a public name that isn't `--admin-origin`: add `--admin-host` with that name, or set `--admin-origin` if the web UI is opened there. Proxies that send their upstream's address, such as nginx's default, are unaffected.
+- **API clients, scripts, and policy followers** (`--policy https://doh.example.com:9090/api/v1/policy`) that reach the listener at a public name other than `--hostname` or an ACME domain: `--admin-host` that name.
+- **Metrics scrapers** using a multi-label name such as Kubernetes' `doh.monitoring.svc` (`...svc.cluster.local` is fine): scrape by address, or `--admin-host` the name.
+- Names in `/etc/hosts` with a public-looking suffix: `--admin-host` them.
+
+Names that resolve only locally are as trustworthy as the local network: anyone on it can claim a `.local` name over mDNS, or a single-label one over LLMNR. That someone can usually reach the listener directly anyway; the exception is one bound to loopback, so there, profiling (`/debug`, open without credentials) also needs a loopback host (`localhost`, `127.0.0.1`) or a configured one, and otherwise the operator's token.
 
 Passkeys need the UI opened at a host name: on a loopback admin listener that's `http://localhost:{port}`, where page loads at `127.0.0.1` are redirected. Elsewhere, put the admin listener behind a TLS-terminating proxy and set `--admin-origin https://admin.dns.example.com`. Without an origin, browser sign-in is off, and only API tokens work.
 
@@ -465,7 +482,7 @@ The web UI's Security view does the same.
 - **Rotation has no downtime.** Rotating adds a new key and lets the old one keep working for up to a week, so whatever uses it can switch over first.
 - **Revocation is immediate.** Revoking a key, or deleting its account, stops it at once. Deleting a tenant deletes its service accounts, and a key whose tenant no longer exists is refused regardless.
 - **Service accounts can't manage identities.** Even an admin one can't create sign-in links, list or remove people, or create, rotate, or revoke service account keys or trust rules, its own included. A leaked key can't mint a way back in, or a longer life for itself.
-- **Every change is logged**: who created, rotated, or revoked which key, as `admin: service account ...` lines in the server's log.
+- **Every change is logged**: who created, rotated, or revoked which key, as `admin: service account ...` lines in the server's log, and in the [audit trail](#audit-trail).
 
 Service accounts and their key hashes live in `service-accounts.json` in the data directory. Last-used times are kept to the hour, so authenticating rarely writes to disk.
 
@@ -533,7 +550,7 @@ doh sa trust add Deploys --github-repo octo/app --audience https://admin.dns.exa
 - **Keys are made where they're used.** `--dpop` makes an ECDSA P-256 key on the machine running `doh`, sends only its [RFC 7638](https://www.rfc-editor.org/rfc/rfc7638.html) thumbprint (`jkt`) to the server, and writes the secret to `--secret-file` and the private key, as a PEM `PRIVATE KEY` (PKCS #8), to the file beside it with `.dpop` appended. Both are new files, readable only by you; existing files are never overwritten. `doh sa list` marks bound keys `(DPoP)`.
 - **Every client command signs.** `--dpop-key FILE` (`DOH_DPOP_KEY_FILE`) names the key; without it, a `--token-file`'s `.dpop` sibling is used if there is one. Keys may be PKCS #8 or SEC 1 (`EC PRIVATE KEY`, as `openssl ecparam` writes) PEM: ECDSA P-256, Ed25519, or RSA of at least 2,048 bits.
 - **A bound credential needs the DPoP scheme.** Requests send `Authorization: DPoP <credential>` and the proof in a `DPoP` header ([RFC 9449, Section 7.1](https://www.rfc-editor.org/rfc/rfc9449.html#section-7.1)). A bound credential sent as a bearer token is refused, and so is an unbound one sent with the DPoP scheme. Unbound keys, access tokens, and the operator's tokens work as bearer tokens, as before.
-- **Proofs are checked in full** ([Section 4.3](https://www.rfc-editor.org/rfc/rfc9449.html#section-4.3)): `typ` must be `dpop+jwt`; it must be signed with ES256, EdDSA, or RS256, never `none` or HMAC, by the public key in its own `jwk` header, which must have no private parts and the credential's thumbprint; `htm` must be the request's method and `htu` its URL without the query; `iat` must be within a minute of the server's clock, either way; `ath` must be the SHA-256 of the credential; and its `jti` must be new: each proof is accepted once. The server remembers up to 50,000 proofs per replay cache for those two minutes, and refuses new ones beyond that rather than forget any; token exchanges have a cache of their own. Proof verification is [`picatz/jose`](https://github.com/picatz/jose)'s `dpop` package.
+- **Proofs are checked in full** ([Section 4.3](https://www.rfc-editor.org/rfc/rfc9449.html#section-4.3)): `typ` must be `dpop+jwt`; it must be signed with ES256, EdDSA, or RS256, never `none` or HMAC, by the public key in its own `jwk` header, which must have no private parts and the credential's thumbprint; `htm` must be the request's method and `htu` its URL without the query; `iat` must be within a minute of the server's clock, either way; `ath` must be the SHA-256 of the credential; and its `jti` must be new: each proof is accepted once. The server remembers up to 50,000 proofs per replay cache for those two minutes, by the SHA-256 of their `jti`, in `state.db` so a restart doesn't forget them, and refuses new ones beyond that rather than forget any; token exchanges have a cache of their own. Proof verification is [`picatz/jose`](https://github.com/picatz/jose)'s `dpop` package.
 - **Refusals say little.** They're `401` with `WWW-Authenticate: DPoP error="invalid_token"` (the wrong scheme, or an unknown credential) or `error="invalid_dpop_proof"` (anything wrong with the proof), and the algorithms accepted; which check failed is only in the server's log, as `admin: credential refused`. A bound key's last use is recorded only once its proof is accepted.
 - **Behind a proxy, set `--admin-origin`.** A proof names the URL its client used, which a TLS-terminating proxy hides from the server. With `--admin-origin`, `htu` must be one of those origins with the request's path, which the proxy must forward unchanged; requests to a loopback address, such as through an SSH tunnel, may also name the address they were sent to. Without `--admin-origin`, `htu` must match the request's own `Host`, and `https` only if it came over TLS.
 - **Exchanged tokens can be bound too.** A token exchange that carries a proof gets an access token bound to the proof's key, with `"token_type": "DPoP"` ([Section 5](https://www.rfc-editor.org/rfc/rfc9449.html#section-5)); `doh token exchange --new-dpop-key FILE` makes a key for it, or `--dpop-key` uses one. A rule added with `--require-dpop` refuses exchanges without a proof (`400 invalid_dpop_proof`), so none of its access tokens is a bearer token. The proof is checked only after the identity token is accepted. DPoP protects the access token, not the identity token: whoever has a workload's identity token can sign a proof of their own, so rules must still be as narrow as the provider allows.
@@ -572,6 +589,24 @@ The client commands (`doh status`, `profile`, `allow`, `deny`, `log`, `explain`,
 
 > [!WARNING]
 > The admin listener also serves metrics and profiling. On a loopback listener that isn't published with `--admin-origin`, profiling stays open to the machine's own users, so `go tool pprof` works; once published, `/debug` needs the operator's credentials. Metrics stay open for scrapers. Treat both tokens, and service account keys, as secrets.
+
+## Audit trail
+
+Every change made through the admin API, by the CLI, the web UI, or automation, is recorded in `state.db`: when, who (a person, a sign-in link, the operator's token, or a service account and the key or token exchange it used), for which tenant, what (`profile.updated`, `service_account.key.revoked`, `alerts.destination.added`, …), to what, a summary, and details. A profile change records what it changed: names allowed and denied, apps blocked and unblocked, lists, and settings, so "who unblocked TikTok?" has an answer:
+
+```console
+$ doh audit --action profile
+2026-11-02 19:04:05  Kent (smiths)  Unblocked TikTok (tiktok) in profile kids
+    profile.updated, 2 hours ago
+    profile: kids
+    services.removed: tiktok
+$ doh audit --actor Kent --before 2026-11-01T00:00:00Z --json | jq .summary
+```
+
+- **Never a secret.** Keys, tokens, codes, webhook secrets, and destinations' URLs aren't recorded: only their IDs, an alert destination's host, and a DPoP key's thumbprint.
+- **Tenants see their own.** A tenant's admins see their tenant's events, including the operator's changes to it, and nothing of anyone else's, whatever they ask for. The operator sees every tenant's, or one's with `--tenant`. Reading it takes an admin role (an admin service account may, for a SIEM).
+- **Kept for a year** by default; `--audit-retention` sets how long. Without a data directory there's no trail, only the `admin: …` lines in the server's log, which every change still writes.
+- `GET /api/v1/audit` takes `tenant`, `actor` (an ID or name), `action` (exactly, or everything under it: `profile` matches `profile.updated`), `before` (RFC 3339), `limit` (up to 1,000), and `page_token`, and returns events newest first with a `next_page_token` for the next page.
 
 ## Reliability
 
@@ -647,10 +682,10 @@ Common findings:
 - There's no "newly active" signal: a long-registered domain that has just started resolving isn't detected.
 - Blocking works on names. Apps that hard-code IP addresses, or use encrypted DNS services that aren't blocked, aren't filtered; bypass protection and the `bypass-services` list make that harder, not impossible.
 - Unbound service account keys and access tokens, and the operator's admin and reader tokens, are bearer credentials: whoever holds one can use it until it expires or is revoked, so an unbound access token copied from a CI log works until it expires, 15 minutes by default. [Bound](#binding-credentials-with-dpop) keys and access tokens need their DPoP key too, but the two together are as good as an unbound key: keep the key file as private as the secret, and make keys on the machine that uses them. The operator's tokens can't be bound, and binding is opt-in: nothing yet requires every key of an account or tenant to be bound.
-- DPoP proofs are fresh to within a minute either way of the server's clock, and each is accepted once by the server process that saw it; the server doesn't hand out nonces ([RFC 9449, Section 8](https://www.rfc-editor.org/rfc/rfc9449.html#section-8)), so a client with a fast clock could pre-sign proofs up to a minute ahead. Replay caches are in memory, per process, so a proof captured just before a restart could be replayed once in what's left of its minute, with the credential it was sent with; bound access tokens end with the restart anyway. Proofs cover the method and URL, not the query, headers, or body ([Section 11](https://www.rfc-editor.org/rfc/rfc9449.html#section-11)); TLS still protects those.
+- DPoP proofs are fresh to within a minute either way of the server's clock, and each is accepted once by the server process that saw it; the server doesn't hand out nonces ([RFC 9449, Section 8](https://www.rfc-editor.org/rfc/rfc9449.html#section-8)), so a client with a fast clock could pre-sign proofs up to a minute ahead. With a data directory, replay caches are in `state.db` and survive restarts; without one, they're in memory, so a proof captured just before a restart could be replayed once in what's left of its minute. Either way they're one server's: replicas would each accept a proof once. Proofs cover the method and URL, not the query, headers, or body ([Section 11](https://www.rfc-editor.org/rfc/rfc9449.html#section-11)); TLS still protects those.
 - Workload identity federation trusts the identity provider: anyone who can get it to issue a token with a rule's issuer, audience, subject, and claims can act as the account. Write rules as narrowly as the provider allows. Access tokens don't survive a restart, and a provider's rotated keys are picked up only when a token names a key the cached set lacks, or within the hour.
 - Profile IDs in DoH paths are identifiers, not credentials. To keep strangers off a public server, remove the `default` profile and use unguessable profile IDs, or restrict who can reach it.
-- Alerts are best effort. Deliveries waiting or being retried are lost on restart, and when too many queries arrive at once for alerts to keep up, the excess are skipped (and counted in the server's log) rather than slow down answering. Coalescing, bursts, quiet hours' held alerts, failing-lookup windows (one-minute buckets, so "five minutes" is four to five), and recent deliveries are kept in memory, so a restart starts them afresh.
+- Alerts are best effort. Deliveries waiting or being retried are lost on restart, and when too many queries arrive at once for alerts to keep up, the excess are skipped (and counted in the server's log) rather than slow down answering. Which alerts were sent in the last hour survives a restart (in `state.db`), but bursts, quiet hours' held alerts, failing-lookup windows (one-minute buckets, so "five minutes" is four to five), and recent deliveries are kept in memory, so a restart starts them afresh.
 - Alerts come from the query log: profiles with logging off, and servers run with `--no-query-log`, get no threat, new-device, or failing alerts. A threat repeated within the hour is in the query log, not another alert.
 - New devices are as distinct as their names and addresses: behind NAT, a household is one device; a device that changes its address (private Wi-Fi addresses, IPv6 privacy addresses) can look new; a hostname is whatever the device calls itself. On a server open to the internet, every new client address is a new device, so the operator may want `new-device` off.
 - Webhook secrets are kept in `alerts.json`, readable only by the server's user, since doh needs them to sign. Tenants' deliveries connect directly, never through `HTTPS_PROXY`; the operator's https deliveries use it.

@@ -1,14 +1,64 @@
 package signin
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
+	"slices"
+	"sync"
 	"time"
 )
 
 // pendingLifetime bounds sessions that haven't finished signing in.
 const pendingLifetime = 10 * time.Minute
+
+// touchInterval is how often a session's last use is recorded: its idle
+// timer is kept to the minute, so a busy UI doesn't write on every
+// request.
+const touchInterval = time.Minute
+
+// SessionID identifies a stored session: the SHA-256 of its cookie's
+// value, so whoever reads the store can't use what's in it.
+type SessionID [sha256.Size]byte
+
+// StoredSession is a session as a [Sessions] store keeps it.
+type StoredSession struct {
+	Session
+
+	// LastSeen is when the session was last used, to the minute, for its
+	// idle timeout.
+	LastSeen time.Time
+}
+
+// Sessions keeps browser sessions. The default keeps them in memory; a
+// database lets them survive restarts and be shared by replicas.
+// Implementations must be safe for concurrent use.
+type Sessions interface {
+	// Get returns the session stored under id, whether or not it has
+	// expired: the [Service] decides that.
+	Get(ctx context.Context, id SessionID) (StoredSession, bool, error)
+
+	// Put stores sess under id, first removing the session under
+	// replaced, if any. If limit sessions as pending as sess already
+	// exist, it first removes the least recently seen of them, so pending
+	// sessions, which anyone can start, only ever displace each other.
+	Put(ctx context.Context, id, replaced SessionID, sess StoredSession, limit int) error
+
+	// Touch records that the session under id was used at t.
+	Touch(ctx context.Context, id SessionID, t time.Time) error
+
+	// Delete removes the session under id, if there is one.
+	Delete(ctx context.Context, id SessionID) error
+
+	// DeletePerson removes every session of person.
+	DeletePerson(ctx context.Context, person string) error
+
+	// Sweep removes sessions that expired by now, or that haven't been
+	// used for idle.
+	Sweep(ctx context.Context, now time.Time, idle time.Duration) error
+}
 
 // cookieName returns the session cookie's name: with the __Host- prefix
 // when every origin is HTTPS, so browsers only accept it as Secure,
@@ -22,29 +72,56 @@ func (s *Service) cookieName() string {
 	return "doh-session"
 }
 
+// sessionID returns the ID r's cookie names, if it has one.
+func (s *Service) sessionID(r *http.Request) (SessionID, bool) {
+	c, err := r.Cookie(s.cookieName())
+	if err != nil || c.Value == "" || len(c.Value) > 128 {
+		return SessionID{}, false
+	}
+	return SessionID(sha256.Sum256([]byte(c.Value))), true
+}
+
 // Session returns the session r's cookie names, if it's live, and
 // refreshes its idle timer. The session may be pending.
 func (s *Service) Session(r *http.Request) (Session, bool) {
-	c, err := r.Cookie(s.cookieName())
-	if err != nil || c.Value == "" {
+	id, ok := s.sessionID(r)
+	if !ok {
 		return Session{}, false
 	}
-	key := sha256.Sum256([]byte(c.Value))
+	ctx := r.Context()
+	sess, ok, err := s.sessions.Get(ctx, id)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "signin: reading a session", slog.Any("error", err))
+		return Session{}, false
+	}
+	if !ok {
+		return Session{}, false
+	}
 	now := s.now()
+	if !now.Before(sess.Expires) || now.Sub(sess.LastSeen) >= s.config.IdleTimeout || !s.personExists(sess.Person) {
+		if err := s.sessions.Delete(ctx, id); err != nil {
+			s.logger.WarnContext(ctx, "signin: removing an expired session", slog.Any("error", err))
+		}
+		return Session{}, false
+	}
+	if now.Sub(sess.LastSeen) >= touchInterval {
+		if err := s.sessions.Touch(ctx, id, now); err != nil {
+			s.logger.WarnContext(ctx, "signin: recording a session's use", slog.Any("error", err))
+		}
+	}
+	return sess.Session, true
+}
 
+// personExists reports whether a session's person, if it has one, can
+// still sign in. Their sessions are removed with them, but a store's
+// removal may fail or, shared by replicas, lag; this makes it certain.
+func (s *Service) personExists(person string) bool {
+	if person == "" {
+		return true
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	sess, ok := s.sessions[key]
-	switch {
-	case !ok:
-		return Session{}, false
-	case !now.Before(sess.Expires) || now.Sub(sess.lastSeen) >= s.config.IdleTimeout:
-		delete(s.sessions, key)
-		return Session{}, false
-	}
-	sess.lastSeen = now
-	return *sess, true
+	return slices.ContainsFunc(s.people, func(p Person) bool { return p.ID == person })
 }
 
 // binding returns the WebAuthn ceremony binding for r's session: a
@@ -69,25 +146,24 @@ func (s *Service) startSession(w http.ResponseWriter, r *http.Request, sess Sess
 	}
 
 	now := s.now()
-	sess.Created, sess.lastSeen = now, now
+	sess.Created = now
 	sess.Expires = now.Add(s.config.Lifetime)
 	if sess.Pending {
 		sess.Expires = now.Add(pendingLifetime)
 	}
 
-	s.mu.Lock()
-	if c, err := r.Cookie(s.cookieName()); err == nil {
-		delete(s.sessions, sha256.Sum256([]byte(c.Value)))
+	ctx := r.Context()
+	replaced, _ := s.sessionID(r)
+	if err := s.sessions.Sweep(ctx, now, s.config.IdleTimeout); err != nil {
+		s.logger.WarnContext(ctx, "signin: removing expired sessions", slog.Any("error", err))
 	}
-	s.sweep(now)
 	// Pending sessions can be started by anyone, so they have their own
 	// budget, and only ever displace each other: a flood of them can't sign
 	// out the people who finished signing in.
-	if n, limit := s.count(sess.Pending), sessionLimit(sess.Pending); n >= limit {
-		s.evictOldest(sess.Pending)
+	id := SessionID(sha256.Sum256([]byte(token)))
+	if err := s.sessions.Put(ctx, id, replaced, StoredSession{Session: sess, LastSeen: now}, sessionLimit(sess.Pending)); err != nil {
+		return err
 	}
-	s.sessions[sha256.Sum256([]byte(token))] = &sess
-	s.mu.Unlock()
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.cookieName(),
@@ -107,10 +183,10 @@ func (s *Service) startSession(w http.ResponseWriter, r *http.Request, sess Sess
 
 // endSession ends r's session, if any, and clears its cookie.
 func (s *Service) endSession(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(s.cookieName()); err == nil {
-		s.mu.Lock()
-		delete(s.sessions, sha256.Sum256([]byte(c.Value)))
-		s.mu.Unlock()
+	if id, ok := s.sessionID(r); ok {
+		if err := s.sessions.Delete(r.Context(), id); err != nil {
+			s.logger.ErrorContext(r.Context(), "signin: ending a session", slog.Any("error", err))
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.cookieName(),
@@ -123,24 +199,6 @@ func (s *Service) endSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// endSessions ends every session of person. s.mu must be held.
-func (s *Service) endSessions(person string) {
-	for k, sess := range s.sessions {
-		if sess.Person == person {
-			delete(s.sessions, k)
-		}
-	}
-}
-
-// sweep removes expired sessions. s.mu must be held.
-func (s *Service) sweep(now time.Time) {
-	for k, sess := range s.sessions {
-		if !now.Before(sess.Expires) || now.Sub(sess.lastSeen) >= s.config.IdleTimeout {
-			delete(s.sessions, k)
-		}
-	}
-}
-
 // sessionLimit returns how many pending, or complete, sessions may exist.
 func sessionLimit(pending bool) int {
 	if pending {
@@ -149,11 +207,78 @@ func sessionLimit(pending bool) int {
 	return maxSessions
 }
 
-// count returns the number of pending, or complete, sessions. s.mu must be
+// memorySessions keeps sessions in memory: the default [Sessions].
+type memorySessions struct {
+	mu       sync.Mutex
+	sessions map[SessionID]StoredSession
+}
+
+func newMemorySessions() *memorySessions {
+	return &memorySessions{sessions: make(map[SessionID]StoredSession)}
+}
+
+func (m *memorySessions) Get(_ context.Context, id SessionID) (StoredSession, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok := m.sessions[id]
+	return sess, ok, nil
+}
+
+func (m *memorySessions) Put(_ context.Context, id, replaced SessionID, sess StoredSession, limit int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, replaced)
+	if m.count(sess.Pending) >= limit {
+		m.evictOldest(sess.Pending)
+	}
+	m.sessions[id] = sess
+	return nil
+}
+
+func (m *memorySessions) Touch(_ context.Context, id SessionID, t time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sess, ok := m.sessions[id]; ok {
+		sess.LastSeen = t
+		m.sessions[id] = sess
+	}
+	return nil
+}
+
+func (m *memorySessions) Delete(_ context.Context, id SessionID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, id)
+	return nil
+}
+
+func (m *memorySessions) DeletePerson(_ context.Context, person string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, sess := range m.sessions {
+		if sess.Person == person {
+			delete(m.sessions, k)
+		}
+	}
+	return nil
+}
+
+func (m *memorySessions) Sweep(_ context.Context, now time.Time, idle time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, sess := range m.sessions {
+		if !now.Before(sess.Expires) || now.Sub(sess.LastSeen) >= idle {
+			delete(m.sessions, k)
+		}
+	}
+	return nil
+}
+
+// count returns the number of pending, or complete, sessions. m.mu must be
 // held.
-func (s *Service) count(pending bool) int {
+func (m *memorySessions) count(pending bool) int {
 	n := 0
-	for _, sess := range s.sessions {
+	for _, sess := range m.sessions {
 		if sess.Pending == pending {
 			n++
 		}
@@ -162,19 +287,19 @@ func (s *Service) count(pending bool) int {
 }
 
 // evictOldest removes the least recently used pending, or complete,
-// session. s.mu must be held.
-func (s *Service) evictOldest(pending bool) {
+// session. m.mu must be held.
+func (m *memorySessions) evictOldest(pending bool) {
 	var (
-		oldest [sha256.Size]byte
+		oldest SessionID
 		seen   time.Time
 		found  bool
 	)
-	for k, sess := range s.sessions {
-		if sess.Pending == pending && (!found || sess.lastSeen.Before(seen)) {
-			oldest, seen, found = k, sess.lastSeen, true
+	for k, sess := range m.sessions {
+		if sess.Pending == pending && (!found || sess.LastSeen.Before(seen)) {
+			oldest, seen, found = k, sess.LastSeen, true
 		}
 	}
 	if found {
-		delete(s.sessions, oldest)
+		delete(m.sessions, oldest)
 	}
 }

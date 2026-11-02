@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/policy"
 	"github.com/picatz/doh/internal/signin"
 )
@@ -24,7 +25,8 @@ type principal struct {
 	role    role
 	tenant  string // "" for the operator
 	account string // the service account's ID, if it's one
-	by      string // who, for the audit log
+	by      string // who, for the server's log
+	actor   audit.Actor
 }
 
 // operator reports whether p is the server's operator.
@@ -65,6 +67,11 @@ func (s *Server) sessionPrincipal(r *http.Request) (principal, bool) {
 		return principal{}, false
 	}
 	p := principal{role: roleReader, tenant: sess.Tenant, by: cmp.Or(sess.Person, "sign-in link")}
+	if sess.Person != "" {
+		p.actor = actorOf(audit.ActorPerson, sess.Person, sess.Name, sess.Tenant, "")
+	} else {
+		p.actor = actorOf(audit.ActorLink, "", "sign-in link", sess.Tenant, "")
+	}
 	if sess.Role == signin.RoleAdmin {
 		p.role = roleAdmin
 	}
@@ -106,8 +113,11 @@ func visibleProfiles(pol *policy.Policy, p principal) []policy.Profile {
 //
 // On a loopback admin listener that isn't published for browser sign-in,
 // only the machine's own users can reach it, so it stays open, and tools
-// such as "go tool pprof" work without credentials. Once the UI is
-// published with --admin-origin, these need the operator's credentials.
+// such as "go tool pprof" work without credentials, at a loopback host
+// (localhost or 127.0.0.1) or one the operator configured. At any other
+// host, such as a .local name someone on the network could rebind to
+// 127.0.0.1, and once the UI is published with --admin-origin, these need
+// the operator's credentials.
 func (s *Server) requireOperator(next http.Handler) http.Handler {
 	guarded := s.authorize(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !principalOf(r).operator() {
@@ -118,7 +128,7 @@ func (s *Server) requireOperator(next http.Handler) http.Handler {
 	}))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.adminPrivate() {
+		if host, ok := hostOf(r.Host); ok && s.adminPrivate() && (host == "" || isLoopbackHost(host) || s.configuredHost(host)) {
 			next.ServeHTTP(w, r)
 			return
 		}

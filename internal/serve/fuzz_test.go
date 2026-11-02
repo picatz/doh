@@ -45,7 +45,7 @@ func FuzzVerifyProof(f *testing.F) {
 	f.Add(false, "eyJhbGciOiJub25lIn0.e30.")
 
 	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	v := newProofVerifier()
+	v := newProofVerifier(dpop.NewMemoryReplayCache(maxProofs, nil))
 	accepted := map[string]bool{}
 	f.Fuzz(func(t *testing.T, post bool, proof string) {
 		method := http.MethodGet

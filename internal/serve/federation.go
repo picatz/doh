@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/ratelimit"
 	"github.com/picatz/doh/internal/serviceaccount"
 	"github.com/picatz/jose/pkg/dpop"
@@ -266,9 +267,11 @@ func (s *Server) apiAddTrustRule(w http.ResponseWriter, r *http.Request) {
 	if s.writeAccountError(w, err) {
 		return
 	}
-	s.audit(r, "service account trust rule added", slog.String("account", a.ID), slog.String("rule", rule.ID),
-		slog.String("issuer", rule.Issuer), slog.String("audience", rule.Audience), slog.String("subject", rule.Subject),
-		slog.Bool("require_dpop", rule.RequireDPoP))
+	s.audit(r, change{action: "service_account.trust_rule.added", message: "service account trust rule added", tenant: a.Tenant,
+		target:  audit.Target{Type: "service_account", ID: a.ID},
+		summary: "Added a trust rule for " + rule.Subject + " from " + rule.Issuer + " to service account " + a.Name,
+		details: details("account", a.ID, "rule", rule.ID, "issuer", rule.Issuer, "audience", rule.Audience, "subject", rule.Subject,
+			"require_dpop", strconv.FormatBool(rule.RequireDPoP))})
 	w.Header().Set("Location", api.Prefix+"/service-accounts/"+a.ID+"/federation/"+rule.ID)
 	writeJSON(w, http.StatusCreated, rule)
 }
@@ -281,6 +284,9 @@ func (s *Server) apiDeleteTrustRule(w http.ResponseWriter, r *http.Request) {
 	if s.writeAccountError(w, s.accounts.DeleteTrustRule(a.ID, r.PathValue("rule"))) {
 		return
 	}
-	s.audit(r, "service account trust rule removed", slog.String("account", a.ID), slog.String("rule", r.PathValue("rule")))
+	s.audit(r, change{action: "service_account.trust_rule.removed", message: "service account trust rule removed", tenant: a.Tenant,
+		target:  audit.Target{Type: "service_account", ID: a.ID},
+		summary: "Removed trust rule " + r.PathValue("rule") + " from service account " + a.Name,
+		details: details("account", a.ID, "rule", r.PathValue("rule"))})
 	w.WriteHeader(http.StatusNoContent)
 }

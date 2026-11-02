@@ -73,6 +73,14 @@ func TestAlertsAPI_PushAndEmail(t *testing.T) {
 		t.Errorf("the view shows the subscription: %s", b)
 	}
 
+	// The audit trail records it for the household, by push service, not
+	// by the browser's endpoint.
+	b, _ = json.Marshal(browserAudit(t, f.smith, "?action=alerts.destination.added"))
+	if !strings.Contains(string(b), `"type":"push"`) || !strings.Contains(string(b), "fcm.googleapis.com") ||
+		!strings.Contains(string(b), d.ID) || strings.Contains(string(b), "this-browsers-token") {
+		t.Errorf("audit of the push destination: %s", b)
+	}
+
 	// Only browser push services, never anything else.
 	for _, ep := range []string{"https://push.evil.example/x", "https://10.0.0.1/x", "https://127.0.0.1/x", "http://fcm.googleapis.com/x", "https://fcm.googleapis.com:8443/x"} {
 		if status := f.smith.do(http.MethodPost, "/api/v1/alerts/destinations", `{"type":"push","subscription":`+subscriptionJSON(t, ep)+`}`, nil); status != http.StatusBadRequest {
@@ -148,7 +156,11 @@ func TestConfig_ValidateSMTP(t *testing.T) {
 // open: opening one changes nothing, they're strict, and wrong codes are
 // limited.
 func TestAlertPages(t *testing.T) {
-	f := newTenantFixture(t)
+	f := newTenantFixture(t, func(s *Server) {
+		// As --admin-origin https://admin.example.com, which email links
+		// are made from, would.
+		s.adminHosts = adminHostPatterns(Config{Admin: AdminConfig{Origins: []string{"https://admin.example.com"}}})
+	})
 	base := f.operator.base
 
 	for _, path := range []string{alerts.ConfirmPath + "ABCDEFGHJK", alerts.UnsubscribePath + "token"} {
@@ -163,6 +175,17 @@ func TestAlertPages(t *testing.T) {
 			!strings.Contains(csp, "form-action 'self'") || strings.Contains(csp, "script-src") || !strings.Contains(csp, "require-trusted-types-for") ||
 			resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("X-Frame-Options") != "DENY" {
 			t.Errorf("GET %s = %d %q %v\n%s", path, resp.StatusCode, csp, resp.Header, b)
+		}
+	}
+
+	// They're on the admin listener, which email links reach at its
+	// origin: other hosts are refused, as DNS rebinding would use.
+	for _, path := range []string{alerts.ConfirmPath + "ABCDEFGHJK", alerts.UnsubscribePath + "token"} {
+		if resp, _ := hostRequest(t, base, "attacker.example", path, ""); resp.StatusCode != http.StatusMisdirectedRequest {
+			t.Errorf("GET %s at attacker.example = %d, want 421", path, resp.StatusCode)
+		}
+		if resp, _ := hostRequest(t, base, "admin.example.com", path, ""); resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s at the admin origin = %d, want 200", path, resp.StatusCode)
 		}
 	}
 

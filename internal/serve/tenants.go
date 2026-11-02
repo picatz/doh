@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/policy"
 )
 
@@ -110,7 +112,13 @@ func (s *Server) apiDeleteTenant(w http.ResponseWriter, r *http.Request) {
 	if svc := s.signin.Load(); svc != nil {
 		for _, person := range svc.People() {
 			if person.Tenant == id {
-				_ = svc.DeletePerson(person.ID)
+				if err := svc.DeletePerson(r.Context(), person.ID); err != nil {
+					s.logger.ErrorContext(r.Context(), "admin: removing a deleted tenant's people", slog.String("tenant", id), slog.Any("error", err))
+					continue
+				}
+				s.audit(r, change{action: "person.deleted", message: "person removed with their tenant", tenant: id,
+					target:  audit.Target{Type: "person", ID: person.ID},
+					summary: "Removed " + person.Name + " with tenant " + id, details: details("person", person.ID, "name", person.Name)})
 			}
 		}
 	}
@@ -119,8 +127,10 @@ func (s *Server) apiDeleteTenant(w http.ResponseWriter, r *http.Request) {
 	if n, err := s.accounts.DeleteTenant(id); err != nil {
 		s.logger.Error("admin: removing a deleted tenant's service accounts", slog.String("tenant", id), slog.Any("error", err))
 	} else if n > 0 {
-		s.audit(r, "service accounts deleted with their tenant", slog.String("deleted_tenant", id), slog.Int("count", n))
+		s.audit(r, change{action: "service_account.deleted", message: "service accounts deleted with their tenant", tenant: id,
+			target:  audit.Target{Type: "tenant", ID: id},
+			summary: "Deleted " + strconv.Itoa(n) + " service accounts with tenant " + id, details: details("count", strconv.Itoa(n))})
 	}
-	s.forgetTenantAlerts(id)
+	s.forgetTenantAlerts(r.Context(), id)
 	w.WriteHeader(http.StatusNoContent)
 }

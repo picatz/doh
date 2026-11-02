@@ -2,6 +2,7 @@ package serve
 
 import (
 	"cmp"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"embed"
@@ -9,6 +10,7 @@ import (
 	"github.com/picatz/doh/internal/httpsec"
 	"html/template"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"path"
@@ -18,7 +20,9 @@ import (
 	"time"
 
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/brand"
+	"github.com/picatz/doh/internal/statedb"
 )
 
 // Setup links let someone at the admin UI send a device what it needs to
@@ -40,25 +44,35 @@ const (
 	setupPath = "/setup/"
 )
 
-// setupLinks keeps setup links, by the SHA-256 of their codes. It's safe
-// for concurrent use.
+// setupLinks makes and finds setup links, kept by the SHA-256 of their
+// codes in a store: the state database, so they survive restarts, or
+// without a data directory, memory. It's safe for concurrent use.
 type setupLinks struct {
-	mu    sync.Mutex
-	links map[[sha256.Size]byte]setupLink
+	store setupLinkStore
 	now   func() time.Time
 }
 
-type setupLink struct {
-	profile, device string
-	expires         time.Time
+// setupLinkStore keeps setup links. [statedb.SetupLinks] is one.
+type setupLinkStore interface {
+	// Create stores link under hash, first removing those that expire
+	// soonest if limit unexpired links already exist.
+	Create(ctx context.Context, hash [sha256.Size]byte, link statedb.SetupLink, now time.Time, limit int) error
+
+	// Lookup returns the link under hash, if it hasn't expired by now.
+	Lookup(ctx context.Context, hash [sha256.Size]byte, now time.Time) (statedb.SetupLink, bool, error)
 }
 
-func newSetupLinks() *setupLinks {
-	return &setupLinks{links: make(map[[sha256.Size]byte]setupLink), now: time.Now}
+// newSetupLinks returns setup links kept in store, or in memory if it's
+// nil.
+func newSetupLinks(store setupLinkStore) *setupLinks {
+	if store == nil {
+		store = &memorySetupLinks{links: make(map[[sha256.Size]byte]statedb.SetupLink)}
+	}
+	return &setupLinks{store: store, now: time.Now}
 }
 
 // create makes a link for profile and device, returning its code.
-func (l *setupLinks) create(profile, device string) (code string, expires time.Time, err error) {
+func (l *setupLinks) create(ctx context.Context, profile, device string) (code string, expires time.Time, err error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", time.Time{}, err
@@ -66,50 +80,55 @@ func (l *setupLinks) create(profile, device string) (code string, expires time.T
 	code = base64.RawURLEncoding.EncodeToString(b[:])
 	now := l.now()
 	expires = now.Add(SetupLinkTTL)
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if len(l.links) >= maxSetupLinks {
-		l.sweep(now)
+	link := statedb.SetupLink{Profile: profile, Device: device, Expires: expires}
+	if err := l.store.Create(ctx, sha256.Sum256([]byte(code)), link, now, maxSetupLinks); err != nil {
+		return "", time.Time{}, err
 	}
-	if len(l.links) >= maxSetupLinks {
-		// The oldest link expires soonest; it goes first.
-		var oldest [sha256.Size]byte
-		var when time.Time
-		for k, v := range l.links {
-			if when.IsZero() || v.expires.Before(when) {
-				oldest, when = k, v.expires
-			}
-		}
-		delete(l.links, oldest)
-	}
-	l.links[sha256.Sum256([]byte(code))] = setupLink{profile: profile, device: device, expires: expires}
 	return code, expires, nil
 }
 
 // lookup returns the link with code, if it hasn't expired.
-func (l *setupLinks) lookup(code string) (setupLink, bool) {
+func (l *setupLinks) lookup(ctx context.Context, code string) (statedb.SetupLink, bool, error) {
 	if len(code) != 22 {
-		return setupLink{}, false
+		return statedb.SetupLink{}, false, nil
 	}
-	key := sha256.Sum256([]byte(code))
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	link, ok := l.links[key]
-	if !ok || !l.now().Before(link.expires) {
-		delete(l.links, key)
-		return setupLink{}, false
-	}
-	return link, true
+	return l.store.Lookup(ctx, sha256.Sum256([]byte(code)), l.now())
 }
 
-// sweep drops expired links. l.mu must be held.
-func (l *setupLinks) sweep(now time.Time) {
-	for k, v := range l.links {
-		if !now.Before(v.expires) {
-			delete(l.links, k)
+// memorySetupLinks keeps setup links in memory.
+type memorySetupLinks struct {
+	mu    sync.Mutex
+	links map[[sha256.Size]byte]statedb.SetupLink
+}
+
+func (m *memorySetupLinks) Create(_ context.Context, hash [sha256.Size]byte, link statedb.SetupLink, now time.Time, limit int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	maps.DeleteFunc(m.links, func(_ [sha256.Size]byte, v statedb.SetupLink) bool { return !now.Before(v.Expires) })
+	for len(m.links) >= limit {
+		// The oldest link expires soonest; it goes first.
+		var oldest [sha256.Size]byte
+		var when time.Time
+		for k, v := range m.links {
+			if when.IsZero() || v.Expires.Before(when) {
+				oldest, when = k, v.Expires
+			}
 		}
+		delete(m.links, oldest)
 	}
+	m.links[hash] = link
+	return nil
+}
+
+func (m *memorySetupLinks) Lookup(_ context.Context, hash [sha256.Size]byte, now time.Time) (statedb.SetupLink, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	link, ok := m.links[hash]
+	if !ok || !now.Before(link.Expires) {
+		delete(m.links, hash)
+		return statedb.SetupLink{}, false, nil
+	}
+	return link, true, nil
 }
 
 // apiSetupLink creates a setup link for a profile, and a device if named.
@@ -123,17 +142,31 @@ func (s *Server) apiSetupLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "setup links need this server's public name and DoH: set --hostname and serve DoH with a certificate")
 		return
 	}
-	code, expires, err := s.setupLinks.create(pr.ID, device)
+	code, expires, err := s.setupLinks.create(r.Context(), pr.ID, device)
 	if err != nil {
+		s.logger.ErrorContext(r.Context(), "admin: creating a setup link", slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "creating a setup link failed")
 		return
 	}
-	s.audit(r, "setup link created", slog.String("profile", pr.ID), slog.String("device", device))
+	s.audit(r, change{
+		action: "setup_link.created", message: "setup link created", tenant: pr.Tenant,
+		target:  audit.Target{Type: "profile", ID: pr.ID},
+		summary: setupLinkSummary(pr.ID, device),
+		details: details("profile", pr.ID, "device", device),
+	})
 	link := api.SetupLink{URL: base + setupPath + code, Expires: expires}
 	if d, err := brand.QR([]byte(link.URL)); err == nil {
 		link.QR = &api.QRCode{SVG: d.SVG("QR code for the setup link")}
 	}
 	writeJSON(w, http.StatusCreated, link)
+}
+
+// setupLinkSummary describes a setup link's creation.
+func setupLinkSummary(profile, device string) string {
+	if device != "" {
+		return "Made a setup link for " + device + " in profile " + profile
+	}
+	return "Made a setup link for profile " + profile
 }
 
 // setupBase returns the public listener's origin, if the server has one.
@@ -152,8 +185,11 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Robots-Tag", "noindex")
 
-	link, ok := s.setupLinks.lookup(r.PathValue("code"))
-	pr := s.engine.Load().Policy().Profile(link.profile)
+	link, ok, err := s.setupLinks.lookup(r.Context(), r.PathValue("code"))
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "setup: reading a setup link", slog.Any("error", err))
+	}
+	pr := s.engine.Load().Policy().Profile(link.Profile)
 	if !ok || pr == nil {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
@@ -165,22 +201,22 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 	// request's query says.
 	switch file := r.PathValue("file"); {
 	case file == mobileConfigFile:
-		s.serveMobileConfig(w, r, pr, link.device)
+		s.serveMobileConfig(w, r, pr, link.Device)
 		return
 	case slices.Contains(setupFiles, file):
-		s.serveSetupFile(w, r, pr, link.device, file)
+		s.serveSetupFile(w, r, pr, link.Device, file)
 		return
 	case file != "":
 		http.NotFound(w, r)
 		return
 	}
 
-	setup := s.setupFor(r.Context(), pr, link.device)
+	setup := s.setupFor(r.Context(), pr, link.Device)
 	base := setupPath + r.PathValue("code") + "/"
 	page := setupPageData{
 		Profile: cmp.Or(pr.Name, pr.ID),
-		Device:  link.device,
-		Minutes: strconv.Itoa(max(1, int(time.Until(link.expires).Round(time.Minute)/time.Minute))),
+		Device:  link.Device,
+		Minutes: strconv.Itoa(max(1, int(time.Until(link.Expires).Round(time.Minute)/time.Minute))),
 		DoHURL:  setup.DoHURL,
 		DoTHost: setup.DoTHost,
 	}

@@ -35,10 +35,13 @@ const (
 	deliveryQueue   = 256
 	deliveryWorkers = 2
 
-	// maxCoalesced bounds the alerts remembered for coalescing. Beyond
-	// it, new alerts are counted toward their burst's summary instead of
-	// sent.
-	maxCoalesced = 10_000
+	// deviceCacheSize bounds the devices an engine remembers having just
+	// seen, and deviceRefresh is how long it trusts that, so a device's
+	// every query doesn't write to its Memory: last-seen times are kept
+	// to within deviceRefresh, which is plenty for forgetting the least
+	// recently seen of thousands.
+	deviceCacheSize = 8192
+	deviceRefresh   = 10 * time.Minute
 
 	// maxBurstNames is how many names a burst's summary lists.
 	maxBurstNames = 3
@@ -53,9 +56,16 @@ var defaultBackoff = []time.Duration{2 * time.Second, 10 * time.Second, 30 * tim
 
 // Options configures an [Engine].
 type Options struct {
-	// Path is the file settings, destinations, and seen devices are kept
-	// in, which needn't exist yet. If empty, they're kept in memory only.
+	// Path is the file settings and destinations are kept in, which
+	// needn't exist yet. If empty, they're kept in memory only. Devices
+	// a file from before kept are moved to Memory, if it's a
+	// [DeviceImporter], keeping the file as it was beside it.
 	Path string
+
+	// Memory remembers the devices each scope has seen, and the alerts
+	// sent recently. If nil, [NewMemory] keeps them in memory only, so a
+	// restart forgets them.
+	Memory Memory
 
 	// Logger reports delivery failures and dropped entries. If nil,
 	// nothing is logged.
@@ -106,6 +116,7 @@ type Options struct {
 // delivers them. It's safe for concurrent use.
 type Engine struct {
 	store  *store
+	memory Memory
 	logger *slog.Logger
 	words  writer
 	canary func(string) bool
@@ -136,9 +147,13 @@ type Engine struct {
 	closeOnce sync.Once
 	closeErr  error
 
+	// recent remembers when each device, by scope and key, was last
+	// recorded in memory by this engine.
+	recentMu sync.Mutex
+	recent   map[deviceKeyed]time.Time
+
 	// Owned by run.
 	windows       map[string]*window
-	lastSent      map[coalesceKey]time.Time
 	bursts        map[burstKey]*burst
 	held          map[string]map[Kind]*heldAlerts
 	reportedDrops uint64
@@ -157,6 +172,9 @@ type job struct {
 	dest  destination
 	alert Alert
 }
+
+// deviceKeyed is a device of a scope.
+type deviceKeyed struct{ scope, device string }
 
 // coalesceKey identifies alerts that are sent at most once per
 // [CoalesceWindow].
@@ -215,6 +233,13 @@ func newEngine(opts Options) (*Engine, error) {
 	if opts.PushSubject != "" && !strings.HasPrefix(opts.PushSubject, "mailto:") && !strings.HasPrefix(opts.PushSubject, "https://") {
 		return nil, errors.New("alerts: the push subject is a mailto: or https: URL")
 	}
+	mem := opts.Memory
+	if mem == nil {
+		mem = NewMemory()
+	}
+	if err := s.importDevices(context.Background(), mem); err != nil {
+		return nil, err
+	}
 	lookup := lookupFunc(defaultLookup)
 	if opts.LookupNetIP != nil {
 		lookup = opts.LookupNetIP
@@ -222,6 +247,8 @@ func newEngine(opts Options) (*Engine, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
 		store:  s,
+		memory: mem,
+		recent: make(map[deviceKeyed]time.Time),
 		logger: cmp.Or(opts.Logger, slog.New(slog.DiscardHandler)),
 		words:  writer{origin: opts.Origin, profileName: opts.ProfileName},
 		canary: opts.Canary,
@@ -247,10 +274,9 @@ func newEngine(opts Options) (*Engine, error) {
 		ctx:    ctx,
 		cancel: cancel,
 
-		windows:  make(map[string]*window),
-		lastSent: make(map[coalesceKey]time.Time),
-		bursts:   make(map[burstKey]*burst),
-		held:     make(map[string]map[Kind]*heldAlerts),
+		windows: make(map[string]*window),
+		bursts:  make(map[burstKey]*burst),
+		held:    make(map[string]map[Kind]*heldAlerts),
 	}
 	e.send = e.post
 	return e, nil
@@ -381,7 +407,15 @@ func (e *Engine) RemoveDestination(scope, id string) error {
 
 // ForgetScope removes everything kept for scope, such as when a tenant is
 // deleted.
-func (e *Engine) ForgetScope(scope string) error { return e.store.forget(scope) }
+func (e *Engine) ForgetScope(ctx context.Context, scope string) error {
+	e.recentMu.Lock()
+	maps.DeleteFunc(e.recent, func(k deviceKeyed, _ time.Time) bool { return k.scope == scope })
+	e.recentMu.Unlock()
+	if err := e.memory.Forget(ctx, scope); err != nil {
+		return err
+	}
+	return e.store.forget(scope)
+}
 
 // Test sends a test alert to each of scope's destinations, once each and
 // at once, whatever the settings, and returns how each went.
@@ -479,7 +513,7 @@ func (e *Engine) observe(entry *querylog.Entry) {
 	}
 
 	if device != "" {
-		if isNew, learning := e.store.seeDevice(scope, device, now); isNew && !learning {
+		if isNew, learning := e.seeDevice(scope, device, now); isNew && !learning {
 			e.raise(now, event{
 				scope:  scope,
 				alert:  e.words.newDevice(entry),
@@ -489,6 +523,33 @@ func (e *Engine) observe(entry *querylog.Entry) {
 			})
 		}
 	}
+}
+
+// seeDevice records that scope saw device at now in e's Memory, unless
+// e recorded it recently, reporting whether it's new to the scope, and
+// whether the scope is still learning its devices. If the Memory fails,
+// the device is taken as known: better a missed alert than a flood.
+func (e *Engine) seeDevice(scope, device string, now time.Time) (isNew, learning bool) {
+	k := deviceKeyed{scope, device}
+	e.recentMu.Lock()
+	last, ok := e.recent[k]
+	e.recentMu.Unlock()
+	if ok && now.Sub(last) < deviceRefresh && !now.Before(last) {
+		return false, false
+	}
+
+	isNew, since, err := e.memory.SeeDevice(e.ctx, scope, device, now)
+	if err != nil {
+		e.logger.Warn("alerts: remembering a device", slog.Any("error", err))
+		return false, false
+	}
+	e.recentMu.Lock()
+	if len(e.recent) >= deviceCacheSize {
+		clear(e.recent)
+	}
+	e.recent[k] = now
+	e.recentMu.Unlock()
+	return isNew, now.Sub(since) < LearningPeriod
 }
 
 // deviceKey identifies the device that sent entry: its configured name in
@@ -571,16 +632,15 @@ func (e *Engine) raise(now time.Time, ev event) {
 		return
 	}
 
-	ck := coalesceKey{ev.scope, kind, ev.key}
-	if t, ok := e.lastSent[ck]; ok && now.Sub(t) < CoalesceWindow {
-		return
-	}
-	if len(e.lastSent) >= maxCoalesced {
-		e.pruneCoalesced(now)
-	}
-	full := len(e.lastSent) >= maxCoalesced
-	if !full {
-		e.lastSent[ck] = now
+	// Beyond what Memory can remember, or if it fails, alerts are
+	// counted toward their burst's summary rather than sent.
+	claimed, err := e.memory.Claim(e.ctx, ev.scope, string(kind), ev.key, now, CoalesceWindow)
+	full := err != nil
+	switch {
+	case err != nil && !errors.Is(err, ErrMemoryFull):
+		e.logger.Warn("alerts: remembering an alert", slog.Any("error", err))
+	case err == nil && !claimed:
+		return // sent within the hour
 	}
 
 	bk := burstKey{ev.scope, kind, ev.group}
@@ -616,11 +676,6 @@ func (e *Engine) closeBurst(bk burstKey, b *burst, now time.Time) {
 		return
 	}
 	e.dispatch(now, bk.scope, e.words.burst(bk.kind, b.subject, b.held, b.names, b.link, now), settings)
-}
-
-// pruneCoalesced forgets alerts sent longer than CoalesceWindow ago.
-func (e *Engine) pruneCoalesced(now time.Time) {
-	maps.DeleteFunc(e.lastSent, func(_ coalesceKey, t time.Time) bool { return now.Sub(t) >= CoalesceWindow })
 }
 
 // dispatch sends an alert to scope's destinations, or during quiet hours,
@@ -678,7 +733,6 @@ func (e *Engine) tick(now time.Time) {
 			e.closeBurst(bk, b, now)
 		}
 	}
-	e.pruneCoalesced(now)
 	maps.DeleteFunc(e.windows, func(_ string, w *window) bool { return now.Sub(w.last) > FailingWindow })
 
 	for scope, byKind := range e.held {

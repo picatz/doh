@@ -36,6 +36,7 @@
 //	GET    /api/v1/logs/stream                    text/event-stream of querylog.Entry
 //	GET    /api/v1/stats                          querylog.Stats
 //	GET    /api/v1/explain?name=&type=&profile=&client=   Explanation
+//	GET    /api/v1/audit?tenant=&actor=&action=&before=&limit=&page_token=   audit.Page (admin)
 //	GET    /api/v1/tenants                        Tenants
 //	POST   /api/v1/tenants                        policy.Tenant → 201 (operator)
 //	PATCH  /api/v1/tenants/{id}                   merge patch → policy.Tenant (operator)
@@ -89,6 +90,15 @@
 // POST /alerts/confirm, or the page the email links to. A push
 // destination is a browser's PushSubscription, made with the key from
 // GET /alerts/push-key.
+//
+// The audit trail records every change made through this API: who made
+// it (audit.Actor), for which tenant, the action, its target, a summary
+// for people, and details for programs, never a secret. Reading it takes
+// an admin role. Tenants see only their own tenant's events, including
+// the operator's changes to it, and ?tenant= naming another shows
+// nothing; the operator sees every tenant's, or one's with ?tenant=.
+// Events are newest first, a page at a time, continued with
+// next_page_token. It needs a data directory: 404 without one.
 //
 // The logs, stream, and stats endpoints take the filter parameters that
 // querylog.ParseFilter reads: profile, device, client, status, reason, q,

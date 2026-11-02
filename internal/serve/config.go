@@ -90,11 +90,16 @@ type Config struct {
 	Cache CacheConfig `json:"cache,omitzero"`
 
 	// DataDir holds the server's state: its policy, admin API tokens,
-	// query log, and domain registration cache. Without it (and without a
-	// policy source), only the Blocklist settings apply, the query log is
-	// kept in memory, and the admin API is unavailable unless an admin
-	// token file is configured.
+	// query log, domain registration cache, and in state.db, browser
+	// sessions, setup links, DPoP replay caches, what alerts remember, and
+	// the audit trail. Without it (and without a policy source), only the
+	// Blocklist settings apply, the query log and the rest are kept in
+	// memory, there's no audit trail, and the admin API is unavailable
+	// unless an admin token file is configured.
 	DataDir string `json:"data_dir,omitempty"`
+
+	// Audit configures the audit trail of admin changes, kept in DataDir.
+	Audit AuditConfig `json:"audit,omitzero"`
 
 	// Policy configures where profiles come from.
 	Policy PolicyConfig `json:"policy,omitzero"`
@@ -204,6 +209,14 @@ type QueryLogConfig struct {
 
 	// Retention is how long daily log files in DataDir are kept. It
 	// defaults to querylog.DefaultRetention.
+	Retention Duration `json:"retention,omitempty"`
+}
+
+// AuditConfig configures the audit trail: a record of every change made
+// through the admin API, who made it, and for whom.
+type AuditConfig struct {
+	// Retention is how long events are kept. It defaults to
+	// DefaultAuditRetention, a year.
 	Retention Duration `json:"retention,omitempty"`
 }
 
@@ -391,6 +404,15 @@ type AdminConfig struct {
 	// AdminTokenFile in the data directory, generated if missing, along
 	// with a reader token in ReaderTokenFile for read-only access.
 	TokenFile string `json:"token_file,omitempty"`
+
+	// Hosts are more host names the admin listener answers to, beyond
+	// those it allows on its own: IP addresses, localhost, single-label
+	// names, local-only names (.local, .home.arpa, .internal, .lan,
+	// .localdomain, .home), Tailscale's .ts.net, the hosts of Origins,
+	// Hostname, and ACME domains. Requests naming any other host are
+	// refused, which defeats DNS rebinding. A leading "*." allows a
+	// name's subdomains.
+	Hosts []string `json:"hosts,omitempty"`
 }
 
 // flightRecorder reports whether the flight recorder is enabled.
@@ -726,6 +748,10 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("policy refresh must be at least 10s"))
 	}
 
+	if c.Audit.Retention < 0 {
+		errs = append(errs, errors.New("audit retention must not be negative"))
+	}
+
 	if c.QueryLog.Memory < 0 {
 		errs = append(errs, errors.New("query_log memory must not be negative"))
 	}
@@ -784,6 +810,12 @@ func (c Config) Validate() error {
 		}
 	} else if smtp.From != "" || smtp.PasswordFile != "" || smtp.Password != "" {
 		errs = append(errs, errors.New("alerts smtp: a sender or password needs an SMTP URL (--smtp-url)"))
+	}
+
+	for _, h := range c.Admin.Hosts {
+		if _, ok := parseAdminHost(h); !ok {
+			errs = append(errs, fmt.Errorf("admin host %q must be a host name, such as admin.example.com or *.example.com, without a scheme or port", h))
+		}
 	}
 
 	switch {

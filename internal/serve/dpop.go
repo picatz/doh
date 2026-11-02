@@ -65,14 +65,14 @@ const (
 	errInvalidProof = dpop.ErrorInvalidProof
 )
 
-// newProofVerifier returns a verifier of DPoP proofs, with a replay cache
-// of its own.
-func newProofVerifier() *dpop.Verifier {
+// newProofVerifier returns a verifier of DPoP proofs, remembering those it
+// accepts in replay, which must be its own.
+func newProofVerifier(replay dpop.ReplayCache) *dpop.Verifier {
 	return &dpop.Verifier{
 		Algorithms: proofAlgorithms,
 		MaxAge:     proofMaxAge,
 		Leeway:     proofLeeway,
-		Replay:     dpop.NewMemoryReplayCache(maxProofs, nil),
+		Replay:     replay,
 	}
 }
 

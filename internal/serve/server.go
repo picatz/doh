@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/internal/alerts"
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/cache"
 	"github.com/picatz/doh/internal/federation"
@@ -32,6 +35,7 @@ import (
 	"github.com/picatz/doh/internal/rdap"
 	"github.com/picatz/doh/internal/safebrowsing"
 	"github.com/picatz/doh/internal/signin"
+	"github.com/picatz/doh/internal/statedb"
 	"github.com/picatz/doh/internal/upstream"
 	"github.com/picatz/doh/pkg/doh"
 	"github.com/picatz/jose/pkg/dpop"
@@ -93,6 +97,12 @@ type Server struct {
 	// alerts tells tenants and the operator when something needs them.
 	alerts *alerts.Engine
 
+	// stateDB keeps sessions, setup links, DPoP replay caches, what alerts
+	// remember, and the audit trail, in the data directory, if there is
+	// one; auditLog is its audit trail.
+	stateDB  *statedb.DB
+	auditLog audit.Store
+
 	// tokens authorize admin API requests, and signin signs browsers in
 	// to the web UI, once the admin listener knows its address.
 	tokens        tokens
@@ -119,6 +129,10 @@ type Server struct {
 	proofs, exchangeProofs *dpop.Verifier
 
 	trustedProxies []netip.Prefix
+
+	// adminHosts are the hosts the admin listener answers to beyond those
+	// it always does, against DNS rebinding.
+	adminHosts []hostPattern
 
 	// listeners records the addresses served on, by kind, for status.
 	listenersMu sync.Mutex
@@ -162,21 +176,25 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 
 		signinLimiter:    newSigninLimiter(),
 		exchangeLimiter:  newExchangeLimiter(),
-		proofs:           newProofVerifier(),
-		exchangeProofs:   newProofVerifier(),
-		setupLinks:       newSetupLinks(),
 		alertPageLimiter: newAlertPageLimiter(),
+		adminHosts:       adminHostPatterns(config),
+	}
+
+	if err := s.configureState(context.Background()); err != nil {
+		return nil, err
 	}
 
 	if config.Admin.flightRecorder() {
 		recorder, err := newFlightRecorder(config.Admin, logger)
 		if err != nil {
+			s.closeState()
 			return nil, err
 		}
 		s.telemetry.recorder = recorder
 	}
 
 	if err := s.configureUpstreams(); err != nil {
+		s.closeState()
 		return nil, err
 	}
 
@@ -191,18 +209,21 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 
 	// Alerts start first, so a blocklist that fails to load is reported.
 	if err := s.configureAlerts(); err != nil {
+		s.closeState()
 		return nil, err
 	}
 
 	if err := s.configurePolicy(context.Background()); err != nil {
 		s.lists.Close()
 		s.alerts.Close()
+		s.closeState()
 		return nil, err
 	}
 
 	if err := s.configureQueryLog(); err != nil {
 		s.lists.Close()
 		s.alerts.Close()
+		s.closeState()
 		return nil, err
 	}
 
@@ -317,10 +338,79 @@ func (s *Server) Close() error {
 			s.logger.Warn("saving registration cache", slog.Any("error", err))
 		}
 	}
+	var err error
 	if s.qlog != nil {
-		return s.qlog.Close()
+		err = s.qlog.Close()
 	}
+	// Last, since alerts write to it as they close.
+	s.closeState()
+	return err
+}
+
+// closeState closes the state database, if it's open.
+func (s *Server) closeState() {
+	if s.stateDB == nil {
+		return
+	}
+	if err := s.stateDB.Close(); err != nil {
+		s.logger.Warn("closing the state database", slog.Any("error", err))
+	}
+	s.stateDB = nil
+}
+
+// configureState opens the state database in the data directory, if
+// there is one, keeping sessions, setup links, DPoP replay caches, what
+// alerts remember, and the audit trail there. Without one, they're kept
+// in memory, and there's no audit trail.
+func (s *Server) configureState(ctx context.Context) error {
+	if s.config.DataDir == "" {
+		s.setupLinks = newSetupLinks(nil)
+		s.proofs = newProofVerifier(dpop.NewMemoryReplayCache(maxProofs, nil))
+		s.exchangeProofs = newProofVerifier(dpop.NewMemoryReplayCache(maxProofs, nil))
+		return nil
+	}
+	db, err := statedb.Open(ctx, filepath.Join(s.config.DataDir, statedb.FileName))
+	if err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+	proofs, err := db.ReplayCache(ctx, "api", maxProofs, nil)
+	if err == nil {
+		s.proofs = newProofVerifier(proofs)
+		proofs, err = db.ReplayCache(ctx, "token-exchange", maxProofs, nil)
+		s.exchangeProofs = newProofVerifier(proofs)
+	}
+	if err != nil {
+		db.Close()
+		return fmt.Errorf("serve: %w", err)
+	}
+	s.stateDB, s.auditLog = db, db.Audit()
+	s.setupLinks = newSetupLinks(db.SetupLinks())
 	return nil
+}
+
+// stateSweepInterval is how often what's expired is removed from the
+// state database.
+const stateSweepInterval = 10 * time.Minute
+
+// sweepState removes what's expired from the state database every
+// stateSweepInterval, until ctx is done.
+func (s *Server) sweepState(ctx context.Context) error {
+	ticker := time.NewTicker(stateSweepInterval)
+	defer ticker.Stop()
+	opts := statedb.SweepOptions{
+		AuditRetention: time.Duration(cmp.Or(s.config.Audit.Retention, Duration(DefaultAuditRetention))),
+		AlertWindow:    alerts.CoalesceWindow,
+	}
+	for {
+		if err := s.stateDB.Sweep(ctx, time.Now(), opts); err != nil && ctx.Err() == nil {
+			s.logger.Warn("sweeping the state database", slog.Any("error", err))
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }
 
 // configureUpstreams sets up exchangers that fail over across the
@@ -544,6 +634,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	if adminLn != nil {
 		g.Go(func() error { return s.ServeAdmin(ctx, adminLn) })
+	}
+	if s.stateDB != nil {
+		g.Go(func() error { return s.sweepState(ctx) })
 	}
 
 	return g.Wait()

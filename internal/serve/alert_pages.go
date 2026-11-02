@@ -1,12 +1,14 @@
 package serve
 
 import (
+	"cmp"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/picatz/doh/internal/alerts"
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/httpsec"
 	"github.com/picatz/doh/internal/ratelimit"
 )
@@ -81,11 +83,10 @@ func (s *Server) alertConfirmPage(w http.ResponseWriter, r *http.Request) {
 		s.alertPageFailed(w, r, err)
 		return
 	}
-	attrs := []slog.Attr{slog.String("destination", d.ID), slog.String("by", "email link")}
-	if scope != "" {
-		attrs = append(attrs, slog.String("alerts_tenant", scope))
-	}
-	s.logger.LogAttrs(r.Context(), slog.LevelInfo, "admin: alert destination confirmed", attrs...)
+	s.auditBy(r, recipient("email link", scope), change{action: "alerts.destination.confirmed", message: "alert destination confirmed", tenant: scope,
+		target:  audit.Target{Type: "alert_destination", ID: d.ID},
+		summary: "Confirmed email alert destination " + cmp.Or(d.Name, d.ID) + " from its email",
+		details: details("destination", d.ID, "type", string(d.Type))})
 	_ = setupTemplate.ExecuteTemplate(w, "alerts-done", alertPageData{
 		Title: "You're set", Text: "doh's alerts will come to", Address: strings.TrimPrefix(d.URL, "mailto:"),
 	})
@@ -107,12 +108,17 @@ func (s *Server) alertUnsubscribePage(w http.ResponseWriter, r *http.Request) {
 		s.alertPageFailed(w, r, err)
 		return
 	}
-	attrs := []slog.Attr{slog.String("destination", d.ID), slog.String("by", "unsubscribe link")}
-	if scope != "" {
-		attrs = append(attrs, slog.String("alerts_tenant", scope))
-	}
-	s.logger.LogAttrs(r.Context(), slog.LevelInfo, "admin: alert destination removed", attrs...)
+	s.auditBy(r, recipient("unsubscribe link", scope), change{action: "alerts.destination.removed", message: "alert destination removed", tenant: scope,
+		target:  audit.Target{Type: "alert_destination", ID: d.ID},
+		summary: "Unsubscribed email alert destination " + cmp.Or(d.Name, d.ID) + " from its email",
+		details: details("destination", d.ID, "type", string(d.Type))})
 	_ = setupTemplate.ExecuteTemplate(w, "alerts-done", alertPageData{
 		Title: "Unsubscribed", Text: "No more alerts will be sent to", Address: strings.TrimPrefix(d.URL, "mailto:"),
 	})
+}
+
+// recipient is whoever followed a link sent to an alert address of
+// scope's, by way of the link named by.
+func recipient(by, scope string) principal {
+	return principal{by: by, tenant: scope, actor: actorOf(audit.ActorRecipient, "", "email recipient", scope, "")}
 }

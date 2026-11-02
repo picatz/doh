@@ -421,7 +421,8 @@ func TestDestinations_SecretShownOnce(t *testing.T) {
 
 func TestStore_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "alerts.json")
-	e, err := New(Options{Path: path})
+	mem := NewMemory() // as durable as the store, for this test
+	e, err := New(Options{Path: path, Memory: mem})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +440,7 @@ func TestStore_RoundTrip(t *testing.T) {
 	if _, _, err := e.AddDestination(context.Background(), "", NewDestination{Type: Ntfy, URL: "https://ntfy.sh/ops"}); err != nil {
 		t.Fatal(err)
 	}
-	e.store.seeDevice("smiths", "client:192.168.1.5", time.Now())
+	e.seeDevice("smiths", "client:192.168.1.5", time.Now())
 	if err := e.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +449,7 @@ func TestStore_RoundTrip(t *testing.T) {
 		t.Errorf("alerts.json: %v, mode %v, want 0600", err, fi.Mode().Perm())
 	}
 
-	e, err = New(Options{Path: path})
+	e, err = New(Options{Path: path, Memory: mem})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +464,7 @@ func TestStore_RoundTrip(t *testing.T) {
 	if full := e.store.destinations("smiths"); full[0].secret != secret {
 		t.Error("the webhook secret didn't survive reopening")
 	}
-	if isNew, _ := e.store.seeDevice("smiths", "client:192.168.1.5", time.Now()); isNew {
+	if isNew, _ := e.seeDevice("smiths", "client:192.168.1.5", time.Now()); isNew {
 		t.Error("a seen device was forgotten")
 	}
 	if _, dests, _ := e.Get(""); len(dests) != 1 {
@@ -471,11 +472,94 @@ func TestStore_RoundTrip(t *testing.T) {
 	}
 
 	// Forgetting a tenant forgets everything about it.
-	if err := e.ForgetScope("smiths"); err != nil {
+	if err := e.ForgetScope(t.Context(), "smiths"); err != nil {
 		t.Fatal(err)
 	}
 	if _, dests, _ := e.Get("smiths"); len(dests) != 0 {
 		t.Errorf("forgotten tenant still has %+v", dests)
+	}
+	if isNew, _ := e.seeDevice("smiths", "client:192.168.1.5", time.Now()); !isNew {
+		t.Error("a forgotten tenant's device is still known")
+	}
+}
+
+// An alerts file from before the state database kept the devices each
+// scope had seen. Opening it moves them to the Memory, keeps the file as
+// it was beside it, and leaves settings and destinations where they were.
+func TestStore_ImportsLegacyDevices(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.json")
+	legacy := `{"version":1,"scopes":[{"scope":"smiths","settings":{"kinds":["new-device"]},` +
+		`"destinations":[{"id":"d1","type":"ntfy","url":"https://ntfy.sh/smiths","created":"2026-01-01T00:00:00Z"}],` +
+		`"devices":{"since":"2026-01-01T00:00:00Z","seen":{"client:192.168.1.5":"2026-10-01T00:00:00Z","device:kids/ipad":"2026-10-02T00:00:00Z"}}}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mem := NewMemory()
+	e, err := New(Options{Path: path, Memory: mem})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"client:192.168.1.5", "device:kids/ipad"} {
+		if isNew, learning := e.seeDevice("smiths", d, time.Now()); isNew || learning {
+			t.Errorf("imported %s: new %v, learning %v", d, isNew, learning)
+		}
+	}
+	if isNew, learning := e.seeDevice("smiths", "client:192.168.1.99", time.Now()); !isNew || learning {
+		t.Errorf("a device the file didn't have: new %v, learning %v (since was imported too)", isNew, learning)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	backup, err := os.ReadFile(path + LegacyBackupSuffix)
+	if err != nil || string(backup) != legacy {
+		t.Errorf("backup = %q, %v; want the file as it was", backup, err)
+	}
+	if fi, err := os.Stat(path + LegacyBackupSuffix); err != nil || runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Errorf("backup's mode: %v, want 0600", err)
+	}
+	now, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(now), "192.168.1.5") || !strings.Contains(string(now), "ntfy.sh/smiths") {
+		t.Errorf("after the import, alerts.json = %s; want its destinations and no devices", now)
+	}
+
+	// Opening it again finds nothing to import, and doesn't touch the
+	// backup.
+	if err := os.WriteFile(path+LegacyBackupSuffix, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e, err = New(Options{Path: path, Memory: mem})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Close()
+	if b, _ := os.ReadFile(path + LegacyBackupSuffix); string(b) != "kept" {
+		t.Error("the backup was overwritten")
+	}
+}
+
+// Without a Memory that can import them, an older file's devices stay in
+// it, rather than being lost.
+func TestStore_KeepsLegacyDevicesWithoutImporter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.json")
+	legacy := `{"version":1,"scopes":[{"scope":"","devices":{"since":"2026-01-01T00:00:00Z","seen":{"client:192.168.1.5":"2026-10-01T00:00:00Z"}}}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e, err := New(Options{Path: path, Memory: struct{ Memory }{NewMemory()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.SetSettings("", Settings{Kinds: []Kind{KindThreat}}); err != nil {
+		t.Fatal(err)
+	}
+	e.Close()
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "192.168.1.5") {
+		t.Errorf("alerts.json lost its devices: %s", b)
 	}
 }
 
@@ -500,16 +584,37 @@ func TestStore_RejectsInvalidFiles(t *testing.T) {
 	}
 }
 
-func TestStore_BoundsSeenDevices(t *testing.T) {
-	s, _ := openStore("")
+func TestMemory_BoundsSeenDevices(t *testing.T) {
+	m := NewMemory()
 	start := time.Now()
 	for i := range MaxSeenDevices + 10 {
-		s.seeDevice("", "client:"+strconv.Itoa(i), start.Add(time.Duration(i)*time.Second))
+		if _, _, err := m.SeeDevice(t.Context(), "", "client:"+strconv.Itoa(i), start.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if n := len(s.scopes[""].devices); n != MaxSeenDevices {
+	if n := len(m.(*memory).scopes[""].devices); n != MaxSeenDevices {
 		t.Errorf("remembered %d devices, want %d", n, MaxSeenDevices)
 	}
-	if isNew, _ := s.seeDevice("", "client:0", start.Add(time.Hour)); !isNew {
+	if isNew, _, _ := m.SeeDevice(t.Context(), "", "client:0", start.Add(time.Hour)); !isNew {
 		t.Error("the least recently seen device wasn't the one forgotten")
+	}
+}
+
+func TestMemory_ClaimsAreBounded(t *testing.T) {
+	m := NewMemory()
+	now := time.Now()
+	for i := range MaxClaims {
+		if ok, err := m.Claim(t.Context(), "", "threat", strconv.Itoa(i), now, time.Hour); !ok || err != nil {
+			t.Fatalf("claim %d: %v, %v", i, ok, err)
+		}
+	}
+	if ok, _ := m.Claim(t.Context(), "", "threat", "0", now.Add(time.Minute), time.Hour); ok {
+		t.Error("a repeat within the window was claimed")
+	}
+	if _, err := m.Claim(t.Context(), "", "threat", "new", now.Add(time.Minute), time.Hour); err != ErrMemoryFull {
+		t.Errorf("claim beyond the bound: %v, want ErrMemoryFull", err)
+	}
+	if ok, err := m.Claim(t.Context(), "", "threat", "new", now.Add(time.Hour), time.Hour); !ok || err != nil {
+		t.Errorf("claim once the others expired: %v, %v", ok, err)
 	}
 }

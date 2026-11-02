@@ -23,6 +23,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/picatz/doh/internal/api"
+	"github.com/picatz/doh/internal/audit"
 	"github.com/picatz/doh/internal/blocklist"
 	"github.com/picatz/doh/internal/filter"
 	"github.com/picatz/doh/internal/policy"
@@ -64,6 +65,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("GET "+p+"/logs/stream", s.apiStream)
 	mux.HandleFunc("GET "+p+"/stats", s.apiStats)
 	mux.HandleFunc("GET "+p+"/explain", s.apiExplain)
+	mux.HandleFunc("GET "+p+"/audit", s.apiAudit)
 	mux.HandleFunc("POST "+p+"/signin-links", peopleOnly(s.apiSigninLink))
 	mux.HandleFunc("GET "+p+"/people", peopleOnly(s.apiPeople))
 	mux.HandleFunc("DELETE "+p+"/people/{id}", peopleOnly(s.apiDeletePerson))
@@ -164,18 +166,18 @@ func (s *Server) tokenPrincipal(r *http.Request, token string, isDPoP bool) (pri
 		// Looked up, not yet marked used: a bound key isn't used until
 		// its proof is checked.
 		if a, k, ok := s.accounts.Lookup(token); ok { // otherwise revoked or expired
-			p, jkt, key = s.accountPrincipal(a, "service account "+a.ID+" key "+k.ID), k.JKT, k.ID
+			p, jkt, key = s.accountPrincipal(a, "key "+k.ID, "key "+k.ID), k.JKT, k.ID
 		}
 	case serviceaccount.IsAccessToken(token):
 		if a, t, ok := s.accounts.AuthenticateToken(token); ok { // otherwise expired, or its account or rule is gone
-			p, jkt = s.accountPrincipal(a, "service account "+a.ID+" via "+t.Issuer), t.JKT
+			p, jkt = s.accountPrincipal(a, "via "+t.Issuer, "token exchange from "+t.Issuer), t.JKT
 		}
 	default:
 		switch role := s.tokens.roleOf(token); role {
 		case roleAdmin:
-			p = principal{role: role, by: "admin token"}
+			p = principal{role: role, by: "admin token", actor: actorOf(audit.ActorToken, "admin", "admin token", "", "")}
 		case roleReader:
-			p = principal{role: role, by: "reader token"}
+			p = principal{role: role, by: "reader token", actor: actorOf(audit.ActorToken, "reader", "reader token", "", "")}
 		}
 	}
 	if p.role == roleNone {
@@ -191,12 +193,14 @@ func (s *Server) tokenPrincipal(r *http.Request, token string, isDPoP bool) (pri
 }
 
 // accountPrincipal returns the principal of service account a, if its
-// tenant still exists, described by by.
-func (s *Server) accountPrincipal(a serviceaccount.Account, by string) principal {
+// tenant still exists, authenticated by a key or token exchange: by and
+// via describe how, for the log and the audit trail.
+func (s *Server) accountPrincipal(a serviceaccount.Account, by, via string) principal {
 	if a.Tenant != "" && s.engine.Load().Policy().Tenant(a.Tenant) == nil {
 		return principal{} // its tenant is gone
 	}
-	p := principal{role: roleReader, tenant: a.Tenant, account: a.ID, by: by}
+	p := principal{role: roleReader, tenant: a.Tenant, account: a.ID, by: "service account " + a.ID + " " + by,
+		actor: actorOf(audit.ActorServiceAccount, a.ID, a.Name, a.Tenant, via)}
 	if a.Role == serviceaccount.RoleAdmin {
 		p.role = roleAdmin
 	}
@@ -374,7 +378,7 @@ func (s *Server) updatePolicy(w http.ResponseWriter, r *http.Request, change fun
 		return nil, false
 	}
 
-	s.logger.InfoContext(r.Context(), "admin: policy changed", slog.String("method", r.Method), slog.String("path", r.URL.Path))
+	s.auditPolicy(r, cur, next)
 	w.Header().Set("ETag", next.ETag())
 	return next, true
 }
