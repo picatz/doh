@@ -57,7 +57,10 @@
 //	POST   /api/v1/token                          TokenExchangeRequest form → TokenResponse (no credential)
 //	GET    /api/v1/profiles/{id}/setup?device=    Setup
 //	POST   /api/v1/profiles/{id}/setup-links?device=   → 201 SetupLink
-//	GET    /api/v1/profiles/{id}/apple.mobileconfig?device=&protocol=   Apple configuration profile
+//	GET    /api/v1/profiles/{id}/apple.mobileconfig?device=&protocol=&lock=   Apple configuration profile
+//	GET    /api/v1/profiles/{id}/doh-setup.ps1?device=    Windows PowerShell setup script
+//	GET    /api/v1/profiles/{id}/doh.conf?device=         systemd-resolved drop-in for Linux
+//	GET    /api/v1/profiles/{id}/doh-openwrt.sh           OpenWrt setup script
 //	GET    /api/v1/alerts?tenant=                 Alerts (admin)
 //	PATCH  /api/v1/alerts?tenant=                 merge patch of alerts.Settings → Alerts (admin)
 //	POST   /api/v1/alerts/destinations?tenant=    AlertDestinationRequest → 201 NewAlertDestination (admin)
@@ -346,29 +349,136 @@ type Setup struct {
 	// that select the profile by address.
 	DNSAddrs []string `json:"dns_addrs,omitempty"`
 
-	// Platforms are step-by-step instructions, by platform.
+	// ServerAddrs are the addresses devices reach the encrypted listeners
+	// at, when the server knows them: what Hostname resolves to, as the
+	// server sees it, or else its own local network addresses. Settings
+	// that pair an address with a host name, such as Windows' and
+	// systemd-resolved's, use them.
+	ServerAddrs []string `json:"server_addrs,omitempty"`
+
+	// Platforms are step-by-step instructions, by platform, in the order
+	// of Groups.
 	Platforms []Platform `json:"platforms"`
+
+	// Groups are the groups Platforms belong to, in the order to show
+	// them. Only groups with at least one platform are listed.
+	Groups []PlatformGroup `json:"groups,omitempty"`
+}
+
+// PlatformGroup is a kind of device to show platforms under.
+type PlatformGroup struct {
+	// ID is one of the Group constants, such as [GroupPhones].
+	ID string `json:"id"`
+
+	// Name is the group's name for people, such as "Phones & tablets".
+	Name string `json:"name"`
+}
+
+// Platform groups, in the order they're shown.
+const (
+	GroupPhones    = "phones"     // Phones & tablets
+	GroupComputers = "computers"  // Computers
+	GroupTV        = "tv"         // TV & streaming
+	GroupConsoles  = "consoles"   // Game consoles
+	GroupSmartHome = "smart-home" // Smart home
+	GroupBrowsers  = "browsers"   // Browsers
+	GroupNetwork   = "network"    // Whole network
+)
+
+// Protection levels of a platform's settings.
+const (
+	// ProtectionEncrypted is DNS-over-HTTPS or DNS-over-TLS all the way
+	// from the device (or, for a router, from the router) to doh.
+	ProtectionEncrypted = "encrypted"
+
+	// ProtectionPlain is plain DNS: unencrypted on the local network, with
+	// the device known to doh only by its address.
+	ProtectionPlain = "plain"
+
+	// ProtectionUnavailable means this server can't serve the platform as
+	// it's set up, such as devices that only speak plain DNS when the
+	// server doesn't serve it.
+	ProtectionUnavailable = "unavailable"
+)
+
+// Protection is how well a platform's settings protect a device's DNS.
+type Protection struct {
+	// Level is ProtectionEncrypted, ProtectionPlain, or
+	// ProtectionUnavailable.
+	Level string `json:"level"`
+
+	// Protocol is what the device speaks to doh: "https" (DoH), "tls"
+	// (DoT), or "dns" (plain DNS); empty when unavailable.
+	Protocol string `json:"protocol,omitempty"`
+
+	// Summary says why, in one line.
+	Summary string `json:"summary"`
+}
+
+// Download is a file that sets a device up.
+type Download struct {
+	// Name says what it is, such as "Configuration profile
+	// (DNS-over-TLS)".
+	Name string `json:"name"`
+
+	// File is the name to save it as, such as "doh-setup.ps1".
+	File string `json:"file"`
+
+	// Path is its admin API path, query included. A setup link's page
+	// serves the same file under the link instead.
+	Path string `json:"path"`
+
+	// ContentType is its media type.
+	ContentType string `json:"content_type"`
 }
 
 // Platform is how to set up one kind of device.
 type Platform struct {
-	// ID identifies the platform: "apple", "android", "windows", "linux",
-	// "browser", or "router".
+	// ID identifies the platform: "apple" (iPhone and iPad), "mac",
+	// "apple-tv", "vision-pro", "android", "android-tv", "windows",
+	// "linux", "chromeos", "smart-tv", "consoles", "smart-home",
+	// "browser", "router", "openwrt", "pfsense", "unifi", or "none" when
+	// there's nothing to set up yet.
 	ID string `json:"id"`
 
-	// Name is the platform's name for people, such as "iPhone, iPad, and Mac".
+	// Name is the platform's name for people, such as "iPhone and iPad".
 	Name string `json:"name"`
 
 	// Steps are the instructions, in order.
 	Steps []string `json:"steps"`
 
 	// Download, if set, is the API path of a file that sets the device up,
-	// such as an Apple configuration profile.
+	// such as an Apple configuration profile: the first of Downloads.
 	Download string `json:"download,omitempty"`
+
+	// Group is the ID of the group the platform belongs to, such as
+	// [GroupPhones]; empty for "none".
+	Group string `json:"group,omitempty"`
+
+	// Protection is how well the settings protect the device's DNS.
+	Protection *Protection `json:"protection,omitempty"`
+
+	// Downloads are files that set the device up, best first.
+	Downloads []Download `json:"downloads,omitempty"`
+
+	// Check says how to tell the settings are working.
+	Check string `json:"check,omitempty"`
+
+	// Identified says how doh tells which device is asking, and so which
+	// profile its queries get and the name the log shows.
+	Identified string `json:"identified,omitempty"`
+
+	// Notes are limits and caveats worth knowing.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // MobileConfigType is the media type of Apple configuration profiles.
 const MobileConfigType = "application/x-apple-aspen-config"
+
+// TextFileType is the media type of the setup files that aren't Apple
+// configuration profiles, served as attachments: the PowerShell script for
+// Windows, the systemd-resolved drop-in, and the OpenWrt shell script.
+const TextFileType = "text/plain; charset=utf-8"
 
 // SigninLinkRequest asks for a sign-in link.
 type SigninLinkRequest struct {

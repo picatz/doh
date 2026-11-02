@@ -7,26 +7,42 @@
 <meta name="robots" content="noindex">
 <title>{{.}} · doh</title>
 <style>
-:root { --bg: #f7f7f9; --surface: #fff; --surface-2: #f1f1f5; --border: #e2e2ea; --text: #17171c; --muted: #5d5d69; --glaze: #c2255c; --glaze-ink: #a01d4b; --on-glaze: #fff; color-scheme: light dark; }
-@media (prefers-color-scheme: dark) { :root { --bg: #0f0f13; --surface: #17171d; --surface-2: #1f1f27; --border: #2a2a34; --text: #ececf2; --muted: #a2a2b0; --glaze: #f06595; --glaze-ink: #ff8fb4; --on-glaze: #1c0611; } }
+:root { --bg: #f7f7f9; --surface: #fff; --surface-2: #f1f1f5; --border: #e2e2ea; --text: #17171c; --muted: #5d5d69; --glaze: #c2255c; --glaze-ink: #a01d4b; --on-glaze: #fff; --ok: #1f7a4d; --ok-bg: #e3f4ea; --warn: #8a5a00; --warn-bg: #fbf0d9; --off: #5d5d69; --off-bg: #ececf1; color-scheme: light dark; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0f0f13; --surface: #17171d; --surface-2: #1f1f27; --border: #2a2a34; --text: #ececf2; --muted: #a2a2b0; --glaze: #f06595; --glaze-ink: #ff8fb4; --on-glaze: #1c0611; --ok: #7ad8a6; --ok-bg: #133325; --warn: #f2c46b; --warn-bg: #3a2c0e; --off: #b4b4c0; --off-bg: #26262f; } }
 * { box-sizing: border-box; }
-body { margin: 0; min-height: 100dvh; background: var(--bg); color: var(--text); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; padding: max(1.25rem, env(safe-area-inset-top)) 1rem max(2rem, env(safe-area-inset-bottom)); }
-main { max-width: 32rem; margin: 0 auto; }
+body { margin: 0; min-height: 100dvh; background: var(--bg); color: var(--text); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; padding: max(1.25rem, env(safe-area-inset-top)) 1rem max(2rem, env(safe-area-inset-bottom)); overflow-wrap: anywhere; }
+main { max-width: 34rem; margin: 0 auto; }
 .mark { display: block; width: 4.5rem; height: 4.5rem; margin: 1.5rem auto 1rem; }
 h1 { font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif; font-size: 1.6rem; line-height: 1.2; letter-spacing: -.02em; text-align: center; margin: 0 0 .5rem; }
 .lede { text-align: center; color: var(--muted); margin: 0 0 1.75rem; }
 .lede strong { color: var(--text); }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem 1.2rem; margin-bottom: .9rem; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem 1.2rem; margin-bottom: .7rem; }
 h2 { font-size: 1rem; margin: 0 0 .5rem; }
-ol { margin: 0; padding-left: 1.3rem; display: grid; gap: .4rem; }
-li::marker { color: var(--glaze); font-weight: 700; }
+.group { margin: 1.6rem 0 .6rem; font-size: .8rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+h3 { font-size: .85rem; margin: .9rem 0 .3rem; color: var(--muted); }
+ol, ul { margin: 0; padding-left: 1.3rem; display: grid; gap: .4rem; }
+ol li::marker { color: var(--glaze); font-weight: 700; }
+ul li::marker { color: var(--muted); }
+p { margin: .4rem 0; }
 .button { display: flex; align-items: center; justify-content: center; min-height: 3rem; margin: .25rem 0 .75rem; border-radius: 12px; background: var(--glaze); color: var(--on-glaze); font-weight: 650; text-decoration: none; }
 .button:active { opacity: .85; }
-code { display: block; margin-top: .4rem; padding: .55rem .7rem; border-radius: 8px; background: var(--surface-2); font: .9rem/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+.files { display: grid; gap: .5rem; margin: .8rem 0 .2rem; }
+.files a { display: flex; align-items: center; min-height: 2.75rem; padding: .4rem .9rem; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--glaze-ink); font-weight: 600; text-decoration: none; }
+.files a:first-child { background: var(--glaze); border-color: var(--glaze); color: var(--on-glaze); }
+code { display: block; margin-top: .4rem; padding: .55rem .7rem; border-radius: 8px; background: var(--surface-2); font: .9rem/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; user-select: all; -webkit-user-select: all; }
 .muted { color: var(--muted); font-size: .9rem; }
 .foot { text-align: center; margin-top: 1.5rem; }
-details summary { cursor: pointer; font-weight: 600; min-height: 2.75rem; display: flex; align-items: center; }
+details summary { cursor: pointer; font-weight: 600; min-height: 2.75rem; display: flex; align-items: center; justify-content: space-between; gap: .75rem; list-style: none; }
+details summary::-webkit-details-marker { display: none; }
+details summary::after { content: "+"; color: var(--muted); font-weight: 400; font-size: 1.3rem; line-height: 1; }
+details[open] summary::after { content: "\2212"; }
 details[open] summary { margin-bottom: .4rem; }
+.name { flex: 1; }
+.badge { flex: none; font-size: .75rem; font-weight: 650; padding: .15rem .55rem; border-radius: 999px; background: var(--off-bg); color: var(--off); }
+.badge.encrypted { background: var(--ok-bg); color: var(--ok); }
+.badge.plain { background: var(--warn-bg); color: var(--warn); }
+.why { color: var(--muted); font-size: .9rem; margin-top: 0; }
+@media (forced-colors: active) { .badge, .files a, .button { border: 1px solid CanvasText; } }
 </style>
 </head>
 <body>
@@ -43,15 +59,23 @@ details[open] summary { margin-bottom: .4rem; }
   <a class="button" href="{{.Download}}">Install the profile</a>
   <ol>
     <li>Tap Allow when asked to download it.</li>
-    <li>iPhone and iPad: open Settings, tap Profile Downloaded, then Install. Mac: open System Settings, then Privacy &amp; Security, then Profiles.</li>
+    <li>iPhone and iPad: open Settings, tap Profile Downloaded, then Install. Mac: open System Settings, and install it where downloaded profiles are listed.</li>
     <li>It works on every network. Remove it from the same place to stop.</li>
   </ol>
 </section>{{end}}
 
-{{range .Platforms}}<details class="card">
-  <summary>{{.Name}}</summary>
+{{range .Groups}}<section aria-label="{{.Name}}">
+<h2 class="group">{{.Name}}</h2>
+{{range .Platforms}}{{$level := .Level}}<details class="card" id="{{.ID}}">
+  <summary><span class="name">{{.Name}}</span>{{with .Badge}}<span class="badge {{$level}}">{{.}}</span>{{end}}</summary>
+  {{with .Protection}}<p class="why">{{.Summary}}</p>{{end}}
+  {{with .Files}}<div class="files">{{range .}}<a href="{{.Href}}">{{.Name}}</a>{{end}}</div>{{end}}
   <ol>{{range .Steps}}<li>{{.}}</li>{{end}}</ol>
+  {{with .Check}}<h3>Check it's working</h3><p>{{.}}</p>{{end}}
+  {{with .Identified}}<h3>How doh knows it</h3><p>{{.}}</p>{{end}}
+  {{with .Notes}}<h3>Good to know</h3><ul>{{range .}}<li>{{.}}</li>{{end}}</ul>{{end}}
 </details>{{end}}
+</section>{{end}}
 
 {{if .DoHURL}}<section class="card">
   <h2>Anything else</h2>

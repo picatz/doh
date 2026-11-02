@@ -303,6 +303,24 @@ func (c *Client) MobileConfig(ctx context.Context, profile, device, protocol str
 	return body, err
 }
 
+// Download returns a setup file, such as a Windows setup script, from d,
+// one of a platform's downloads in a Setup.
+func (c *Client) Download(ctx context.Context, d api.Download) ([]byte, error) {
+	u, err := url.Parse(d.Path)
+	if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(u.Path, api.Prefix+"/profiles/") {
+		return nil, fmt.Errorf("doh: %q isn't a setup file's API path", d.Path)
+	}
+	req, err := c.request(ctx, http.MethodGet, strings.TrimPrefix(u.EscapedPath(), api.Prefix), u.Query(), nil)
+	if err != nil {
+		return nil, err
+	}
+	if d.ContentType != "" {
+		req.Header.Set("Accept", d.ContentType)
+	}
+	_, body, err := c.send(req)
+	return body, err
+}
+
 // SigninLink creates a single-use link that signs a browser in to the web
 // UI with role: "admin", "reader", or "" for admin. With tenant, the link
 // signs in to that tenant, such as to invite a household's first admin;

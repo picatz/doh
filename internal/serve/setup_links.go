@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -159,38 +161,103 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.PathValue("file") == "apple.mobileconfig" {
+	// The link fixes the device: files are made for it, whatever the
+	// request's query says.
+	switch file := r.PathValue("file"); {
+	case file == mobileConfigFile:
 		s.serveMobileConfig(w, r, pr, link.device)
 		return
-	}
-	if r.PathValue("file") != "" {
+	case slices.Contains(setupFiles, file):
+		s.serveSetupFile(w, r, pr, link.device, file)
+		return
+	case file != "":
 		http.NotFound(w, r)
 		return
 	}
 
-	setup := s.setupFor(pr, link.device)
+	setup := s.setupFor(r.Context(), pr, link.device)
+	base := setupPath + r.PathValue("code") + "/"
 	page := setupPageData{
-		Profile:  cmp.Or(pr.Name, pr.ID),
-		Device:   link.device,
-		Minutes:  strconv.Itoa(max(1, int(time.Until(link.expires).Round(time.Minute)/time.Minute))),
-		DoHURL:   setup.DoHURL,
-		DoTHost:  setup.DoTHost,
-		Download: setupPath + r.PathValue("code") + "/apple.mobileconfig",
+		Profile: cmp.Or(pr.Name, pr.ID),
+		Device:  link.device,
+		Minutes: strconv.Itoa(max(1, int(time.Until(link.expires).Round(time.Minute)/time.Minute))),
+		DoHURL:  setup.DoHURL,
+		DoTHost: setup.DoTHost,
 	}
-	for _, p := range setup.Platforms {
-		if p.ID != "apple" && p.ID != "router" && p.ID != "none" {
-			page.Platforms = append(page.Platforms, p)
+	if setup.DoHURL != "" || setup.DoTHost != "" {
+		page.Download = base + mobileConfigFile
+	}
+	for _, g := range setup.Groups {
+		group := setupPageGroup{Name: g.Name}
+		for _, p := range setup.Platforms {
+			if p.Group == g.ID {
+				group.Platforms = append(group.Platforms, newSetupPagePlatform(p, base))
+			}
 		}
+		page.Groups = append(page.Groups, group)
 	}
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	_ = setupTemplate.ExecuteTemplate(w, "setup", page)
 }
 
+// setupPageData is what a setup link's page shows.
 type setupPageData struct {
 	Profile, Device, Minutes string
 	DoHURL, DoTHost          string
-	Download                 string
-	Platforms                []api.Platform
+
+	// Download is the Apple configuration profile, for one-tap install.
+	Download string
+
+	Groups []setupPageGroup
+}
+
+// setupPageGroup is a group of platforms on a setup page.
+type setupPageGroup struct {
+	Name      string
+	Platforms []setupPagePlatform
+}
+
+// setupPagePlatform is a platform on a setup page, with its downloads
+// served under the link.
+type setupPagePlatform struct {
+	api.Platform
+	Level, Badge string
+	Files        []setupPageFile
+}
+
+// setupPageFile is a download on a setup page.
+type setupPageFile struct {
+	Name, Href string
+}
+
+// newSetupPagePlatform returns p for a setup page whose files are under
+// base, as setupPath + code + "/".
+func newSetupPagePlatform(p api.Platform, base string) setupPagePlatform {
+	out := setupPagePlatform{Platform: p}
+	if p.Protection != nil {
+		out.Level = p.Protection.Level
+		out.Badge = map[string]string{
+			api.ProtectionEncrypted:   "Encrypted",
+			api.ProtectionPlain:       "Plain DNS",
+			api.ProtectionUnavailable: "Not available here",
+		}[p.Protection.Level]
+	}
+	for _, d := range p.Downloads {
+		u, err := url.Parse(d.Path)
+		if err != nil {
+			continue
+		}
+		// The link names the device; only the variant (protocol, lock)
+		// comes from the query.
+		q := u.Query()
+		q.Del("device")
+		href := base + path.Base(u.Path)
+		if len(q) > 0 {
+			href += "?" + q.Encode()
+		}
+		out.Files = append(out.Files, setupPageFile{Name: d.Name, Href: href})
+	}
+	return out
 }
 
 //go:embed setup_page.html

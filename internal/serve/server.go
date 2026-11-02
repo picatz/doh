@@ -99,6 +99,9 @@ type Server struct {
 	signinLimiter *ratelimit.Limiter
 	setupLinks    *setupLinks
 
+	// selfAddrs finds the server's own addresses, for setup files.
+	selfAddrs selfAddrs
+
 	// federation verifies workloads' identity tokens for token exchange,
 	// and exchangeLimiter slows down clients whose exchanges fail.
 	federation      federation.Verifier

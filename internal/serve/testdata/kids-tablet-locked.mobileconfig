@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>DNSSettings</key>
+			<dict>
+				<key>DNSProtocol</key>
+				<string>HTTPS</string>
+				<key>ServerURL</key>
+				<string>https://dns.example.test/dns-query/kids/tablet</string>
+			</dict>
+			<key>PayloadDisplayName</key>
+			<string>Encrypted DNS: Kids (tablet)</string>
+			<key>PayloadIdentifier</key>
+			<string>doh.dns.example.test.kids.tablet.dns</string>
+			<key>PayloadType</key>
+			<string>com.apple.dnsSettings.managed</string>
+			<key>PayloadUUID</key>
+			<string>FEE4B310-94B5-8553-8014-699CEB8D8F82</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>ProhibitDisablement</key>
+			<true/>
+		</dict>
+	</array>
+	<key>PayloadDescription</key>
+	<string>Sends this device&#39;s DNS queries to doh, encrypted, using profile Kids (tablet).</string>
+	<key>PayloadDisplayName</key>
+	<string>doh: Kids (tablet)</string>
+	<key>PayloadIdentifier</key>
+	<string>doh.dns.example.test.kids.tablet</string>
+	<key>PayloadRemovalDisallowed</key>
+	<false/>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>4F258379-FDC1-8EE3-AF08-6DFE1491937E</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+</dict>
+</plist>

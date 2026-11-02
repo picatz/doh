@@ -1,4 +1,4 @@
-// Package plist encodes Apple XML property lists, as configuration
+// Package plist encodes, and decodes, Apple XML property lists, as configuration
 // profiles use, from a small set of typed values.
 //
 // Dictionaries keep their keys in the order given, so output is
