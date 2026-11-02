@@ -1,8 +1,9 @@
-import { fromNow, formatDate } from "./format.js";
 import { api, report } from "./api.js";
-import { $, h, badge, clear, toast, confirmDialog, statusIcon } from "./dom.js";
-import { renderSecurity, grouped, describeActor } from "./people.js";
-import { state, isAdmin, isOperator } from "./state.js";
+import { $, badge, clear, confirmDialog, emptyState, h, icon, statusIcon, toast } from "./dom.js";
+import { formatDate, fromNow } from "./format.js";
+import { describeActor, grouped } from "./people.js";
+import { refreshSettings } from "./settings.js";
+import { isAdmin, isOperator, state } from "./state.js";
 
 // soonDays is when a key's coming expiry is worth pointing out.
 export const soonDays = 14;
@@ -17,13 +18,26 @@ export function keyStatus(k, now = Date.now()) {
   return h("span", { class: "status", title: formatDate(k.expires) }, text);
 }
 
+// renderApiPanel lists service accounts and their keys.
+export async function renderApiPanel() {
+  const [peopleData, accountData] = await Promise.all([api("GET", "/people"), api("GET", "/service-accounts")]);
+  renderServiceAccounts(accountData?.service_accounts || [], peopleData?.people || []);
+}
+
 export function renderServiceAccounts(accounts, people = []) {
   const box = clear($("service-accounts"));
   $("new-sa").hidden = !isAdmin();
   if (!accounts.length) {
-    box.append(h("p", { class: "muted empty", text: "None yet. Make one for each script or device that talks to this server, so each can be revoked on its own." }));
+    box.append(emptyState({
+      title: "No service accounts yet.",
+      body: "Make one for each script, home automation, or CI job that talks to this server, so each can be revoked on its own.",
+      action: isAdmin() ? h("button", { type: "button", class: "primary", onClick: openCreateAccount }, icon("plus"), "New service account") : null,
+      compact: true,
+    }));
+    state.hints.api = 0;
     return;
   }
+  state.hints.api = accounts.length;
   grouped(box, accounts, (a) => {
     const now = Date.now();
     const keys = [...a.keys].sort((x, y) => new Date(y.expires) - new Date(x.expires));
@@ -81,7 +95,7 @@ export async function createAccount(e) {
     const account = await api("POST", "/service-accounts", { body });
     const key = await api("POST", `/service-accounts/${encodeURIComponent(account.id)}/keys`, { body: { expires: daysFromNow($("sa-expires").value) } });
     $("sa-dialog").close();
-    await renderSecurity();
+    await refreshSettings();
     revealSecret(account, key);
   } catch (err) {
     report(err);
@@ -96,7 +110,7 @@ export const daysFromNow = (n) => new Date(Date.now() + Number(n) * 864e5).toISO
 export async function addKey(a) {
   try {
     const key = await api("POST", `/service-accounts/${encodeURIComponent(a.id)}/keys`, { body: { expires: daysFromNow(90) } });
-    await renderSecurity();
+    await refreshSettings();
     revealSecret(a, key);
   } catch (err) {
     report(err);
@@ -125,7 +139,7 @@ export async function submitRotate(e) {
     const key = await api("POST", `/service-accounts/${encodeURIComponent(a.id)}/keys/${encodeURIComponent(k.id)}/rotate`, { body });
     $("rotate-dialog").close();
     rotating = null;
-    await renderSecurity();
+    await refreshSettings();
     revealSecret(a, key, grace ? `Key ${k.id} keeps working ${fromNow(body.previous_expires)}.` : `Key ${k.id} no longer works.`);
   } catch (err) {
     report(err);
@@ -137,7 +151,7 @@ export async function revokeKey(a, k, expired) {
   try {
     await api("DELETE", `/service-accounts/${encodeURIComponent(a.id)}/keys/${encodeURIComponent(k.id)}`);
     toast(expired ? `Removed expired key ${k.id}.` : `Revoked key ${k.id}.`);
-    await renderSecurity();
+    await refreshSettings();
   } catch (err) {
     report(err);
   }
@@ -149,7 +163,7 @@ export async function deleteAccount(a) {
   try {
     await api("DELETE", `/service-accounts/${encodeURIComponent(a.id)}`);
     toast(`Deleted ${a.name}.`);
-    await renderSecurity();
+    await refreshSettings();
   } catch (err) {
     report(err);
   }
@@ -180,7 +194,7 @@ export async function copySecret() {
   const button = $("secret-copy");
   try {
     await navigator.clipboard.writeText($("secret-value").textContent);
-    button.textContent = "Copied ✓";
+    $("secret-copy-label").textContent = "Copied";
     setTimeout(() => { button.textContent = "Copy"; }, 2000);
   } catch {
     // Without clipboard access, select it for copying by hand.

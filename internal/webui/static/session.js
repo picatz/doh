@@ -1,11 +1,13 @@
-import { stopLive, closeDrawer } from "./activity.js";
-import { APIError, api, report, authCall } from "./api.js";
-import { services } from "./apps.js";
-import { $, h, icon, clear } from "./dom.js";
+import { closeDrawer, stopLive } from "./activity.js";
+import { api, APIError, authCall, report } from "./api.js";
+import { $, clear, h, icon } from "./dom.js";
+import { loadSetup } from "./onboarding.js";
 import { renderProfiles } from "./profiles.js";
 import { applyRoute } from "./router.js";
-import { state, isAdmin, isOperator, tenantName } from "./state.js";
+import { isFirstRun } from "./setup.js";
+import { isAdmin, isOperator, state, tenantName } from "./state.js";
 import { webauthnJSON } from "./webauthn.js";
+import { readPrefs } from "./prefs.js";
 
 // takeLinkCode removes a sign-in link's code from the address bar, so it
 // isn't left in history or shared by accident, and returns it.
@@ -144,7 +146,9 @@ export function renderWho() {
     );
   }
   clear($("avatar")).append(face());
-  $("passkey-banner").hidden = !(s && !s.person && !state.auth.passkeys_required);
+  // The setup checklist asks for a passkey itself, while it shows.
+  const checklist = isAdmin() && state.setup && !state.setup.complete && !readPrefs().setupDismissed;
+  $("passkey-banner").hidden = !(s && !s.person && !state.auth.passkeys_required) || checklist;
 }
 
 export async function enterApp() {
@@ -154,9 +158,15 @@ export async function enterApp() {
   setReadOnly(status.policy);
   await Promise.all([loadPolicy(), loadTenants()]);
   // Only the operator manages tenants and sees how the server runs.
-  $("nav-tenants").hidden = !isOperator();
+  $("settings-nav-tenants").hidden = !isOperator();
   $("list-health-card").hidden = !isOperator();
   renderWho();
+  // A brand-new server opens on setup, not an empty Overview.
+  const setup = await loadSetup().catch(() => null);
+  const landing = !location.hash;
+  if (landing && setup && isFirstRun({ admin: isAdmin(), passkeysRequired: !!state.auth?.passkeys_required, profiles: state.profiles, devices: setup.devices })) {
+    history.replaceState(null, "", "#/setup");
+  }
   $("signin").hidden = true;
   $("app").hidden = false;
   applyRoute();
@@ -201,4 +211,3 @@ export function fillProfileSelects() {
   }
 }
 
-// ---------- overview ----------

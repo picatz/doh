@@ -1,10 +1,8 @@
-import { fromNow } from "./format.js";
 import { showSecret } from "./accounts.js";
-import { APIError, api, report } from "./api.js";
-import { $, h, clear, toast, confirmDialog, statusIcon } from "./dom.js";
-import { section } from "./profiles.js";
-import { start } from "./session.js";
-import { state, isAdmin, isOperator } from "./state.js";
+import { api, APIError, report } from "./api.js";
+import { $, clear, confirmDialog, emptyState, h, icon, statusIcon, toast } from "./dom.js";
+import { fromNow } from "./format.js";
+import { isAdmin, isOperator, state } from "./state.js";
 
 // ALERT_KINDS says what each kind of alert is about, in a person's words.
 export const ALERT_KINDS = {
@@ -23,18 +21,20 @@ export const alertsQuery = () => (isOperator() && alertsTenant ? { tenant: alert
 // renderAlerts shows alert settings, destinations, and recent deliveries,
 // to admins: destinations' URLs can be enough to read the alerts.
 export async function renderAlerts() {
-  const section = $("alerts-section");
-  section.hidden = !isAdmin();
-  if (section.hidden) return;
+  if (!isAdmin()) return;
   let data;
   try {
     data = await api("GET", "/alerts", { query: alertsQuery() });
   } catch (err) {
-    if (err instanceof APIError && err.status === 403) { section.hidden = true; return; }
+    if (err instanceof APIError && err.status === 403) {
+      clear($("alerts")).append(h("p", { class: "muted", text: "Alerts are set up by an admin person, or the server's operator." }));
+      return;
+    }
     throw err;
   }
   const box = clear($("alerts"));
   $("alerts-test").disabled = !data.destinations.length;
+  if (!alertsTenant) state.hints.alerts = data.destinations.length;
 
   if (isOperator() && state.tenants.length) {
     const pick = h("select", { "aria-label": "Whose alerts" },
@@ -139,9 +139,12 @@ export function destinationsList(destinations) {
         h("button", { type: "button", class: "ghost danger-text", text: "Remove", "aria-label": `Remove ${d.name || d.url}`, onClick: () => removeDestination(d) }),
       );
     }))
-    : h("p", { class: "muted empty" }, "Nowhere yet. ",
-      h("button", { type: "button", class: "link", text: "Add ntfy", onClick: () => openAddDestination("ntfy") }),
-      " to get alerts on your phone in a minute.");
+    : emptyState({
+      mood: "alert", compact: true,
+      title: "Alerts have nowhere to go yet.",
+      body: "Add ntfy to get them on your phone in a minute, with its free app.",
+      action: h("button", { type: "button", class: "primary", onClick: () => openAddDestination("ntfy") }, icon("bell"), "Add ntfy"),
+    });
   return h("div", { class: "section" }, h("h4", { text: "Where they go" }), body);
 }
 
@@ -195,6 +198,7 @@ export async function addDestination(e) {
     const created = await api("POST", "/alerts/destinations", { body, query: alertsQuery() });
     $("alert-dialog").close();
     await renderAlerts();
+    document.dispatchEvent(new CustomEvent("doh:alerts-changed"));
     const name = created.destination.name || created.destination.url;
     if (created.secret) {
       showSecret(`Signing secret for ${name}`, created.secret,
@@ -238,4 +242,3 @@ export async function testAlerts() {
   }
 }
 
-// ---------- theme ----------

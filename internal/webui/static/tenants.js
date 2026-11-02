@@ -1,7 +1,7 @@
 import { api, report } from "./api.js";
-import { $, h, count, badge, clear, edit, toast, fmtTime, confirmDialog, copyButton } from "./dom.js";
-import { section, chipEditor } from "./profiles.js";
-import { loadTenants, loadPolicy } from "./session.js";
+import { $, badge, clear, confirmDialog, copyButton, count, edit, emptyState, fmtTime, h, icon, toast } from "./dom.js";
+import { chipEditor, section } from "./profiles.js";
+import { loadPolicy, loadTenants } from "./session.js";
 import { state } from "./state.js";
 
 // renderTenants lists tenants for the operator, each editable in place.
@@ -9,7 +9,12 @@ export async function renderTenants() {
   await Promise.all([loadTenants(), loadPolicy()]);
   const box = clear($("tenant-cards"));
   if (!state.tenants.length) {
-    box.append(h("p", { class: "muted", text: "No tenants yet. Create one to share this server with another household." }));
+    box.append(emptyState({
+      title: "No tenants yet.",
+      body: "Create one to share this server with another household. They'll manage their own profiles and people, and see nothing of yours.",
+      action: h("button", { type: "button", class: "primary", onClick: openCreateTenant }, icon("plus"), "New tenant"),
+      compact: true,
+    }));
     return;
   }
   for (const t of state.tenants) box.append(tenantCard(t));
@@ -131,4 +136,3 @@ export async function createTenant(e) {
   }
 }
 
-// ---------- security ----------

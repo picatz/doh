@@ -1,11 +1,12 @@
-import { fromNow } from "./format.js";
-import { drawRing, totalOf, hoursOf } from "./ring.js";
 import { checkName } from "./activity.js";
 import { api } from "./api.js";
-import { $, h, count, icon, clear, fmtNum, fmtTime, fmtDuration, plural, buddy } from "./dom.js";
-import { routeHash, go } from "./router.js";
-import { start, route, setReadOnly } from "./session.js";
-import { state, isOperator, tenantName } from "./state.js";
+import { $, buddy, clear, fmtDuration, fmtNum, fmtTime, h, icon, plural } from "./dom.js";
+import { fromNow } from "./format.js";
+import { drawRing, hoursOf, totalOf } from "./ring.js";
+import { go } from "./router.js";
+import { routeHash } from "./routes.js";
+import { setReadOnly } from "./session.js";
+import { isOperator, state, tenantName } from "./state.js";
 
 // SECURITY_REASONS are the checks that stop attacks rather than apply
 // someone's preferences, so the Overview can count threats apart.
@@ -171,8 +172,9 @@ export function renderServer(status) {
   const info = clear($("server-info"));
   const kv = (k, v) => info.append(h("dt", { text: k }), h("dd", {}, v));
   if (!isOperator()) {
-    $("server-title").textContent = "Your tenant";
-    $("server-summary").textContent = tenantName(status.tenant);
+    $("server-title").textContent = $("server-nav-label").textContent = "Your tenant";
+    state.hints.server = tenantName(status.tenant);
+    $("server-link").textContent = "";
     kv("Tenant", tenantName(status.tenant));
     kv("Profiles", fmtNum(status.policy?.profiles));
     kv("Activity", status.query_log?.enabled ? "kept" : "off");
@@ -181,7 +183,9 @@ export function renderServer(status) {
   }
   const up = status.started ? fmtDuration(Date.now() - new Date(status.started)) : "";
   const failed = (status.lists || []).filter((l) => l.error).length;
-  $("server-summary").textContent = [status.version, up && `up ${up}`, `${plural((status.lists || []).length, "list")}${failed ? `, ${failed} failed` : ""}`].filter(Boolean).join(" · ");
+  const summary = [up && `Up ${up}`, `${plural((status.lists || []).length, "list")}${failed ? `, ${failed} failed` : ""}`, status.version].filter(Boolean).join(" · ");
+  state.hints.server = summary;
+  $("server-link").textContent = `Server: ${summary}`;
   kv("Version", status.version || "—");
   kv("Up for", up || "—");
   for (const [k, v] of Object.entries(status.listeners || {})) kv(`Listening (${k})`, h("span", { class: "mono", text: v }));
@@ -207,4 +211,3 @@ export function renderServer(status) {
   }
 }
 
-// ---------- profiles ----------

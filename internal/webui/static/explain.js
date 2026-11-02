@@ -1,9 +1,10 @@
 import { checkName, reasonText } from "./activity.js";
 import { api, report } from "./api.js";
-import { $, h, icon, clear, toast, buddy } from "./dom.js";
+import { $, buddy, clear, h, icon, toast } from "./dom.js";
 import { renderProfiles } from "./profiles.js";
-import { routeHash, go } from "./router.js";
-import { state, profile, replaceProfile, profileName } from "./state.js";
+import { go } from "./router.js";
+import { routeHash } from "./routes.js";
+import { profileName, replaceProfile, state } from "./state.js";
 
 // EXPLAIN_EXAMPLES are names to try before anyone has asked.
 export const EXPLAIN_EXAMPLES = ["doubleclick.net", "xn--pple-43d.com", "wikipedia.org"];
@@ -110,7 +111,6 @@ export async function runExplain(ev) {
   clear(out).append(h("div", { class: "explain-grid" }, verdict, how, answers));
 }
 
-// ---------- tenants ----------
 
 export async function explainDomain(d) {
   $("x-name").value = d;
@@ -142,4 +142,3 @@ export async function changeDomain(p, d, list) {
   });
 }
 
-// ---------- keyboard shortcuts ----------

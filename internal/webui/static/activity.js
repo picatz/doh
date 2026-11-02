@@ -1,10 +1,10 @@
 import { api, report } from "./api.js";
-import { serviceName, listTitle } from "./apps.js";
-import { $, h, icon, clear, edit, toast, fmtTime } from "./dom.js";
+import { listTitle, serviceName } from "./apps.js";
+import { $, clear, edit, fmtTime, h, icon, toast } from "./dom.js";
 import { runExplain } from "./explain.js";
 import { domainAction } from "./profiles.js";
 import { go, setRoute } from "./router.js";
-import { state, profile } from "./state.js";
+import { state } from "./state.js";
 
 export const LIVE_CAP = 500;
 
@@ -227,4 +227,3 @@ export function closeDrawer() {
   $("drawer").hidden = true;
 }
 
-// ---------- explain ----------

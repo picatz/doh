@@ -107,11 +107,9 @@ export function fmtDuration(ms) {
   return `${s}s`;
 }
 
-// ---------- API ----------
-
 export const plural = (n, one, many = one + "s") => `${fmtNum(n)} ${n === 1 ? one : many}`;
 
-// buddy returns the character in a mood: "calm" or "alert".
+// buddy returns the character in a mood: "calm", "alert", or "happy".
 export function buddy(mood) {
   const svg = document.createElementNS(SVG, "svg");
   svg.setAttribute("class", "buddy");
@@ -122,12 +120,23 @@ export function buddy(mood) {
   return svg;
 }
 
+// emptyState says, with the character, that there's nothing here yet,
+// and what to do about it.
+export function emptyState({ mood = "calm", title, body = "", action = null, compact = false }) {
+  const art = buddy(mood);
+  art.classList.add("big");
+  return h("div", { class: "empty-state" + (compact ? " compact" : "") }, art,
+    h("p", { class: "empty-title" }, h("strong", { text: title })),
+    body ? h("p", { class: "muted empty-body", text: body }) : null,
+    action);
+}
+
 // copyButton copies text to the clipboard.
 export function copyButton(text, label) {
   return h("button", {
-    type: "button", class: "small", text: "Copy", "aria-label": `Copy ${label}`,
+    type: "button", class: "small", "aria-label": `Copy ${label}`,
     onClick: () => navigator.clipboard?.writeText(text).then(() => toast(`Copied ${label}`), () => toast("Couldn't copy", { error: true })),
-  });
+  }, icon("copy"), "Copy");
 }
 
 // qrCode shows the server's QR code as an image: an image runs no
